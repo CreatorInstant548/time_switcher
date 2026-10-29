@@ -95,6 +95,22 @@ Chaque case est cochée par moi, sur preuve (sortie de commande notée dans le c
   - `Edit` et `Write` dans la copie principale (A19).
 
   Le worktree `pilotage` est un autre chemin et reste permis.
+
+  **Révisé le 30/10 (AS-15)** : le crochet vit dans le `.claude/settings.json` **du projet**, versionné, et non dans les réglages utilisateur.
+  - *Pourquoi :* l'orchestrateur ne modifie pas `~/.claude/settings.json`. C'est la configuration personnelle de l'utilisateur, qui vaut pour tous ses projets (organisation §6 : rien n'est touché hors du projet).
+  - *Conséquence :* une session peut retirer le crochet dans son propre worktree, ce que la clôture C4 voulait empêcher. SEC0-35 compense.
+- [ ] **SEC0-35** — **Intégrité de la configuration de Claude Code** (ajouté le 30/10) :
+  1. Le crochet refuse `Edit` et `Write` sur `.claude/settings.json` et `.claude/settings.local.json`. Il refuse aussi toute commande shell qui écrit dans ces deux fichiers ou qui y mentionne `disableAllHooks`.
+     - Seule exception : une branche `claude/outillage-*`, dont la PR est un chemin sensible (§5).
+     - *Pourquoi :* `settings.local.json` peut contenir `disableAllHooks`. On se protège ainsi de l'erreur et de l'injection, pas d'une session décidée à contourner.
+  2. `.claude/settings.local.json` est dans `.gitignore`. `xtask hooks verify` signale son existence dans une copie de travail.
+  3. `xtask hooks verify`, lancé par `xtask merge` et par `origin-check`, parcourt **toutes les copies de travail** (`git worktree list`). Pour chacune, il vérifie que :
+     - `.claude/settings.json` est identique à celui de la tête de sa branche ;
+     - aucun `settings.local.json` ne contient `disableAllHooks` ni de `hooks` qui remplacent ceux du projet ;
+     - `core.hooksPath` pointe vers la copie épinglée de `TS_CACHE\hooks`.
+
+     Un écart **suspend les fusions** et ouvre une *issue* `role:architecture`.
+  4. Sur `main`, l'empreinte de `.claude/settings.json` est comparée à la dernière valeur approuvée, inscrite par `xtask hooks install` dans `TS_CACHE\hooks\`. Un changement sans PR sensible approuvée (`archsec-ok`) est une anomalie de SEC0-17.
 - [ ] **SEC0-15** (révisé) — `cargo xtask merge <PR>`, seul chemin de fusion, lancé depuis la copie principale. Dans cet ordre :
   1. la copie principale est propre et sur `main`, à jour par `--ff-only` ;
   2. empreinte des crochets installés (SEC0-12) ;
@@ -399,6 +415,7 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 |---|---|---|---|
 | 30/10 | Découpage de la phase 0, T0 à T13 ([#2](https://github.com/CreatorInstant548/time_switcher/issues/2)) | `developpement.md`, commits 139ff40 et 8506f54 (branche `pilotage`) | **Validé avec corrections** (§9.1) |
 | 30/10 | Découpage v2 (T0 à T13, avec T2a, T2b, T7a, T7b et T9w) | `developpement.md`, commit 1468629 | **Validé avec corrections R1 à R5** (§9.2) ; **feu vert pour T1** |
+| 30/10 | Crochet Claude Code dans les réglages du projet (T1, T3) | Message du responsable développement | **Favorable**, avec SEC0-35 : point 1 dans T1, points 2 à 4 dans T3 (`hooks verify`) |
 
 ### 9.2 Découpage v2 : écarts restants (30/10)
 
@@ -519,12 +536,14 @@ Il est confronté à la grille du §6 (V0-01 à V0-14) et aux exigences du §3. 
 | 30/10 | AS-12 | Aléa à clé : ChaCha8 en mode compteur, clés de flux dérivées par BLAKE3 ; Philox et `wyhash` refusés pour les flux à clé secrète | Un client voit beaucoup de sorties ; il ne doit pas pouvoir retrouver une clé et prédire les tirages. Modifie l'architecture §6.4, à reporter à la consolidation de fin de phase |
 | 30/10 | AS-13 | Fin du mode local : fusion côté GitHub, approbations en commentaires de PR liés au SHA, aucun commit local sur `main` | Lier les approbations au contenu exact et les tracer hors du poste |
 | 30/10 | AS-14 | Exigences de CI SEC0-29 à 34 ; pas de `CODEOWNERS` | Offre gratuite sans protection de branche : il serait sans effet |
+| 30/10 | AS-15 | Le crochet Claude Code passe au `.claude/settings.json` du projet, avec la parade SEC0-35 ; écart assumé à la clôture C4, à reporter à la consolidation | Les réglages utilisateur appartiennent à l'utilisateur (décision de l'orchestrateur) |
 
 | N° | Risque | Parade |
 |---|---|---|
 | R-ARCH-01 | Aucune copie du dépôt hors du poste en mode local | **Levé le 30/10** : dépôt sur GitHub |
 | R-ARCH-02 | Le fuzzing de repli, sans guidage par la couverture, trouve moins | **Sans objet** depuis le 30/10 : fuzzing guidé en CI |
 | R-ARCH-03 | Pas de *ruleset* : une poussée sur `main` hors de Claude Code est seulement détectée après coup | SEC0-17 ; à revoir si l'offre change (décision de l'utilisateur, jamais demandée) |
+| R-ARCH-04 | Une session peut retirer le crochet de son worktree entre deux fusions | Les crochets Git épinglés hors du dépôt bloquent encore le commit et la poussée vers `main` ; SEC0-35 détecte l'écart à la fusion suivante ; `ci-ok` et `origin-check` restent en place |
 
 ## 11. Demandes envoyées
 
