@@ -38,6 +38,11 @@ Voir [feuille-de-route.md](feuille-de-route.md).
 
 L'ancienne session sur le voyage dans le temps (`local_df83bc0e-9984-4caa-9e36-7795996c6c4b`) a été archivée le 29/10 à la demande de l'utilisateur. Le concept reste archivé dans `docs/archives/`.
 
+## Constats
+
+- 30/10 : le responsable développement n'a pas pu lancer de sessions, l'application refusant une session lancée par une autre. Le responsable conception, lui, avait pu en lancer une. Repli : sous-agents isolés en worktree, avec branche et PR. Inscrit dans organisation.md §2 par la PR #3.
+- 30/10 : demande du responsable développement d'inscrire `guard-git.ps1` dans `~/.claude/settings.json`. **Refusée (décidé)** : c'est la configuration personnelle de l'utilisateur, et elle touche tous ses projets. Le crochet ira dans le `.claude/settings.json` du projet, par la PR de T1, avec revue de sécurité.
+
 ## Demandes envoyées
 
 | Date | À | Demande | État |
@@ -50,5 +55,5 @@ L'ancienne session sur le voyage dans le temps (`local_df83bc0e-9984-4caa-9e36-7
 ## Contraintes externes
 
 L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pilotage/organisation.md) §6).
-- **GitHub** : offre gratuite. `gh` est connecté au compte `CreatorInstant548`. Dépôt privé `CreatorInstant548/time_switcher` **créé le 30/10 avec l'accord explicite de l'utilisateur**. `main` et `pilotage` sont poussés. Réglages : fusion squash seule, branche supprimée après fusion, Actions en lecture seule, alertes et correctifs Dependabot, étiquettes de rôle. PR #1 ouverte, qui lève le mode local, à fusionner par le responsable développement.
+- **GitHub** : offre gratuite. `gh` est connecté au compte `CreatorInstant548`. Dépôt privé `CreatorInstant548/time_switcher` **créé le 30/10 avec l'accord explicite de l'utilisateur**. `main` et `pilotage` sont poussés. Réglages : fusion squash seule, branche supprimée après fusion, Actions en lecture seule, alertes et correctifs Dependabot, étiquettes de rôle. PR #1 fusionnée (f60e5bc) : le mode local est levé. PR #3 ouverte (repli par sous-agents), à fusionner par le responsable développement.
 - **Double authentification** : son état n'est pas lisible avec ces droits. GitHub l'impose de toute façon aux comptes qui publient du code. Ce n'est pas un prérequis du projet (décidé).
