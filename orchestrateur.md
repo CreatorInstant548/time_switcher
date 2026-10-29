@@ -50,5 +50,5 @@ L'ancienne session sur le voyage dans le temps (`local_df83bc0e-9984-4caa-9e36-7
 ## Contraintes externes
 
 L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pilotage/organisation.md) §6).
-- **GitHub** : offre gratuite. `gh` est connecté au compte `CreatorInstant548`. L'envoi est **bloqué par le système de permissions** (30/10) ; on travaille en mode local. Si l'utilisateur ajoute une règle de permission, je créerai le dépôt privé et j'enverrai `main` et `pilotage`.
+- **GitHub** : offre gratuite. `gh` est connecté au compte `CreatorInstant548`. Dépôt privé `CreatorInstant548/time_switcher` **créé le 30/10 avec l'accord explicite de l'utilisateur**. `main` et `pilotage` sont poussés. Réglages : fusion squash seule, branche supprimée après fusion, Actions en lecture seule, alertes et correctifs Dependabot, étiquettes de rôle. PR #1 ouverte, qui lève le mode local, à fusionner par le responsable développement.
 - **Double authentification** : son état n'est pas lisible avec ces droits. GitHub l'impose de toute façon aux comptes qui publient du code. Ce n'est pas un prérequis du projet (décidé).
