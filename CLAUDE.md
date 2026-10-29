@@ -42,13 +42,10 @@ L'ancien concept de voyage dans le temps est abandonné et archivé dans `docs/a
   - la CI dispose de 2 000 minutes par mois : Linux à chaque PR, filtrée par chemins ; Windows chaque semaine et sur les chemins sensibles ; fuzzing hebdomadaire ;
   - Git LFS dispose de 10 Go de stockage et 10 Go de transfert par mois ;
   - le scan de secrets côté GitHub est indisponible : `gitleaks` tourne en crochet `pre-commit` et en CI.
-- **Mode local (décidé le 30/10, provisoire)** : la création du dépôt sur GitHub a été refusée par le système de permissions de Claude Code. Aucune session ne cherche à contourner ce refus. Tant qu'il dure, le dépôt est seulement local, et voici ce qui change :
-  - chaque tâche garde sa branche `claude/<sujet>` et son worktree ;
-  - la « PR » est une demande de fusion notée dans le carnet du responsable développement ;
-  - la CI est remplacée par `cargo xtask check` complet, plus `/code-review`, et `/security-review` sur les chemins sensibles ;
-  - seul le responsable développement fusionne, par `git merge --squash` dans la copie principale ; c'est la seule écriture permise sur `main` ;
-  - les remontées passent par les carnets, comme avant Git ;
-  - dès que l'envoi est possible, l'orchestrateur crée le dépôt privé et pousse `main` et `pilotage`.
+- **Dépôt GitHub** : `CreatorInstant548/time_switcher`, privé, créé le 30/10 avec l'accord de l'utilisateur. Le mode local est levé.
+  - Les branches de tâche sont poussées, et chaque tâche ouvre une vraie PR.
+  - Les carnets de la branche `pilotage` sont poussés après chaque commit.
+  - **Démarrage, en attendant la PR « CI »** : une PR se fusionne quand `cargo xtask check` (ou les vérifications équivalentes, tant que xtask n'existe pas) et `/code-review` sont passés, plus `/security-review` sur les chemins sensibles. Seul le responsable développement fusionne, par `gh pr merge --squash --delete-branch`. Ensuite, la fusion passe par `cargo xtask merge`, qui exige `ci-ok`.
 - PR courtes : un seul sujet, environ 400 lignes au plus hors fichiers générés.
 - **Au plus 3 sessions qui compilent du Rust en même temps** (3 emplacements de compilation). Si le démarrage annonce « les 3 emplacements sont pris » : ne pas compiler ; attendre, ou proposer la tâche dans le cloud. Les sessions de documentation ne compilent pas et ne comptent pas.
 - **Lecture seule** (revue, analyse, question) : session sans worktree (`use_worktree: false`), aucun fichier suivi modifié. **Morceaux d'une même tâche** (exploration, tests, relecture) : sous-agents dans la même copie, pas de nouvelle session.
