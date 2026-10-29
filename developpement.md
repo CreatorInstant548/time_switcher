@@ -67,6 +67,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 
 | Nom | Tâche | Modèle | Emplacement | Démarré |
 |---|---|---|---|---|
+| sous-agent t0-machine | T0 | Sonnet | aucun (hors dépôt) | 30/10 |
 
 ## Demandes envoyées
 
