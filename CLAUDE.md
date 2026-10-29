@@ -41,7 +41,15 @@ L'ancien concept de voyage dans le temps est abandonné et archivé dans `docs/a
   - une tâche de nuit vérifie que chaque commit de `main` vient d'une PR fusionnée et ouvre une *issue* sinon ;
   - la CI dispose de 2 000 minutes par mois : Linux à chaque PR, filtrée par chemins ; Windows chaque semaine et sur les chemins sensibles ; fuzzing hebdomadaire ;
   - Git LFS dispose de 10 Go de stockage et 10 Go de transfert par mois ;
-  - le scan de secrets côté GitHub est indisponible : `gitleaks` tourne en crochet `pre-commit` et en CI. PR courtes : un seul sujet, environ 400 lignes au plus hors fichiers générés.
+  - le scan de secrets côté GitHub est indisponible : `gitleaks` tourne en crochet `pre-commit` et en CI.
+- **Mode local (décidé le 30/10, provisoire)** : la création du dépôt sur GitHub a été refusée par le système de permissions de Claude Code. Aucune session ne cherche à contourner ce refus. Tant qu'il dure, le dépôt est seulement local, et voici ce qui change :
+  - chaque tâche garde sa branche `claude/<sujet>` et son worktree ;
+  - la « PR » est une demande de fusion notée dans le carnet du responsable développement ;
+  - la CI est remplacée par `cargo xtask check` complet, plus `/code-review`, et `/security-review` sur les chemins sensibles ;
+  - seul le responsable développement fusionne, par `git merge --squash` dans la copie principale ; c'est la seule écriture permise sur `main` ;
+  - les remontées passent par les carnets, comme avant Git ;
+  - dès que l'envoi est possible, l'orchestrateur crée le dépôt privé et pousse `main` et `pilotage`.
+- PR courtes : un seul sujet, environ 400 lignes au plus hors fichiers générés.
 - **Au plus 3 sessions qui compilent du Rust en même temps** (3 emplacements de compilation). Si le démarrage annonce « les 3 emplacements sont pris » : ne pas compiler ; attendre, ou proposer la tâche dans le cloud. Les sessions de documentation ne compilent pas et ne comptent pas.
 - **Lecture seule** (revue, analyse, question) : session sans worktree (`use_worktree: false`), aucun fichier suivi modifié. **Morceaux d'une même tâche** (exploration, tests, relecture) : sous-agents dans la même copie, pas de nouvelle session.
 - **Propriété** : chaque session ne modifie que les crates et répertoires nommés dans sa consigne. Fichiers partagés (`Cargo.toml` racine, `Cargo.lock`, `crates/ts_model/`, `crates/ts_game/`, `.github/`, `.cargo/`, `.claude/`, `tools/`, `CLAUDE.md`, socle `docs/conception/0*.md`) : seulement dans une PR courte et dédiée, fusionnée avant le travail qui en dépend. Exception : une ligne triée dans `[workspace.dependencies]` ou dans `standard_rules()`. Conflit sur `Cargo.lock` : reprendre la version de `main`, puis `cargo check`.
