@@ -83,7 +83,8 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 
 | Nom | Tâche | Modèle | Emplacement | Démarré |
 |---|---|---|---|---|
-| sous-agent t0-machine | T0 | Sonnet | aucun (hors dépôt) | 30/10 |
+| sous-agent t0-machine | T0 | Sonnet | aucun (hors dépôt) | 30/10, **terminée** |
+| sous-agent t1-outillage | T1 | Opus | worktree isolé, `claude/outillage-agents` | 30/10 |
 
 ## Demandes envoyées
 
@@ -109,3 +110,4 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 - 30/10 : mode local levé par l'orchestrateur. PR #1 fusionnée (squash), `main` à jour. Issue #2 ouverte pour archi-sécu. Ajout de T13 (CI). Aucune branche locale de tâche n'existait encore.
 - 30/10 : exigences d'archi-sécu lues (SEC0-01 à 28, grille V0-01 à 13, spec-map §7). Découpage v2 : T2 scindée (T2a, T2b), T7 scindée (T7a, T7b), T9w ajoutée, T3 en mode GitHub, ordre de la grille.
 - 30/10 : découpage validé avec corrections par archi-sécu ; v2 corrigée (ni attestation ni registre local ; ChaCha8 et BLAKE3 ; approbations par commentaires liés au SHA).
+- 30/10 : **T0 terminée** : `C:\Dev	s-cache\` créé ; cargo-deny 0.20.2, cargo-audit 0.22.2, gitleaks 8.30.1 (`C:\Dev	ools\gitleaks\`, archive SHA-256 d29144de…afc4e conforme au fichier officiel). **T1 lancée** (sous-agent Opus, worktree isolé).
