@@ -1,0 +1,93 @@
+# Conception — monde ouvert à personnages incarnables
+
+> Version 3.0 — 30/10/2026 : **conception terminée**. Huit domaines (direction artistique comprise), six revues et le complément sur le contenu des signatures sont intégrés au socle. La boucle de clôture est satisfaite (sécurité au tour 2, architecture au tour 2, équilibrage au tour 3), et aucune action n'est attendue de l'utilisateur (A8).
+> Les choix marqués **(décidé)** ont été tranchés par la conception, avec leur raison. Les valeurs marquées **[à calibrer]** seront ajustées par le prototypage. D'anciens fichiers de domaine peuvent encore contenir **[proposé]** : à convertir en décisions.
+> L'ancien concept de voyage dans le temps est abandonné et archivé dans [../archives/conception-voyage-temporel.md](../archives/conception-voyage-temporel.md). Seule la progression réaliste par attributs en est reprise.
+
+## Organisation
+
+La conception est découpée en fichiers. Le **socle** rassemble les règles transversales déjà tranchées ; les **domaines** sont explorés chacun dans une session dédiée.
+
+### Le socle (session principale uniquement)
+
+| Fichier | Contenu |
+|---|---|
+| [01-concept.md](01-concept.md) | Concept, temps en solo et en ligne |
+| [02-personnages.md](02-personnages.md) | Types de personnages, attributs, niveau, influence, puissance, paliers |
+| [03-vie-synchronisation.md](03-vie-synchronisation.md) | Barres de vie, synchronisation, bilan, mort |
+| [04-joueur.md](04-joueur.md) | Niveau de compte, expérience, profil comportemental, accès, familiarité |
+| [05-architecture.md](05-architecture.md) | Architecture technique, périmètre initial |
+
+### Les domaines (une session par domaine)
+
+| Fichier | Domaine | Statut |
+|---|---|---|
+| [domaines/economie.md](domaines/economie.md) | Métiers, argent, commerce, propriété, prix | Terminé (relu le 29/10, intégré au socle) |
+| [domaines/combat.md](domaines/combat.md) | Affrontements, armes, blessures, police et justice | Terminé (relu le 29/10, intégré au socle) |
+| [domaines/ville.md](domaines/ville.md) | Génération de la ville, quartiers, bâtiments, transports | Terminé (relu le 29/10, intégré au socle) |
+| [domaines/ia-pnj.md](domaines/ia-pnj.md) | Besoins, emplois du temps, planification, mémoire des PNJ | Terminé (relu le 29/10, intégré au socle) |
+| [domaines/social.md](domaines/social.md) | Relations, dialogue, réputation, groupes et organisations | Terminé (relu le 29/10, intégré au socle) |
+| [domaines/interface.md](domaines/interface.md) | Interface, informations affichées, contrôles | Terminé (relu le 29/10, intégré au socle) |
+| [domaines/population.md](domaines/population.md) | Création des habitants, ménages, emplois et logements ; arrivées et départs | Terminé (relu le 29/10, intégré au socle) |
+| [domaines/direction-artistique.md](domaines/direction-artistique.md) | Style visuel, palette et lumière, habitants, lisibilité, son, musique et voix ; cahier des charges, sources et licences des assets (l'utilisateur n'en produit aucun) | Terminé (v0.1, relu le 29/10, intégré au socle ; demandes croisées en cours de transmission) |
+
+Cette liste n'est pas figée : un domaine peut être ajouté, découpé ou fusionné.
+
+### Attendus mesurables
+
+Les valeurs cibles de la conception (performances, mémoire, génération, indistinguabilité, signatures, vie privée, équilibrage, contenus, outillage) sont rassemblées dans [attendus-mesurables.md](attendus-mesurables.md), que suit le responsable qualité et essais.
+
+### Organisation des sessions
+
+Hiérarchie, rôles et règles de travail des sessions : [../pilotage/organisation.md](../pilotage/organisation.md), tenu par l'orchestrateur. Dans les fichiers de conception, « session principale » désigne le responsable conception, sauf pour 05-architecture.md et les revues techniques, qui passent au responsable architecture et sécurité dès son arrivée en phase 0.
+
+## Déroulement de la conception
+
+1. Les sessions de domaine rédigent leur fichier. **Elles ne posent aucune question à l'utilisateur** : pour chaque choix, elles prennent l'option qu'elles jugent la meilleure, en cohérence avec le socle, et notent sa raison.
+2. La session principale vérifie la cohérence de chaque fichier avec le socle et les autres domaines, corrige si besoin, et fait un retour aux sessions concernées.
+3. Quand un domaine est jugé bon, elle passe au suivant (plusieurs domaines peuvent avancer en parallèle).
+4. À la fin, une session spécialisée en architecture de jeu et logicielle revoit l'architecture dans un document à part ([revues/architecture.md](revues/architecture.md)). La session principale le relit, puis l'intègre au socle s'il est cohérent (fait le 29/10). Contraintes : moteur détaché du rendu, entraînement de l'IA facile, possibilité de lancer de nombreuses simulations différentes.
+5. Une **revue d'équilibrage** ([revues/equilibrage.md](revues/equilibrage.md)) et une **revue de sécurité** ([revues/securite.md](revues/securite.md)) suivent selon le même principe : document à part, relu puis intégré par la session principale ; les domaines reçoivent leurs modifications et les appliquent eux-mêmes (fait le 29/10). Puis, de même, la **revue de l'intelligence des PNJ** (dans [domaines/ia-pnj.md](domaines/ia-pnj.md), §12 à §14), la **revue des signatures** ([revues/signatures.md](revues/signatures.md)) et son complément, le contenu écrit à la main ([revues/signatures-contenu.md](revues/signatures-contenu.md)), la **revue de la génération** ([revues/generation.md](revues/generation.md)) et la **revue du développement par agents** ([revues/developpement-agents.md](revues/developpement-agents.md)), qui fixe le dépôt, GitHub, la CI et les règles de travail des agents (faits le 29/10).
+6. **Boucle de clôture** (décidé le 30/10, à la demande de l'utilisateur). La conception n'est **terminée**, et la phase 0 ne commence, que lorsque les trois revues de **sécurité**, d'**équilibrage** et d'**architecture** se déclarent **satisfaites**.
+   - Chaque tour, chaque revue vérifie ce qui a changé depuis son dernier passage, en lecture seule. Elle rend une note `<revue>-cloture.md` dans le dossier partagé des sessions, organisée en trois rubriques (bloquant, à corriger, à suivre en phase 0), qui finit par un verdict « satisfaite » ou « non satisfaite ».
+   - Une revue est satisfaite quand il ne reste ni bloquant ni « à corriger » ; les points « à suivre en phase 0 » sont reportés dans le carnet du responsable conception, et dans celui du responsable architecture et sécurité à son arrivée.
+   - Entre deux tours, la session principale corrige le socle et fait corriger les domaines.
+   - **Borne : 3 tours au plus.** Au-delà, ce qui reste « à corriger » passe en phase 0 avec un responsable désigné. Un **bloquant** qui reste est arbitré par la session principale, avec sa raison ; si une revue maintient son désaccord, c'est l'orchestrateur qui tranche.
+   *Pourquoi : un feu vert explicite des trois gardiens techniques évite de construire sur une faille connue, et la borne empêche une boucle sans fin.*
+
+## Règles pour les sessions de domaine
+
+1. Une session de domaine **ne modifie que son propre fichier** dans `domaines/`.
+2. Elle **lit le socle** et le respecte. Elle ne le modifie jamais.
+3. Si une décision de son domaine exige de **changer une règle du socle** ou touche un autre domaine, elle le note dans une section « Impacts sur le socle et les autres domaines » de son fichier. La décision est prise dans la session principale.
+4. Elle ne pose **aucune question** à l'utilisateur : elle décide, marque le choix **(décidé)** et en donne la raison en une phrase.
+5. La session principale fait régulièrement une **relecture de cohérence** entre domaines.
+6. **On ne renumérote jamais une section**, ni dans un domaine, ni dans le socle, ni dans une revue (décidé le 29/10, [../pilotage/organisation.md](../pilotage/organisation.md), §3.1). Une nouvelle section prend un numéro libre ou un suffixe (« §5.4 bis ») ; une section retirée garde son numéro avec la mention « supprimée ». *Pourquoi : le code citera ses sections (`// spec: combat.md §5.4`), et ces renvois doivent rester valides.*
+
+## Questions ouvertes du socle
+
+Aucune pour l'instant.
+
+Décidés le 29/10 : montée en expérience et périmètre initial conservés tels quels ; météo et saisons tels que décrits ; prison en ligne remplacée par des conséquences équivalentes ([01-concept.md](01-concept.md), §2).
+
+## Relectures de cohérence
+
+| Date | Domaines | Résultat |
+|---|---|---|
+| 30/10 | **Boucle de clôture, tours 2 et 3 : conception terminée** | Sécurité et architecture satisfaites au tour 2. L'équilibrage, non satisfait au tour 2 (R1 : sonde des liens secrets ; R2 : cumul des pertes au jeu), est satisfait au tour 3, après les corrections du socle (03 §1, 04 §7, 05 §2.5) et des domaines (interface v0.9.2, ia-pnj v1.3.1, économie v0.8.2). Retouches de texte de l'architecture (`cosmetic/vocalization`, relecture du journal pour les juges) faites. Tableau [attendus-mesurables.md](attendus-mesurables.md) créé. Les points « à suivre en phase 0 » sont dans le carnet du responsable conception |
+| 30/10 | Reports de clôture dans les domaines | ia-pnj v1.3, social v0.9, interface v0.9, direction artistique v0.4 et économie v0.8 reprennent les corrections des trois revues. Deux contradictions relevées par les domaines sont tranchées : 03 §1 (un acte de coût supérieur à 1 n'est pas proposé ; seule la barre de combat porte l'indicateur de rupture) et **A11** (04 §8 : le rapprochement de comptes est notifié, sans nommer l'autre compte) |
+| 30/10 | **Boucle de clôture, tour 1** (sécurité, architecture, équilibrage) | **Les trois revues sont satisfaites**, sans point bloquant. Leurs points « à corriger » sont intégrés au socle (04 §7 et §8 ; 05 §2.2, §2.5, §2.16, §3, §5 et bloc « Clôture » de l'en-tête) et transmis aux domaines concernés en une vague groupée ; leurs points « à suivre en phase 0 » sont dans le carnet du responsable conception. Notes : `*-cloture.md` dans le dossier partagé des sessions |
+| 30/10 | Dernière vague (clôture des demandes croisées) | Arbitrages **A9** (les cicatrices suivent le combat, soit ≈ 30 % des blessures graves et ≈ 70 % des critiques) et **A10** (bulle : le volume donne le trait, le ton passe par une icône et un mot, comme le veut l'interface). Plus aucune demande croisée : les impacts restants sont notés « pour la phase 1 » dans chaque domaine. Socle : 05 §2.2 (`data/content/appearance/`, tenue, coiffure, source musicale, énumérations stables) et 05 §2.5 (portraits datés, vocalisation) |
+| 29/10 | Tous (règle renforcée : aucune action de l'utilisateur) | **Arbitrage A8** : plus aucune action n'est attribuée à l'utilisateur ni à un humain. Jugements par des sessions évaluatrices et sessions joueuses ; ancres et arbitrages par le responsable conception ; lecture la plus protectrice à la place du juriste ; audits par des sessions expertes ; modération par une session distincte de la détection ; rien de payant ; la fin de phase jouable passe par le responsable qualité. Écrit dans l'en-tête de 05 (les revues restent intactes), dans 04 §2 et §8, et dans 05 §2.13, §2.16 et §5 ; règle transmise aux 14 sessions, qui nettoient leur fichier |
+| 29/10 | Contenu des signatures (signatures-contenu.md, M1 à M18) ; offre gratuite de GitHub | Cohérent avec la revue et le socle ; M1 à M18 retenus. **Arbitrage A7** : la règle « aucun geste gratuit » (04 §7) prime ; seuls les actes excentriques permis par la surface de jeu portent une annotation, et les gestes libres (danser seul, s'allonger sur la chaussée, uriner en public) n'existent pas en première version. Réticence en niveaux 0 à 3 plus l'indicateur de rupture (M8, 05 §2.5) ; dossier `data/content/conduct/` (05 §2.2) ; ancres et archétypes tenus par le responsable conception (04 §2, A8). GitHub gratuit : barrières locales, fusion par `cargo xtask merge`, CI hebdomadaire sous Windows (05, en-tête et phase 0). Modifications de domaine transmises |
+| 29/10 | Direction artistique et sonore (v0.1) | Cohérente avec le socle et les domaines. Socle mis à jour : aucun figurant au son, fiction sans référence réelle et aucun animal visible (01 §1.1) ; éditeur d'apparence limité, aucun objet d'apparence propre aux joueurs (02 §1.1) ; génome d'apparence, apparence perçue en trois précisions, voix, rendu, outils d'assets, phases 3 et 5 (05). Arrivée du responsable contenus en phase 3 transmise à l'orchestrateur ; demandes croisées transmises aux domaines |
+| 29/10 | Tous (prise de fonction du responsable conception ; combat v0.4.1, population v0.7, social v0.6, économie v0.6, IA des PNJ v1.0, interface v0.5, ville v0.9) | Impacts sur le socle tous intégrés. Socle complété : parole des joueurs dans 05 §2.9 (même message et même délai que les PNJ, filtre de vocabulaire hors fiction, traduction cosmétique ; A4, A6, social §9.2) et renvoi aux étapes W1 à W8 dans 05 §2.14. Reliquats croisés transmis : combat (aucun décès d'enfant en première version, indignité successorale), social (profil normatif type dans la fiche de groupe), IA des PNJ (valeur apprise « honnêteté » des commerces, états périmés), ville (année de construction au registre, état périmé), population (états périmés) |
+| 29/10 | Revues des signatures (G1 à G30), de la génération (P1 à P41) et du développement par agents (A1 à A36) | Cohérentes entre elles et avec la conception ; toutes les décisions retenues. Signatures dérivées des effets (`ts_conduct`, fonction unique `appraise`), seul l'exceptionnel écrit à la main ; `ts-worldbuild` en graphe d'étapes adressé par empreinte avec un Programme en tête, part serveur de la ville tirée par monde et graines en ligne secrètes ; dépôt Git privé sur GitHub, worktrees éphémères compilant dans trois emplacements partagés. Les revues antérieures ne sont pas modifiées : leurs compléments sont notés dans l'en-tête de 05. Socle (03, 04, 05), CLAUDE.md et README mis à jour ; modifications de domaine transmises |
+| 29/10 | Revue de l'intelligence des PNJ (ia-pnj v0.8, §12 à §14) | Verdict : le modèle faisait bien vivre la ville mais simulait une vie plus qu'un esprit. Quinze mécanismes déterministes et bornés ajoutés (émotions et humeur, rappel et réflexion, modèle d'autrui, apprentissage, anomalies, pratiques sociales, conversation, résistance aux manipulations, naturel), mesure par indicateurs, scénarios et tests à l'aveugle. Décisions toujours écrites à la main (poids calibrés hors ligne), modèle de langage jamais décisionnel. Socle mis à jour (05 §2.9 et §2.13, 04 §7 : attitudes qui évoluent, aucun geste gratuit) ; impacts transmis aux six autres domaines |
+| 29/10 | Revues d'équilibrage (E1 à E41) et de sécurité (S1 à S37) | Cohérentes entre elles et avec la conception ; toutes les décisions retenues. Arbitrages : **A1** deux populations initiales (solo publique, en ligne privée) et couche cachée tirée par chaque monde avec son propre rodage (S2, S3, E25) ; **A2** validation en deux étages, la garde hors fiction faisant partie de l'étage épistémique (S4, E35) ; **A3** le cercle du joueur ne s'étend aux comptes liés que sur rapprochement décidé par un humain, visible dans l'export des données et contestable (E8, S15) ; **A4** parole des joueurs et des PNJ dans un même message avec le même délai (E26, S7) ; **A5** la défense est une posture appliquée avec le temps de réaction du personnage (S35) ; **A6** blocage, traduction et actes intimes identiques quel que soit le pilote. Socle (01 à 05) et CLAUDE.md mis à jour ; modifications de domaine transmises aux sept sessions |
+| 29/10 | IA des PNJ, ville | Niveaux de détail harmonisés ; vie des enfants, séjours à l'extérieur et personnage persistant dans la ville ajoutés ; impacts intégrés au socle. Les deux domaines sont terminés |
+| 29/10 | Revue d'architecture | Cohérente avec la conception ; intégrée dans 05-architecture.md (cœur en bibliothèque sans E/S, reproductibilité par graine, pas fixe de 20 Hz et ordonnanceur à événements, un monde par processus, SQLite en solo, bibliothèque native du client, pilote Externe, API en cinq échanges, chaînes d'entraînement et de simulation, phase 0 de fondations) et dans CLAUDE.md |
+| 29/10 | Tous les domaines (dernières versions) | Demandes de combat et de l'interface intégrées par les cinq autres domaines ; jonction combat-interface faite ; compétences de départ du personnage persistant ajoutées au socle. Les sept domaines sont terminés |
+| 29/10 | Combat, interface (v0.1) | Impacts sur le socle intégrés (public adulte, conséquences équivalentes détaillées, règles absolues sur les mineurs, PV réels, critère d'imprudence, récusation, vue filtrée par le serveur, outils hors jeu). Deux choix de l'interface corrigés : le joueur voit les noms de ses catégories, et le personnage persistant se crée par budget de points ou tirage aléatoire. Jonction combat-interface confiée à l'interface ; demandes croisées transmises aux cinq autres domaines |
+| 29/10 | Population, économie, social (v0.2), ville (v0.5), IA des PNJ (v0.4) | Demandes croisées intégrées par chaque domaine ; entreprise et groupe social réunis en une seule entité (05-architecture.md §2.17). Cinq domaines terminés |
+| 29/10 | Population, économie, social (v0.1) | Contradiction sur l'hôtel (visiteurs) réglée en faveur d'une demande extérieure abstraite et invisible ; impacts sur le socle intégrés (économie fermée et écu, naissances et décès, Richesse, Réseau, Notoriété, règle adulte-mineur, enrichissement par l'incarnation, générateur de population, économie et modération dans l'architecture) ; demandes croisées transmises aux cinq sessions pour une v0.2 |

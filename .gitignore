@@ -1,0 +1,73 @@
+# --- Rust ---
+/target
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+**/*.rs.bk
+
+# --- Claude Code ---
+/.claude/worktrees/
+/.claude/settings.local.json
+
+# --- Python ---
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+*.pyd
+
+# --- Web ---
+node_modules/
+admin-web/dist/
+.pnpm-store/
+
+# --- Godot / .NET (les fichiers *.import restent suivis) ---
+client/.godot/
+client/bin/
+client/obj/
+client/export/
+client/addons/ts_native/bin/
+*.user
+
+# --- Artefacts régénérables : ils vont dans TS_CACHE ---
+/artifacts/
+/out/
+*.parquet
+*.rrd
+*.tspack
+*.tsworld
+*.tssnap
+*.sqlite
+*.sqlite3
+*.db
+*.gguf
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+!data/models/**/*.onnx
+perf.data*
+flamegraph*.svg
+
+# --- Secrets (S28) : jamais dans le dépôt ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.age
+secrets/
+
+# --- Systèmes et éditeurs ---
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.log
