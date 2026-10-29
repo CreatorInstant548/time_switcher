@@ -398,6 +398,32 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | Date | Objet | Arbre ou consigne | Avis |
 |---|---|---|---|
 | 30/10 | Découpage de la phase 0, T0 à T13 ([#2](https://github.com/CreatorInstant548/time_switcher/issues/2)) | `developpement.md`, commits 139ff40 et 8506f54 (branche `pilotage`) | **Validé avec corrections** (§9.1) |
+| 30/10 | Découpage v2 (T0 à T13, avec T2a, T2b, T7a, T7b et T9w) | `developpement.md`, commit 1468629 | **Validé avec corrections R1 à R5** (§9.2) ; **feu vert pour T1** |
+
+### 9.2 Découpage v2 : écarts restants (30/10)
+
+Le v2 reprend la grille et la plupart des corrections. Il a été écrit avant la révision du §3 pour GitHub ; cinq écarts restent, à corriger dans les consignes concernées, sans retarder T1 :
+
+- **R1 (T2b, T3)**
+  - **Ni attestation locale `TS_CACHE\attest\`, ni registre chaîné, ni pieds `Checked-Tree` ou `Merge-Request`** (SEC0-15 et 16 révisées). `xtask merge <PR>` vérifie :
+    - `ci-ok` vert sur le SHA de tête ;
+    - les commentaires `review-ok: <sha>` et `archsec-ok: <sha>` pour un chemin sensible ;
+    - les crochets ;
+    - l'origine des commits de `main`.
+
+    Puis il fusionne par `gh pr merge --squash --delete-branch --match-head-commit <sha>`.
+  - **D-DEV-03 n'est pas confirmée sous cette forme** : l'arbre est vérifié par la CI, et les approbations sont liées au SHA sur GitHub.
+- **R2 (T12)** : **aucun faux secret poussé, aucun crochet contourné**. La preuve côté CI passe par l'auto-test du travail `security` (SEC0-27 révisée). Le point « commis sans crochet, refusé par la CI » est retiré.
+- **R3 (T13)** : SEC0-29 à 34 en entier :
+  - `permissions: {}` au niveau du workflow, puis le minimum par travail ;
+  - `persist-credentials: false` et `lfs: false` ;
+  - aucune interpolation `${{ github.event… }}` dans un `run:` ;
+  - liste fermée d'actions épinglées par SHA, avec un script de contrôle ;
+  - auto-test de `gitleaks` ;
+  - `cargo audit` **chaque jour**, Windows, fuzzing et historique complet chaque semaine ;
+  - pas de `CODEOWNERS`.
+- **R4 (D-DEV-05)** : pas de *nightly* locale en repli (AS-08 retirée). Si la CI ne suffit pas, m'en saisir.
+- **R5 (T5)** : ChaCha8 **en mode compteur**, avec clés de flux et clé cosmétique **dérivées par BLAKE3 `derive_key`** (SEC0-22, AS-12). Le coût par bloc est mesuré dans la PR.
 
 ### 9.1 Découpage de la phase 0 : avis détaillé (30/10)
 
