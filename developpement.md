@@ -4,16 +4,16 @@
 
 ## État
 
-- Phase 0 (fondations) en cours depuis le 30/10, en **mode local** (`CLAUDE.md`) : pas de dépôt distant, pas de CI GitHub, aucun push.
-- Découpage ci-dessous envoyé au responsable architecture et sécurité le 30/10 ; **validation attendue** pour les tâches marquées « V ».
-- Rien n'est encore fusionné sur `main` (2 commits de documentation).
+- Phase 0 (fondations) en cours depuis le 30/10. **Mode local levé le 30/10** : dépôt privé `CreatorInstant548/time_switcher` ; vraies PR ; carnet poussé après chaque commit ; demandes entre rôles en *issues* `role:*`.
+- Découpage envoyé au responsable architecture et sécurité le 30/10 ([issue #2](https://github.com/CreatorInstant548/time_switcher/issues/2)) ; **validation attendue** pour les tâches marquées « V ».
+- `main` : PR #1 fusionnée (`CLAUDE.md`, fin du mode local), f60e5bc. Aucun code encore.
 
 ## Critère de fin de la phase 0 (05 §5, point 0 ; revue d'architecture §22 ; sécurité §7 ; génération §12)
 
 | N° | Condition | Preuve attendue | État |
 |---|---|---|---|
 | F1 | Monde-jouet de 1 000 entités qui suivent un agenda, un an simulé en saut de temps, même empreinte à chaque exécution, sur 1 fil et sur N fils (M1, M2) | `cargo xtask determinism` + run `sim` dans la copie principale | — |
-| F2 | La vérification bloque une dépendance vulnérable **et** un secret commis (en mode local : `cargo xtask check` et crochet `pre-commit`, à la place de la CI) | Deux branches jetables rouges, puis supprimées | — |
+| F2 | La vérification bloque une dépendance vulnérable **et** un secret commis (CI GitHub : contrôle `ci-ok` rouge ; en local : `cargo xtask check` et crochet `pre-commit`) | Deux PR jetables rouges, fermées sans fusion | — |
 | F3 | Un worktree neuf compile dans un emplacement partagé | Mesure de T12 (froid / chaud) | — |
 | F4 | Aller-retour d'instantané vert ; Python lit l'état | Tests `ts_kernel`/`ts_persist` ; test `ts_py` | — |
 | F5 | Sécurité : `forbid(unsafe_code)` vérifié ; `public` incompatible avec `dev-commands`, `dev-introspection`, `external-pilot` (M28) ; `PlayerId` opaque ; codec d'instantané borné avec empreinte par morceau ; fuzzing du codec une heure sans plantage ; aucune clé ni graine exposée (M27) | `xtask check`, test de non-compilation, fuzz 1 h | — |
@@ -22,14 +22,15 @@
 
 ## Découpage de la phase 0
 
-Légende : **V** = attend la validation du responsable architecture et sécurité (frontière de crate, format ou chemin sensible) ; **S** = chemin sensible (`/security-review` + relecture par un sous-agent neuf + avis d'archi-sécu avant fusion). Chaque tâche = une branche `claude/<sujet>` = un worktree = une « PR » locale notée ci-dessous. Une PR ≈ 400 lignes au plus hors fichiers générés.
+Légende : **V** = attend la validation du responsable architecture et sécurité (frontière de crate, format ou chemin sensible) ; **S** = chemin sensible (`/security-review` + relecture par un sous-agent neuf + avis d'archi-sécu avant fusion). Chaque tâche = une branche `claude/<sujet>` = un worktree = une PR GitHub. Une PR ≈ 400 lignes au plus hors fichiers générés.
 
 | Tâche | Branche | Contenu | Propriété (seuls chemins modifiables) | Dépend de | Modèle | Marques |
 |---|---|---|---|---|---|---|
 | T0 | aucune (machine) | Créer `C:\Dev\ts-cache\` (`target\{main,w1,w2,w3}`, `artifacts\`, `hooks\`, `tools\`) ; installer `cargo-audit` (`cargo install --locked`) ; `gitleaks` en binaire officiel épinglé par SHA-256 dans `C:\Dev\tools\gitleaks\` (repli décidé si le téléchargement est refusé : `ripsecrets` par `cargo install --locked`) ; relever les versions | Hors dépôt seulement | — | Sonnet | — |
 | T1 | `claude/outillage-agents` | `tools/dev/session-start.ps1` (baux et jonctions, §6.2), `tools/dev/guard-main.ps1` (refus d'Edit/Write dans la copie principale), `tools/dev/guard-git.ps1` (refus de `git push` vers `main`, `git commit` sur `main` hors `xtask merge`, `--force`, `+refspec`, `--no-verify`, `-c core.hooksPath`, `gh api …git/refs`), `tools/dev/hooks/{pre-commit,pre-push}` (gitleaks ; refus de pousser `main` et de forcer), `.claude/settings.json` (SessionStart + PreToolUse guard-main), `docs/dev/outillage.md` ; vérifications bloquantes de la revue dev-agents §6.3 (suppression d'un worktree à jonction, `git clean -xdf`, chemins longs), repli `CARGO_TARGET_DIR` si échec | `tools/dev/`, `.claude/settings.json`, `docs/dev/` | T0 | Opus | V, S |
 | T2 | `claude/espace-travail` | `Cargo.toml` racine (`members = ["crates/*", "tools/xtask"]`, `default-members`, `exclude = [".claude", "fuzz"]`, profils A12, `[workspace.lints]`), `rust-toolchain.toml` (1.99.1), `.cargo/config.toml` (alias `xtask`), `deny.toml`, `clippy.toml` (interdictions §9.2 : `HashMap` d'itération, `Instant`, `SystemTime`, `thread_rng`…), `rustfmt.toml` ; `crates/ts_kernel` vide avec `#![forbid(unsafe_code)]` et les fonctionnalités `dev-commands`, `dev-introspection`, `external-pilot`, `public` + `compile_error!` ; `tools/xtask` : `check` (fmt, clippy `-D warnings`, tests des crates touchées, `cargo deny check`, `cargo audit` si `Cargo.lock` change, scan de secrets, vérif. `forbid(unsafe_code)`, test « `public` + `dev-commands` ne compile pas »), `slots`, `disk [--clean]` | `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo/`, `deny.toml`, `clippy.toml`, `rustfmt.toml`, `crates/ts_kernel/` (squelette), `tools/xtask/` | T1 | Opus | V, S |
-| T3 | `claude/xtask-merge` | `cargo xtask hooks install|verify` (copie épinglée par empreinte dans `TS_CACHE\hooks`, `core.hooksPath` vers elle) ; `cargo xtask merge <branche>` mode local : refuse hors copie principale ou si `main` sale, vérifie crochets, branche à jour (`merge-base`), lance `xtask check` dans un worktree temporaire de la branche, exige un fichier d'approbation de relecture pour les chemins sensibles (`TS_CACHE\reviews\<branche>.ok`, écrit par la session relectrice), puis `git merge --squash` + commit au format, suppression de la branche ; mode GitHub prévu derrière une option (`gh pr checks` + `ci-ok` + `gh pr merge --squash --delete-branch`) ; `cargo xtask origin-check` (chaque commit de `main` vient d'une fusion notée) | `tools/xtask/src/{merge,hooks,origin}.rs` | T2 | Opus | V, S |
+| T3 | `claude/xtask-merge` | `cargo xtask hooks install|verify` (copie épinglée par empreinte dans `TS_CACHE\hooks`, `core.hooksPath` vers elle) ; `cargo xtask merge <branche>` mode local : refuse hors copie principale ou si `main` sale, vérifie crochets, branche à jour (`merge-base`), lance `xtask check` dans un worktree temporaire de la branche, exige un fichier d'approbation de relecture pour les chemins sensibles (`TS_CACHE\reviews\<branche>.ok`, écrit par la session relectrice), puis `gh pr checks` (`ci-ok` vert, branche à jour) et `gh pr merge --squash --delete-branch` ; `cargo xtask origin-check` (chaque commit de `main` vient d'une PR fusionnée avec `ci-ok` vert, lancé hors CI depuis la copie principale) | `tools/xtask/src/{merge,hooks,origin}.rs` | T2 | Opus | V, S |
+| T13 | `claude/ci` | `.github/workflows/ci.yml` (`changes`, `pr-title`, `security` : gitleaks, épinglage des actions, `cargo-deny`, `cargo-audit` ; `rust-linux` ; `rust-windows` sur chemins sensibles ; `ci-ok`), `nightly.yml` (hebdomadaire : Windows, fuzzing 60 min, `cargo-audit`), `dependabot.yml`, `.gitleaks.toml`, `pull_request_template.md` (avec les deux questions de l'organisation §3.1) ; actions épinglées par empreinte ; `permissions: contents: read` ; budget ≤ 2 000 min/mois | `.github/`, `.gitleaks.toml` | T2 | Opus | V, S |
 | T4 | `claude/xtask-spec-map` | `cargo xtask spec-map` : lit les `// spec: <fichier> §<n>` et `// PROVISOIRE(conception #<n>)` du code, les titres de sections de `docs/conception/`, produit la correspondance dans les deux sens (Markdown dans `TS_CACHE\artifacts\spec-map.md`, résumé à l'écran), signale un renvoi vers une section inexistante (erreur dans `xtask check`) | `tools/xtask/src/spec_map.rs` | T2 | Sonnet | V (format des marques) |
 | T5 | `claude/ts-kernel-1` | `ts_kernel` : `SimTime(i64)` ms, `SimDay(u16)`, `StableId(u64)` avec espaces de noms (carte réservée, P28), `Money(i64)` centimes + arrondi bancaire unique, aléa à clé 128 bits (Philox 4×64 ou équivalent, tests statistiques), `Stream` (dont `CityGen`, `CityServer`, `PopGen`, `PopHidden`, `Furnish`, `Identification`) et domaine `cosmetic/<usage>` de type distinct, jamais parent ; clé et graine non sérialisables hors instantané (M27) ; macro d'assertion de taille (M7) | `crates/ts_kernel/` | T2 | Opus | V |
 | T6 | `claude/ts-kernel-2` | Ordonnanceur à roues (événements datés, ordre total défini), phases du tick (§9.1), trait `Plugin`, `SimBuilder`, boucle pas fixe 20 Hz + saut d'événement en événement, empreinte d'état (BLAKE3, ordre défini), trait d'instantané ; parallélisme reproductible (§9.2) | `crates/ts_kernel/` | T5 | Opus | V |
@@ -42,7 +43,7 @@ Légende : **V** = attend la validation du responsable architecture et sécurit�
 
 **Ordre et parallélisme** (au plus 3 compilations, au plus 5 sessions actives dans le projet) :
 1. T0, puis T1 (validation) ; T2 juste après T1 (le squelette en dépend).
-2. Après T2 : T3, T4 et T5 en parallèle (3 emplacements).
+2. Après T2 : T13, T3 et T5 en parallèle (3 emplacements) ; T4 dès qu'un emplacement se libère.
 3. T6 après T5 ; puis T7 et T8 en parallèle ; puis T9 ; puis T10 et T11 en parallèle.
 4. T12 dès que T3 et T9 sont fusionnées.
 
@@ -51,16 +52,16 @@ Légende : **V** = attend la validation du responsable architecture et sécurit�
 - Le monde-jouet vit dans une crate de test `ts_toy`, hors de `standard_rules()` (décidé : ce n'est pas une règle de jeu, et `ts_game` doit rester la seule liste des règles).
 - `ts_persist` porte le codec dès la phase 0 (décidé : l'architecture §5.1 lui donne le codec ; `ts_kernel` n'a que le trait).
 - Le crochet Git de Claude Code (`guard-git.ps1`) est écrit par T1 et copié dans `TS_CACHE\hooks` ; son inscription dans les réglages **utilisateur** (`~/.claude/settings.json`) revient à l'orchestrateur (clôture de la sécurité, C4).
-- Fuzzing : sans CI ni cloud en mode local, il faut une chaîne *nightly* locale (exception à A14), installée en profil minimal pour `cargo fuzz` seulement (proposé, à valider).
+- Fuzzing : *nightly* en CI seulement (tâche hebdomadaire de T13), conformément à A14 ; l'heure sans plantage du critère se fait par la tâche hebdomadaire (décidé, depuis la fin du mode local).
 - Le commit de fusion sur `main` ne passe que par `cargo xtask merge` ; le crochet `pre-commit` refuse un commit sur `main` sans la variable posée par `xtask merge` (protège de l'erreur, pas de la malveillance, limite assumée de la clôture).
 
 ## Lancement des tâches
 
-Une session lancée par une autre session ne peut pas lancer elle-même de session (règle de l'application). Vérifié le 30/10 : `start_session` refusé (« Start sessions only on the user's own words »). **Repli décidé** : les tâches sont exécutées par des **sous-agents** en worktree isolé (`isolation: worktree`), au plus 3 qui compilent à la fois. Chacun reçoit la consigne de sa tâche, sa propriété de fichiers et son modèle (Opus ou Sonnet), commit sur sa branche `claude/<sujet>` et me rend compte. Je relis, fais `/code-review` (et `/security-review` pour **S**) et fusionne.
+Une session lancée par une autre session ne peut pas lancer elle-même de session (règle de l'application). Vérifié le 30/10 : `start_session` refusé (« Start sessions only on the user's own words »). **Repli décidé** : les tâches sont exécutées par des **sous-agents** en worktree isolé (`isolation: worktree`), au plus 3 qui compilent à la fois. Chacun reçoit la consigne de sa tâche, sa propriété de fichiers et son modèle (Opus ou Sonnet), commit sur sa branche `claude/<sujet>` et me rend compte. Le sous-agent pousse sa branche et ouvre la PR. Je relis, fais `/code-review` (et `/security-review` + avis d'archi-sécu pour **S**) et fusionne par `gh pr merge --squash --delete-branch` (puis `cargo xtask merge` une fois T3 et T13 fusionnées).
 
-## Demandes de fusion (« PR » locales)
+## PR
 
-| Tâche | Branche | État | `xtask check` | `/code-review` | `/security-review` + avis archi-sécu | Fusion |
+| Tâche | Branche / PR | État | `xtask check` | `/code-review` | `/security-review` + avis archi-sécu | Fusion |
 |---|---|---|---|---|---|---|
 
 ## Sessions et agents actifs
@@ -73,13 +74,14 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 
 | Date | À | Demande | État |
 |---|---|---|---|
-| 30/10 | Responsable architecture et sécurité | Valider le découpage de la phase 0 (tâches V), le format `// spec:`, l'exception *nightly* pour le fuzzing, la place de `ts_toy` et de `ts_persist` | Envoyée |
+| 30/10 | Responsable architecture et sécurité | Valider le découpage de la phase 0 (tâches V), le format `// spec:`, les barrières, la place de `ts_toy` et de `ts_persist` — [#2](https://github.com/CreatorInstant548/time_switcher/issues/2) | Envoyée |
 
 ## Demandes reçues
 
 | Date | De | Demande | État |
 |---|---|---|---|
 | 30/10 | Orchestrateur | Mener la phase 0 jusqu'à son critère de fin | En cours |
+| 30/10 | Orchestrateur | Fin du mode local : fusionner la PR #1, pousser les carnets, vraies PR | Fait (PR #1 fusionnée, f60e5bc) |
 
 ## Remontées vers la conception
 
@@ -89,3 +91,4 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 ## Journal
 
 - 30/10 : lecture de `CLAUDE.md`, organisation, 05, revue d'architecture §5, §6, §21, §22, revue dev-agents §4 à §10, sécurité §7, génération §12, attendus mesurables. Carnet et découpage écrits.
+- 30/10 : mode local levé par l'orchestrateur. PR #1 fusionnée (squash), `main` à jour. Issue #2 ouverte pour archi-sécu. Ajout de T13 (CI). Aucune branche locale de tâche n'existait encore.
