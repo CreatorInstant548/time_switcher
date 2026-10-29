@@ -48,7 +48,9 @@ Partage des décisions : les règles de jeu reviennent à la conception, les dé
 - **Branche `pilotage` (décidé le 30/10)**.
   - **Contenu** : les fichiers vivants de pilotage, c'est-à-dire les carnets, `feuille-de-route.md` et `a-relire.md`. Ce fichier-ci reste sur `main`.
   - **Emplacement** : une branche orpheline, extraite dans le worktree permanent `C:\Dev\Claude\time_switcher-pilotage\`.
-  - **Écriture** : chaque session ne modifie que son propre fichier, puis fait `git pull --rebase`, `git commit` et `git push`. Pas de PR, et la CI ne tourne pas sur cette branche.
+  - **Écriture** : chaque session ne modifie que son propre fichier, puis fait `git commit -- <son-fichier>` et `git push origin pilotage`.
+    - Jamais `git add -A` ni `git commit -a`. Le worktree est partagé : ces commandes emporteraient les modifications en cours des autres sessions.
+    - Si le dépôt distant a avancé, faire `git pull --rebase origin pilotage` avant de pousser. Pas de PR, et la CI ne tourne pas sur cette branche.
   - *Pourquoi :*
     - les carnets changent plusieurs fois par jour. Les faire passer par des PR userait les 2 000 minutes de CI et obligerait le responsable développement à fusionner les carnets des autres ;
     - hors de Git, ils n'auraient ni historique ni copie de sauvegarde.
