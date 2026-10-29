@@ -16,7 +16,11 @@
   | social.md | 0.6.1 |
 
 - Domaine « direction artistique et sonore » confié au responsable conception le 29/10.
-- Aucun code. Phase 0 non lancée.
+- **Conception terminée le 30/10** (README v3.0) : les trois revues de clôture sont satisfaites, et le tableau des attendus mesurables est créé.
+- **Phase 0 lancée le 30/10** :
+  - dépôt Git local : `main` et la branche orpheline `pilotage` (worktree `C:\Dev\Claude	ime_switcher-pilotage\`) ;
+  - la création du dépôt GitHub (`gh repo create --private --push`) a été **refusée par le classificateur de permissions du mode auto**, motif « Public Data-Sharing Upload ». Je ne le contourne pas. Le travail continue en **mode local** (CLAUDE.md) ;
+  - responsables lancés : architecture et sécurité, et développement.
 
 ## Feuille de route
 
@@ -27,6 +31,8 @@ Voir [feuille-de-route.md](feuille-de-route.md).
 | Session | Identifiant | Rôle |
 |---|---|---|
 | responsable-conception | `local_5b3dcf29-8fbb-426c-b63a-80ab0302c1a6` | Niveau 2 |
+| responsable-archi-secu | `local_83246e4f-58ef-4aba-85ca-86a56a5407e8` | Niveau 2, lancé le 30/10 |
+| responsable-dev | `local_111a89c2-3a9e-44cf-93b9-31c4421e6559` | Niveau 2, lancé le 30/10 |
 | 7 sessions de domaine, 6 sessions de revue | identifiants dans le carnet du responsable conception | Niveau 3, pilotées par le responsable conception, affichées sous l'orchestrateur |
 | conception-direction-art | `local_d27a53f4-3489-40db-b5e8-71e23e687d7a` | Niveau 3, lancée par le responsable conception |
 
@@ -44,5 +50,5 @@ L'ancienne session sur le voyage dans le temps (`local_df83bc0e-9984-4caa-9e36-7
 ## Contraintes externes
 
 L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pilotage/organisation.md) §6).
-- **GitHub** : offre gratuite. `gh` est connecté au compte `CreatorInstant548` avec les droits `repo` et `workflow`, ce qui suffit pour créer le dépôt privé et y envoyer le projet.
+- **GitHub** : offre gratuite. `gh` est connecté au compte `CreatorInstant548`. L'envoi est **bloqué par le système de permissions** (30/10) ; on travaille en mode local. Si l'utilisateur ajoute une règle de permission, je créerai le dépôt privé et j'enverrai `main` et `pilotage`.
 - **Double authentification** : son état n'est pas lisible avec ces droits. GitHub l'impose de toute façon aux comptes qui publient du code. Ce n'est pas un prérequis du projet (décidé).

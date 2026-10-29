@@ -7,8 +7,8 @@
 
 | Phase | Contenu (résumé) | Rôles qui démarrent | Ce que tu pourras voir | État |
 |---|---|---|---|---|
-| Conception | Socle, 8 domaines, revues | Responsable conception | Les documents | Terminée, sauf le domaine direction artistique et sonore (en rédaction) |
-| 0. Fondations | Dépôt GitHub, règles des agents, noyau déterministe, CI, outils | Architecture et sécurité, puis développement | Un rapport : un monde-jouet de 1 000 entités tourne un an simulé, identique à chaque exécution | À lancer |
+| Conception | Socle, 8 domaines, revues | Responsable conception | Les documents | **Terminée le 30/10** |
+| 0. Fondations | Dépôt GitHub, règles des agents, noyau déterministe, CI, outils | Architecture et sécurité, puis développement | Un rapport : un monde-jouet de 1 000 entités tourne un an simulé, identique à chaque exécution | **En cours depuis le 30/10**, en mode local |
 | 1. Prototype du cœur | Quelques centaines d'habitants pilotés par l'IA dans un morceau de ville ; économie minimale ; combat à mains nues | Qualité et essais | Une visualisation de la simulation, sans jeu | — |
 | 2. Échange de pilote | Prendre et rendre un personnage, synchronisation, garde hors fiction, chasse aux exploits | — | Des rapports de robots joueurs | — |
 | 3. Client Godot 2.5D solo | Se déplacer, incarner, sauvegarder, avancer le temps ; premiers assets et environ 40 animations | Contenus (au début de la phase) | **Première version jouable**, mise à ta disposition (sans obligation d'essai) | — |
