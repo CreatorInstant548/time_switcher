@@ -5,7 +5,8 @@
 ## Mes fichiers
 
 - Socle 01 à 04, domaines et README de la conception.
-- 05-architecture.md et les revues techniques (architecture, sécurité, génération, développement par agents), **jusqu'à l'arrivée du responsable architecture et sécurité en phase 0**, qui les reprendra. Ensuite, toute décision technique qui change le jeu passe par moi.
+- 05-architecture.md et les revues techniques (architecture, sécurité, génération, développement par agents) : **repris par le responsable architecture et sécurité** (`local_83246e4f-58ef-4aba-85ca-86a56a5407e8`), arrivé en phase 0. Toute décision technique qui change le jeu passe encore par moi.
+- **Depuis le dépôt GitHub** : mes changements de conception passent par un worktree, une branche `claude/<sujet>` et une PR, fusionnée par le responsable développement ; les demandes entre rôles sont des *issues* (`role:conception`) ; ce carnet vit sur la branche `pilotage` (pull --rebase, commit, push).
 
 ## État au 30/10/2026
 
@@ -100,6 +101,7 @@
 | 30/10 | Utilisateur (dans cette session) | « Relancer les auditeurs de sécurité, d'équilibrage et d'architecture à la fin pour tout valider ? » | Oui (décidé) : revues de clôture sur le delta, après la dernière vague |
 | 30/10 | Utilisateur (dans cette session) | Boucle : tant que les trois revues ne sont pas satisfaites, la conception n'est pas finie et la phase 0 ne commence pas | Oui (décidé), avec une borne de 3 tours ; README, point 6 |
 | 30/10 | Orchestrateur | Tableau « Attendus mesurables » avant la fin de la conception | Fait : `docs/conception/attendus-mesurables.md` (M1 à M36) |
+| 30/10 | Responsable architecture et sécurité | Réponse à direction-artistique §12.9 (`architecture-securite.md` §8) : avis favorable, conditions techniques ; contrainte : la déclaration des contenus produits par IA reste globale (S7) | Accepté (décidé) ; transmis à conception-direction-artistique (§12.9 traité, §7.5), par une PR |
 
 ## Sessions pilotées
 
