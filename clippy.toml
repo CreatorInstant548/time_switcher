@@ -5,6 +5,7 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 
 disallowed-methods = [
+    { path = "bevy_ecs::schedule::IntoScheduleConfigs::ambiguous_with", reason = "arête d'ambiguïté non détectée à la construction (L7) : ordonner les systèmes explicitement (architecture §9.2, issue #12)", allow-invalid = true },
     { path = "chrono::Local::now", reason = "horloge murale : le cœur n'utilise que le temps de jeu entier", allow-invalid = true },
     { path = "chrono::Utc::now", reason = "horloge murale : le cœur n'utilise que le temps de jeu entier", allow-invalid = true },
     { path = "getrandom::fill", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
@@ -39,6 +40,23 @@ disallowed-methods = [
 ]
 
 disallowed-types = [
+    { path = "bevy_ecs::archetype::ComponentIndex", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::entity::EntityEquivalentHashMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::entity::EntityEquivalentHashSet", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::entity::EntityEquivalentIndexMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::entity::EntityEquivalentIndexSet", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::entity::EntityHashMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::entity::EntityHashSet", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::entity::EntityIndexMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::entity::EntityIndexSet", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::observer::ObserverMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_platform::collections::hash_map::HashMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_platform::collections::hash_set::HashSet", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_platform::collections::hash_table::HashTable", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_utils::PreHashMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_utils::TypeIdHashMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_utils::TypeIdIndexMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_utils::TypeIdMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
     { path = "hashbrown::HashMap", reason = "itération non déterministe : utiliser BTreeMap", allow-invalid = true },
     { path = "hashbrown::HashSet", reason = "itération non déterministe : utiliser BTreeSet", allow-invalid = true },
     { path = "rand::rngs::OsRng", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
