@@ -89,6 +89,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | T4 | `claude/xtask-spec-map`, [#15](https://github.com/CreatorInstant548/time_switcher/pull/15), tête **516ff46** | **Fusionnée** par `merge-pr.ps1` (`review-ok` et `archsec-ok` sur 516ff46) → **cea47c8** | `check --all` vert, `spec-map` active ; 36 tests | `/code-review` et `/security-review` par l'auteur | relecteur neuf puis `archsec-ok` | — |
 | T2c | `claude/xtask-disk`, [#16](https://github.com/CreatorInstant548/time_switcher/pull/16), tête 95b66f2 | **Fusionnée** par `merge-pr.ps1` | `check --all` vert ; 30 tests ; jonction réelle non suivie (test) | `/code-review` et `/security-review` par l'auteur | relecture neuve **refusée** : B1 (baux suivis à travers une jonction à la place de `target`), I1 (`TS_CACHE` non validé), I2 (essai jetable qui agit sur le vrai dépôt) ; `review-ok` et `archsec-ok` sur 95b66f2 | **14b6c58** |
 | T13 | `claude/ci`, [#14](https://github.com/CreatorInstant548/time_switcher/pull/14), tête e3e2f2a | **Fusionnée** par `merge-pr.ps1` | **`ci-ok` vert** (run 41011605890) ; ~9 min facturées par exécution | relecture interne faite par l'auteur | `review-ok` et `archsec-ok` sur 5a47413 ; mise à jour (e3e2f2a), `ci-ok` vert, `review-ok` et `archsec-ok` sur e3e2f2a | **dd83f66** |
+| T5a | `claude/ts-kernel-1`, [#20](https://github.com/CreatorInstant548/time_switcher/pull/20), tête 027d344 | En relecture | **`ci-ok` vert** ; `check --all` (13 étapes) | `/security-review` et relecture interne par l'auteur | relecteur neuf (le mien) en cours ; fusion **après T3a** | — |
 
 ## Sessions et agents actifs
 
@@ -100,7 +101,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | sous-agent t2b-check | T2b | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t13-ci | T13 + A2 | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t3a-merge | T3a | Opus | worktree isolé, `claude/xtask-merge` | 30/10 |
-| sous-agent t5a-kernel | T5a | Opus | worktree isolé, `claude/ts-kernel-1` | 30/10 |
+| sous-agent t5a-kernel | T5a | Opus | — | 30/10, **livrée** (PR #20) |
 | sous-agent t2c-disk | T2c | Opus | — | 30/10, **livrée** (PR #16) |
 | sous-agent t4-spec-map | T4 | Sonnet | — | 30/10, **livrée** (PR #15) |
 
@@ -170,3 +171,4 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
 - 30/10 : PR #14 mise à jour (e3e2f2a, fusion de 14b6c58 sans conflit) ; `ci-ok` vert (run 41017429720, environ 10 min ; environ 35 min pour toute la PR) ; `review-ok` du delta posé ; `archsec-ok` demandé.
 - 30/10 : **PR #14 fusionnée** (dd83f66) : la CI est sur `main`, et `ci-ok` sera exigé pour toute fusion. Première CI sur `main` en cours, Dependabot a fait son premier passage. Worktrees et branches de la #14 retirés. Deux faux refus de plus ajoutés à l'issue #7 (`patch-id`, `merge-base` dans une substitution). **T3a lancée.** Reste à faire pour m6 (issue #17) : première analyse gitleaks de tout l'historique, par la tâche périodique ; `gh workflow run` n'est pas dans la liste blanche.
 - 30/10 : consigne T5 **validée avec corrections K1 à K10** (archi-sécu §9.9). **T5 scindée** : T5a (`SimTime` négatif possible, `SimDay` en `Option`, `StableId` avec bit 63 réservé à la carte, `Money` en points de base avec intermédiaire `i128`, M7, `build_profile.rs`) puis T5b (aléa XChaCha8 avec nonce de 192 bits, `StreamKeys` dérivées par BLAKE3, `CosmeticSeed`, M27 ; deux relecteurs neufs). Travail en parallèle de T3a accepté, fusion après T3a. **T5a lancée.**
+- 30/10 : T5a livrée, PR #20, `ci-ok` vert. Décisions de l'auteur : `SimTime::add_millis` panique au dépassement et `checked_*` rend une `Option` ; `StableId` : bit 63 à 1 pour la carte, allocateur sans `Clone` ; `Money` : une seule fonction `div_round_half_even`, sans opérateurs `+` ni `-`. **Règle (décidé)** : le `review-ok` vient toujours d'un relecteur neuf lancé par moi, pas par l'auteur ; relecteur lancé.
