@@ -42,6 +42,6 @@ mod tests {
         assert!(sim.active_plugins().is_empty());
         assert_eq!(sim.now(), SimTime::EPOCH);
         sim.step();
-        assert!(sim.now() > SimTime::EPOCH);
+        assert_eq!(sim.now(), SimTime::from_millis(50));
     }
 }

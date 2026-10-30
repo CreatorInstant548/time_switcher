@@ -22,7 +22,8 @@ pub enum Location {
     Physical {
         /// Point on the floor, in metres.
         pos: Position,
-        /// Spatial grid cell (64 m cells, architecture §6.5) that holds `pos`.
+        /// Spatial grid cell (64 m cells, architecture §6.5) that holds `pos`; whoever moves
+        /// `pos` keeps it in step.
         cell: GridCell,
         /// Floor (level) of the physical geometry.
         floor: Floor,
@@ -42,7 +43,7 @@ pub enum Location {
         to: StableId,
         /// Departure date.
         departed: SimTime,
-        /// Expected arrival date.
+        /// Expected arrival date, never before `departed`.
         arrives: SimTime,
     },
 }

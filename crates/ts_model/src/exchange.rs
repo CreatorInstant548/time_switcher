@@ -40,9 +40,11 @@ pub enum Rejection {
 /// Out-of-fiction operation from a host, the console, a scenario or a tool; always logged.
 ///
 /// The host attaches its **source** to each command and applies the command matrix (S8).
-/// The **write** variants (`Spawn`, `SetComponent`) exist only with the `dev-commands`
-/// feature, which the kernel refuses together with `public`: a public server cannot even
-/// name them (architecture §7.3). The other commands of architecture §7.2 come with their
+/// The **write** variants (`Spawn`, `SetComponent`) exist only with the `ts_model/dev-commands`
+/// feature. It turns on `ts_kernel/dev-commands`, which the kernel refuses together with
+/// `public`: a public server cannot even name them (architecture §7.3). A tool that needs
+/// them enables `ts_model/dev-commands`; the kernel feature alone does not bring them in.
+/// The other commands of architecture §7.2 come with their
 /// owners: `AttachPilot`, `DetachPilot` and `Reserve` with `ts_pilot`, `Save` with
 /// `ts_persist`, `AdvanceTime` with the host (a normal solo command, S8), `SetParam`,
 /// `LedgerReversal` and `KillSwitch` with their domains.
