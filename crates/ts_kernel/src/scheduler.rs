@@ -209,6 +209,41 @@ impl<E> Scheduler<E> {
         self.levels[k].insert(digit(rem, k), item);
     }
 
+    // spec: revues/architecture.md §12.1, §11.3
+    /// Événements en attente, dans l'ordre `(at, seq)`, pour l'empreinte et l'instantané.
+    /// Le curseur n'en fait pas partie : il ne change aucune sortie.
+    pub fn pending(&self) -> Vec<&Scheduled<E>> {
+        let mut out: Vec<_> = self
+            .levels
+            .iter()
+            .flat_map(|l| l.slots.iter().flatten())
+            .chain(self.heap.iter().map(|Reverse(e)| &e.0))
+            .collect();
+        out.sort_unstable_by_key(|e| e.key());
+        out
+    }
+
+    // spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §9.10 L5
+    /// Ordonnanceur restauré à la date `now`, avec son compteur et ses événements, rangs
+    /// compris. `None` si un rang est en double ou n'est pas inférieur à `next_seq`.
+    pub fn restore(now: SimTime, next_seq: u64, items: Vec<Scheduled<E>>) -> Option<Self> {
+        let mut seqs: Vec<_> = items.iter().map(|e| e.seq).collect();
+        seqs.sort_unstable();
+        if seqs.windows(2).any(|w| w[0] == w[1]) || seqs.last().is_some_and(|&s| s >= next_seq) {
+            return None;
+        }
+        let mut s = Self::new(now);
+        s.next_seq = next_seq;
+        s.len = items.len();
+        // `seq` order keeps every slot insert an append (see `cascade`).
+        let mut items = items;
+        items.sort_unstable_by_key(|e| e.seq);
+        for item in items {
+            s.place(item);
+        }
+        Some(s)
+    }
+
     /// Plus ancienne date en attente, sans rien dérouler.
     pub fn peek_next_time(&self) -> Option<SimTime> {
         let late = self.heap.peek().map(|Reverse(e)| e.0.at);
@@ -520,6 +555,43 @@ mod tests {
         let out: Vec<_> = s.pop_due(t(600)).into_iter().map(|e| e.event).collect();
         assert_eq!(out, [5, 4, 1, 3]);
         assert_eq!(s.pop_due(t(800)).len(), 1);
+    }
+
+    /// Un ordonnanceur restauré à une autre date de curseur sort les mêmes événements, dans le
+    /// même ordre, et continue la numérotation.
+    #[test]
+    fn restore_keeps_order_and_counter() {
+        let mut d = Draws::new(9);
+        let mut a = Scheduler::new(SimTime::EPOCH);
+        for i in 0..2000 {
+            a.schedule(t(random_time(&mut d, 0)), i);
+        }
+        a.pop_due(t(3_600_000));
+        let items: Vec<_> = a.pending().into_iter().cloned().collect();
+        assert!(items.windows(2).all(|w| w[0].key() < w[1].key()));
+        let mut b = Scheduler::restore(t(3_600_000), a.next_seq(), items).unwrap();
+        assert_eq!(b.len(), a.len());
+        assert_eq!(a.schedule(t(5), 1), b.schedule(t(5), 1));
+        assert_eq!(a.pop_due(t(i64::MAX / 2)), b.pop_due(t(i64::MAX / 2)));
+        let dup = vec![
+            Scheduled {
+                at: t(1),
+                seq: 0,
+                event: (),
+            },
+            Scheduled {
+                at: t(2),
+                seq: 0,
+                event: (),
+            },
+        ];
+        assert!(Scheduler::restore(SimTime::EPOCH, 5, dup).is_none());
+        let late = vec![Scheduled {
+            at: t(1),
+            seq: 5,
+            event: (),
+        }];
+        assert!(Scheduler::restore(SimTime::EPOCH, 5, late).is_none());
     }
 
     /// T6a review I1: many next-day events in one hour, scheduled out of date order, cascade

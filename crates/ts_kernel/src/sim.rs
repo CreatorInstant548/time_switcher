@@ -5,7 +5,7 @@ use core::num::NonZeroU16;
 use core::ops::{Deref, DerefMut};
 use std::collections::BTreeSet;
 
-use bevy_ecs::component::Component;
+use bevy_ecs::component::{Component, ComponentId};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::{QueryState, With};
 use bevy_ecs::resource::Resource;
@@ -15,10 +15,64 @@ use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 
 use crate::phase::phase_schedule;
 use crate::rng::{StreamKeys, WorldKey};
+use crate::state::{
+    StableIndex, StateEntry, StateWriter, hash_world, stable_entities, undeclared_components,
+};
 use crate::{
     DayOrigin, Phase, Plugin, RulesFingerprint, Scheduled, Scheduler, SimBuilder, SimTime,
-    StableId, StableIdAllocator,
+    StableEntity, StableId, StableIdAllocator, StateHash, StateHashes,
 };
+
+mod snapshot;
+pub use snapshot::{MemorySnapshot, RestoreError, Snapshot, SnapshotScope};
+
+// spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §9.10 L4, L5
+/// Encode l'état du noyau : date, origine des jours, compteur de [`StableId`], compteur `seq`
+/// et événements en attente. Jamais les clés de flux.
+fn write_kernel(world: &World, w: &mut StateWriter<'_>) {
+    let clock = world.resource::<SimClock>();
+    clock.now.hash_state(w);
+    clock.day_origin.hash_state(w);
+    w.u64(world.resource::<StableIds>().0.to_snapshot_raw());
+    let queue = world.resource::<EventQueue>();
+    w.u64(queue.next_seq());
+    let pending = queue.pending();
+    w.count(pending.len());
+    for e in pending {
+        e.at.hash_state(w);
+        w.u64(e.seq);
+        e.event.hash_state(w);
+    }
+    // Stable entities (M1), then those in full simulation (I1), both sorted by `StableId`.
+    let stable = stable_entities(world);
+    w.count(stable.len());
+    for &(id, _) in &stable {
+        id.hash_state(w);
+    }
+    let complete = complete_ids(world, &stable);
+    w.count(complete.len());
+    for id in complete {
+        id.hash_state(w);
+    }
+}
+
+// spec: revues/architecture.md §6.5, §8.1 ; carnet architecture-securite.md §9.10 L2
+/// Stable entities that carry [`LodComplete`], sorted by `StableId`.
+fn complete_ids(world: &World, stable: &[(StableId, Entity)]) -> Vec<StableId> {
+    stable
+        .iter()
+        .filter(|&&(_, e)| world.get::<LodComplete>(e).is_some())
+        .map(|&(id, _)| id)
+        .collect()
+}
+
+impl StateHash for TimedEvent {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
+        w.u32(self.kind);
+        self.subject.hash_state(w);
+        w.u64(self.arg);
+    }
+}
 
 // spec: revues/architecture.md §7.1, §9.2 ; carnet architecture-securite.md §9.10 L6
 /// Nombre de fils de calcul. **Sans effet sur le résultat** (R1).
@@ -297,6 +351,10 @@ pub struct Sim {
     active: Vec<(&'static str, u32)>,
     rules: RulesFingerprint,
     complete: QueryState<Entity, With<LodComplete>>,
+    state: Vec<StateEntry>,
+    migrations: Vec<(&'static str, u32)>,
+    /// Components allowed on stable entities (M2).
+    known_components: Vec<ComponentId>,
 }
 
 impl fmt::Debug for Sim {
@@ -391,7 +449,11 @@ impl Sim {
         ensure_thread_pool(cfg.threads)?;
 
         let mut world = World::new();
-        world.register_component::<LodComplete>();
+        let kernel_components = vec![
+            world.register_component::<LodComplete>(),
+            world.register_component::<StableEntity>(),
+        ];
+        world.insert_resource(StableIndex::default());
         world.insert_resource(SimClock {
             now: SimTime::EPOCH,
             tick_ms,
@@ -409,6 +471,9 @@ impl Sim {
                 .map(|&p| phase_schedule(p, cfg.threads))
                 .collect(),
             current: "",
+            state: Vec::new(),
+            migrations: Vec::new(),
+            known_components: kernel_components,
         };
         for p in &plugins {
             b.current = p.name();
@@ -418,6 +483,9 @@ impl Sim {
         let SimBuilder {
             mut world,
             mut phases,
+            state,
+            migrations,
+            known_components,
             ..
         } = b;
         // L7 cannot be switched off (T6a review m3). `ambiguous_with(x)` edges are not
@@ -447,7 +515,26 @@ impl Sim {
             active,
             rules,
             complete,
+            state,
+            migrations,
+            known_components,
         })
+    }
+
+    // spec: revues/architecture.md §11.3
+    /// Number of components carried by stable entities that are neither declared state,
+    /// declared transient, nor kernel components (M2). Such a component is lost on restore;
+    /// [`Sim::snapshot`] checks that this is zero in debug builds.
+    pub fn undeclared_state_components(&self) -> usize {
+        undeclared_components(&self.world, &self.known_components)
+    }
+
+    // spec: revues/architecture.md §7.1, §11.3 ; carnet architecture-securite.md §9.10 L3, L4
+    /// Empreintes d'état, par famille et globale. La famille `kernel` couvre l'horloge,
+    /// l'origine des jours, l'allocateur de [`StableId`] et les événements en attente ; les
+    /// autres, les types d'état déclarés par les greffons. Les clés de flux n'y entrent pas.
+    pub fn state_hash(&self) -> StateHashes {
+        hash_world(&self.world, &self.state, &|w| write_kernel(&self.world, w))
     }
 
     /// Début du tick suivant : la date courante du monde.
