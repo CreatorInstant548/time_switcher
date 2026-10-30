@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+description = "Outils du dépôt time_switcher (cargo xtask) : vérifications avant une PR."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
