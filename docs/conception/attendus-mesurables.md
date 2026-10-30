@@ -84,4 +84,4 @@
 
 | N° | Attendu | Cible | Source | Mesure | Dès la phase |
 |---|---|---|---|---|---|
-| M36 | Minutes de CI | ≤ 3 000 par mois (GitHub Pro depuis le 30/10/2026) ; mode minimal au-delà de 80 % | 05, en-tête ; clôture de l'architecture, S-6 | Relevé mensuel | 0 |
+| M36 | Minutes de CI | ≤ 2 000 par mois ; mode minimal au-delà de 80 % | 05, en-tête ; clôture de l'architecture, S-6 | Relevé mensuel | 0 |
