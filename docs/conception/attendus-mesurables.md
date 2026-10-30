@@ -22,7 +22,7 @@
 |---|---|---|---|---|---|
 | M7 | Mémoire d'un monde de 10 000 habitants | 0,55 à 0,85 Go | Clôture de l'architecture, S-1 | Assertions de taille des composants à la compilation, puis mesure | 0 |
 | M8 | Composants de l'esprit | ≈ 2 Ko par personnage, ≈ 20 Mo en tout **[à mesurer]** | ia-pnj §13 | Idem | 1 |
-| M9 | Génome d'apparence ; tenue portée ; dates par relation | ≈ 64 o ; ≈ 30 o ; 4 × 2 o, soit ≈ 52 Mo (`SimDay` sur 16 bits) | 05 §2.2, §2.5 ; clôture de l'architecture, T2-6 | Idem | 1 |
+| M9 | Génome d'apparence ; tenue portée ; dates par relation | ≈ 64 o ; ≈ 30 o ; 4 × 2 o, soit ≈ 52 Mo (`SimDay` signé sur 16 bits, ±89 ans autour du jour de départ, saturé au-delà) | 05 §2.2, §2.5 ; clôture de l'architecture, T2-6 ; [README](README.md), A12 | Idem | 1 |
 
 ## 3. Génération
 
