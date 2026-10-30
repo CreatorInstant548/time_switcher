@@ -422,6 +422,61 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | **PR #5 (T1), fusion** | SHA de tête `92ecc11915c3ba6ae49a589621a87467ed89f843` ; `review-ok` de la troisième relecture neuve | **`archsec-ok: 92ecc11915c3ba6ae49a589621a87467ed89f843`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/5#issuecomment-6514007221)) : aucun défaut bloquant au sens d'AS-16 ; conditions du §9.3 remplies ; non bloquant : m7 à m15 et [#6](https://github.com/CreatorInstant548/time_switcher/issues/6) (T3), bloquants pour la fin de la phase 0 ; R-ARCH-05 |
 | 30/10 | Consigne T2b (`xtask check`, `slots`, `disk` ; V et S) | `side-session-notes/…/consigne-T2b.md` | **Validé avec corrections F1 à F10** (§9.5) ; `serde_json` accepté pour les outils (AS-17) ; à découper en deux PR ; lancement après la fusion de la PR #10 |
 | 30/10 | **PR #10 (T2a), fusion** | SHA de tête `f14fb969ba0d0751b8780b586121cabad282fe44` ; `review-ok` du relecteur neuf | **`archsec-ok: f14fb969ba0d0751b8780b586121cabad282fe44`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/10#issuecomment-6514394030)) : E1 à E9 appliquées ; SEC0-02, 07, 19, 20 conformes ; non bloquant : `try_from_os_rng`, m3, m4 (→ F4, T2b) |
+| 30/10 | Consigne T13 (CI GitHub Actions ; V et S) | `scratchpad/…/consigne-T13.md` du responsable développement | **Validé avec corrections G1 à G12** (§9.6) ; pas de `.gitleaks.toml` à la racine ; lancement après la fusion de T2b |
+
+### 9.6 Consigne T13 : intégration continue (30/10)
+
+Avis **validé avec corrections G1 à G12**, toutes décidées. Lancement après la fusion de T2b.
+
+- **G1. Brouillons.** La condition `github.event.pull_request.draft == false` est fausse sur un `push` vers `main`, où `pull_request` est nul : tous les travaux y seraient sautés. Elle devient `github.event_name != 'pull_request' || !github.event.pull_request.draft`.
+- **G2. Résultat de `ci-ok`.** Il lit `needs.<travail>.result` travail par travail.
+  - `changes`, `pr-title` (sur une PR) et `security` doivent valoir **`success`** : un saut de l'un d'eux est un échec.
+  - Seuls les travaux filtrés par chemins (`rust-linux`, `rust-windows`) peuvent être sautés.
+  - *Pourquoi :* si `changes` échoue, tout ce qui en dépend est sauté, et un `ci-ok` qui accepte tout saut serait vert à tort.
+- **G3. Origine de `ci-ok`.** Une PR peut ajouter, dans n'importe quel workflow, un travail nommé `ci-ok`. `.github/` est un chemin sensible, et mon avis couvre ce cas pour la PR elle-même. **Condition pour T3** (`xtask merge` et `origin-check`) : le contrôle `ci-ok` retenu doit venir du workflow `.github/workflows/ci.yml`, vérifié par le `check_suite` et le `workflow_run`. S'il en existe plusieurs, tous doivent être verts ; sinon, refus. `merge-pr.ps1` échoue déjà de façon sûre quand il en trouve deux. Point ajouté à l'*issue* #6.
+- **G4. Auto-test de gitleaks.**
+  - **Le faux secret :** il est fabriqué **à l'exécution**, par concaténation dans le script, au format d'une règle par défaut (par exemple un jeton `ghp_` suivi de 36 caractères aléatoires). Aucun fichier du dépôt ne contient de secret détectable. Il n'est jamais affiché : `--redact` vaut pour l'auto-test aussi.
+  - **La plage de la PR :** les SHA de base et de tête passent par `env:`, jamais par `${{ }}` dans un `run:`, et `fetch-depth` couvre toute la plage.
+- **G5. Une seule configuration gitleaks : pas de `.gitleaks.toml` à la racine** (retiré de la propriété de T13).
+  - La CI utilise `tools/dev/hooks/gitleaks.toml`, **dans sa version de `origin/main`** (`git show`), et non dans celle de la PR.
+  - Si la PR modifie ce fichier ou `tools.lock`, le travail `security` le signale dans son résumé.
+  - *Pourquoi :* deux configurations divergent. Et une PR qui ajoute une exception ne doit pas pouvoir se valider elle-même.
+- **G6. Épinglage pour Linux.**
+  - **`tools/dev/tools.lock` :** T13 peut y ajouter des lignes `*.linux.*` (archive, SHA-256 de l'archive et du binaire), à la **même version** que sous Windows. C'est une extension de propriété, limitée à ces lignes.
+  - **`cargo-deny` :** de préférence le binaire officiel, avec son SHA-256, pour éviter de compiler à chaque exécution.
+  - **`cargo-audit` :** `cargo install --locked --version`, mis en cache par `actions/cache` avec une clé sur la version.
+  - **Chaîne Rust :** elle est donnée par `rust-toolchain.toml` (la `rustup` de l'image), sans action tierce.
+  - **Fuzzing :** une *nightly* épinglée par date.
+- **G7. Une seule implémentation du contrôle des workflows : celle de `xtask`** (F10).
+  - **Dans la CI :** le travail `security` lance `cargo xtask check` réduit à cette étape. Si T2b n'offre pas encore de sélection d'étape (`--only <étape>`), T13 le note dans son rapport, et c'est un ajout à `xtask`.
+  - **Dans `tools/ci/` :** pas de second script de règles. Il ne contient que l'installation épinglée et le calcul des zones.
+  - *Pourquoi :* deux implémentations des mêmes règles divergent.
+- **G8. Liste des chemins sensibles : un fichier de données unique, `tools/ci/sensitive-paths.txt`**, créé par T13.
+  - Il est lu par `changes`, puis par `xtask merge` et par `origin-check` (T3, *issue* #6, point 3).
+  - Il reprend exactement le §5 de ce carnet, y compris :
+    - les sections `[features]` et `[profile.*]` ;
+    - `Cargo.lock` quand il ajoute une crate (ces deux cas sont détectés par un script) ;
+    - les modules d'aléa et de profil de `ts_kernel`, dès que T5 les fixe.
+- **G9. Tâche périodique.**
+  - **Comparaison de `main` :** elle demande `actions: read`.
+  - **Le travail qui ouvre l'*issue* :**
+    - il n'a que `issues: write` ;
+    - il ne fait **aucun `checkout`** ;
+    - le texte de l'*issue* ne contient que des données du dépôt sur `main` : nom du travail, lien de l'exécution.
+  - **Déclenchement manuel :** les éventuels `inputs` de `workflow_dispatch` ne passent jamais dans un `run:`.
+- **G10. Cache et artefacts.**
+  - **Cache :** `rust-cache` n'est enregistré que depuis `main` (`save-if`).
+  - **Artefacts :** les artefacts téléversés (corpus de fuzzing) sont conservés 7 jours au plus. Ils ne contiennent jamais de sortie de gitleaks non masquée.
+- **G11. Dependabot.**
+  - **Volume :** mises à jour regroupées, rythme hebdomadaire, `open-pull-requests-limit: 2` par écosystème.
+  - **Délai (`cooldown`) : `default-days: 7`.** *Pourquoi : on ne prend pas une version publiée depuis moins d'une semaine ; c'est la fenêtre où l'on découvre la plupart des versions piégées.*
+  - **Titre :** `commit-message` réglé pour donner `build(deps): …`, afin que `pr-title` passe.
+  - **Revue :** ses PR touchent `Cargo.lock` ou `.github/`, donc des chemins sensibles. Elles passent par mon avis comme les autres.
+- **G12. Rapport à l'orchestrateur.**
+  - Les réglages recommandés : *Allow select actions*, avec la liste fermée, et refus que les Actions créent ou approuvent des PR.
+  - Le relevé des minutes de l'exécution verte.
+
+**Revue de la PR T13 :** chemin sensible `.github/`, donc `/security-review`, un relecteur neuf, puis mon `archsec-ok`. Critères bloquants : SEC0-08 et SEC0-29 à 34, plus G1 à G11.
 
 ### 9.5 Consigne T2b : `xtask check`, `slots` et `disk` (30/10)
 
