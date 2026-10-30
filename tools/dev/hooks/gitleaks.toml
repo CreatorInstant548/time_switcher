@@ -1,0 +1,7 @@
+# tools/dev/hooks/gitleaks.toml : configuration épinglée de gitleaks pour les crochets Git (SEC0-08).
+# Elle étend les règles par défaut et n'ajoute aucune exception : une exception passe par une PR
+# de chemin sensible qui modifie ce fichier (l'empreinte du jeu de crochets change).
+title = "time_switcher, crochets Git"
+
+[extend]
+useDefault = true

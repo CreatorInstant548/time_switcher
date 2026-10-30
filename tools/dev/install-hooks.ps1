@@ -35,12 +35,24 @@ try {
 
   if ($Verify) {
     $want = (Get-Content -LiteralPath (Join-Path $hooksRoot 'current.sha256') -Raw).Trim()
-    $path = "$(& git -C $Repo config --local --get core.hooksPath)".Trim()
     $dir = Join-Path $hooksRoot $want
     if (-not (Test-Path -LiteralPath $dir)) { throw "copie épinglée absente : $dir" }
-    if ([IO.Path]::GetFullPath($path) -ne [IO.Path]::GetFullPath($dir)) { throw "core.hooksPath = '$path', attendu $dir" }
     if ((Get-SetHash $dir) -ne $want) { throw "contenu de $dir modifié (empreinte $(Get-SetHash $dir))" }
-    "Crochets conformes : $dir"
+    # Valeur effective dans chaque copie de travail : une seule, venue de la configuration commune.
+    $common = "$(& git -C $Repo rev-parse --path-format=absolute --git-common-dir)".Trim()
+    $commonCfg = [IO.Path]::GetFullPath((Join-Path $common 'config'))
+    $wts = @(& git -C $Repo worktree list --porcelain | Where-Object { $_ -like 'worktree *' } | ForEach-Object { $_.Substring(9) })
+    $n = 0
+    foreach ($wt in $wts) {
+      if (-not (Test-Path -LiteralPath $wt)) { continue }
+      $lines = @(& git -C $wt config --show-origin --get-all core.hooksPath)
+      if ($lines.Count -ne 1) { throw "$wt : $($lines.Count) valeurs de core.hooksPath ($($lines -join ' | ')), attendu une seule" }
+      $origin, $value = $lines[0] -split "`t", 2
+      if ($origin -notlike 'file:*' -or [IO.Path]::GetFullPath($origin.Substring(5), $wt) -ne $commonCfg) { throw "$wt : core.hooksPath vient de $origin, attendu file:$commonCfg" }
+      if ([IO.Path]::GetFullPath($value) -ne [IO.Path]::GetFullPath($dir)) { throw "$wt : core.hooksPath = '$value', attendu $dir" }
+      $n++
+    }
+    "Crochets conformes : $dir ($n copies de travail)"
     exit 0
   }
 

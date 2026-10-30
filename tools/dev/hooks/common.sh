@@ -26,6 +26,19 @@ gitleaks_checked() {
   [ "$actual" = "$expected" ] || fail "empreinte de gitleaks inattendue ($actual, attendu $expected)."
 }
 
+# gitleaks avec la seule configuration épinglée du jeu de crochets : ni .gitleaks.toml ni .gitleaksignore
+# de la copie de travail, ni variable d'environnement, ni commentaire gitleaks:allow (SEC0-08, T0-08).
+gitleaks_run() {
+  unset GITLEAKS_CONFIG GITLEAKS_CONFIG_TOML
+  [ -f "$HOOK_DIR/gitleaks.toml" ] || fail "gitleaks.toml absent de $HOOK_DIR : réinstaller les crochets."
+  # gitleaks lit aussi le .gitleaksignore de la racine, quel que soit --gitleaks-ignore-path (constaté en 8.30.1).
+  [ -e "$(git rev-parse --show-toplevel)/.gitleaksignore" ] &&
+    fail "un .gitleaksignore à la racine de la copie de travail est refusé (SEC0-08) : une exception passe par tools/dev/hooks/gitleaks.toml."
+  dir=$(cd "$HOOK_DIR" && { pwd -W 2>/dev/null || pwd; })
+  "$GITLEAKS" git --config "$dir/gitleaks.toml" --gitleaks-ignore-path "$dir" --ignore-gitleaks-allow \
+    --redact --no-banner --log-level warn "$@" .
+}
+
 current_branch() {
   git symbolic-ref --short -q HEAD 2>/dev/null | tr 'A-Z' 'a-z'
 }

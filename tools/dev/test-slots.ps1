@@ -1,5 +1,6 @@
 # tools/dev/test-slots.ps1 : essais de session-start.ps1 et vérifications bloquantes de dev-agents §6.3.
-# 1. Logique des baux, dans un TS_CACHE jetable : attribution, idempotence, 3 emplacements pris, bail orphelin.
+# 1. Logique des baux, dans un TS_CACHE jetable : main automatique, -Acquire, -Release, idempotence,
+#    3 emplacements pris, bail orphelin, bail tenu sans jonction, repli CARGO_TARGET_DIR.
 # 2. Avec -Real : dans les vrais emplacements (TS_CACHE\target), un worktree jetable d'un dépôt jetable
 #    reçoit un emplacement, compile un projet Cargo jetable à travers la jonction (chemin long), puis
 #    git clean -xdf et git worktree remove ne doivent pas abîmer l'emplacement. Le bail est libéré à la fin.
@@ -12,9 +13,10 @@ $fail = 0; $n = 0
 function Check([string]$Name, [bool]$Ok, [string]$Detail = '') {
   $script:n++; if ($Ok) { "  ok  $Name" } else { $script:fail++; "ÉCHEC $Name $Detail" }
 }
-function Start-Session([string]$Root, [string]$Cache) {
+function Start-Session([string]$Root, [string]$Cache, [switch]$Acquire, [switch]$Release) {
   $old = $env:TS_CACHE; $env:TS_CACHE = $Cache
-  try { & pwsh -NoProfile -File (Join-Path $dev 'session-start.ps1') -Root $Root 2>&1 | Out-String } finally { $env:TS_CACHE = $old }
+  $opts = @(); if ($Acquire) { $opts += '-Acquire' }; if ($Release) { $opts += '-Release' }
+  try { & pwsh -NoProfile -File (Join-Path $dev 'session-start.ps1') -Root $Root @opts 2>&1 | Out-String } finally { $env:TS_CACHE = $old }
 }
 function Get-Link([string]$Path) { $i = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue; if ($i) { "$($i.LinkType)|$($i.Target)" } }
 function New-Repo([string]$Dir) {
@@ -30,32 +32,48 @@ try {
   New-Item -ItemType Directory -Force $repo | Out-Null; New-Repo $repo
   $wts = 1..4 | ForEach-Object { $w = Join-Path $tmp "wt$_"; & git -C $repo worktree add -q -b "claude/w$_" $w 2>&1 | Out-Null; $w }
   $o = Start-Session $repo $fc
-  Check 'copie principale : emplacement main' ((Get-Link "$repo\target") -like "Junction|*\target\main") $o
+  Check 'copie principale : emplacement main, sans option' ((Get-Link "$repo\target") -like "Junction|*\target\main") $o
+  $o = Start-Session $wts[0] $fc
+  Check 'worktree sans -Acquire : rien pris, rappel de la commande' (($o -match '-Acquire') -and ($o -match '3 emplacement') -and -not (Test-Path "$($wts[0])\target")) $o
   foreach ($k in 0..2) {
-    $o = Start-Session $wts[$k] $fc
-    Check "worktree $($k + 1) : emplacement w$($k + 1)" ((Get-Link "$($wts[$k])\target") -like "Junction|*\target\w$($k + 1)") $o
+    $o = Start-Session $wts[$k] $fc -Acquire
+    Check "worktree $($k + 1) : -Acquire donne w$($k + 1)" ((Get-Link "$($wts[$k])\target") -like "Junction|*\target\w$($k + 1)") $o
   }
   $o = Start-Session $wts[0] $fc
   Check 'idempotent (2e démarrage)' ($o -match 'Emplacement de compilation : .*w1') $o
-  $o = Start-Session $wts[3] $fc
+  $o = Start-Session $wts[3] $fc -Acquire
   Check '3 emplacements pris : avertissement, aucune jonction' (($o -match 'les 3 emplacements sont pris') -and -not (Test-Path "$($wts[3])\target")) $o
-  # Bail orphelin : worktree 2 supprimé, bail vieilli au-delà du délai de grâce.
+  # Bail orphelin : worktree 2 retiré (git laisse le dossier et la jonction, sans .git), bail vieilli.
   & git -C $repo worktree remove --force $wts[1] 2>&1 | Out-Null
   (Get-Item "$fc\target\w2.lease").LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-1)
-  $o = Start-Session $wts[3] $fc
+  $o = Start-Session $wts[3] $fc -Acquire
   Check 'bail orphelin libéré et repris' (((Get-Link "$($wts[3])\target") -like '*\w2') -and ((Get-Content "$fc\target\w2.lease" -Raw) -eq $wts[3])) $o
-  # Bail ancien mais tenu (jonction en place) : jamais repris.
+  # Bail ancien dont le worktree existe, jonction retirée (git clean -xdf) : toujours tenu.
+  [IO.Directory]::Delete("$($wts[0])\target")
   (Get-Item "$fc\target\w1.lease").LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-1)
   $w5 = Join-Path $tmp 'wt5'; & git -C $repo worktree add -q -b claude/w5 $w5 2>&1 | Out-Null
-  $o = Start-Session $w5 $fc
-  Check 'bail ancien mais tenu : conservé' ((Get-Content "$fc\target\w1.lease" -Raw) -eq $wts[0] -and -not (Test-Path "$w5\target")) $o
+  $o = Start-Session $w5 $fc -Acquire
+  Check 'bail tenu sans jonction (worktree présent) : non repris' ((Get-Content "$fc\target\w1.lease" -Raw) -eq $wts[0] -and -not (Test-Path "$w5\target")) $o
+  $o = Start-Session $wts[0] $fc -Acquire
+  Check 'le worktree reprend son propre bail' ((Get-Link "$($wts[0])\target") -like '*\w1') $o
+  Set-Content "$fc\target\w1\garde.txt" 'x'
+  $o = Start-Session $wts[0] $fc -Release
+  Check '-Release : bail libéré, jonction retirée, contenu intact' ((-not (Test-Path "$fc\target\w1.lease")) -and -not (Test-Path "$($wts[0])\target") -and (Test-Path "$fc\target\w1\garde.txt")) $o
+  # Repli CARGO_TARGET_DIR (racine > 100 car.) : guillemet simple échappé dans CLAUDE_ENV_FILE.
+  $qc = Join-Path $tmp "ca'che"; $long = Join-Path $tmp ('l' * (101 - $tmp.Length))
+  & git -C $repo worktree add -q -b claude/long $long 2>&1 | Out-Null
+  $envFile = Join-Path $tmp 'env.sh'; $env:CLAUDE_ENV_FILE = $envFile
+  try { $o = Start-Session $long $qc -Acquire } finally { Remove-Item Env:CLAUDE_ENV_FILE }
+  $line = "$(Get-Content $envFile -Raw)".Trim()
+  $want = "export CARGO_TARGET_DIR='" + ((Join-Path $qc 'target\w1') -replace "'", "'\''") + "'"
+  Check 'repli CARGO_TARGET_DIR : guillemet échappé' ($line -eq $want) "$line / $want $o"
 
   # --- 2. Vérifications bloquantes de §6.3, dans les vrais emplacements ---
   if ($Real) {
     # Racine de 90 caractères : celle des worktrees de l'application (.claude\worktrees\agent-<id>) plus 20 de marge.
     $wt = Join-Path $tmp ('w' * (90 - $tmp.Length - 1))
     & git -C $repo worktree add -q -b claude/essai-long $wt 2>&1 | Out-Null
-    $o = Start-Session $wt $cache
+    $o = Start-Session $wt $cache -Acquire
     $slot = ("$((Get-Item -LiteralPath "$wt\target" -Force).Target)" -replace '^\\\\\?\\', '').TrimEnd('\')
     Check "attribution d'un emplacement réel ($slot)" ($slot -match '\\target\\w[1-3]$') $o
     $lease = "$slot.lease"
@@ -98,10 +116,9 @@ try {
     $after = (Get-ChildItem -LiteralPath $slot -Recurse -File -Force | Measure-Object).Count
     Check "git clean -xdf : emplacement intact ($after/$artefacts fichiers, jonction : $(if (Test-Path "$wt\target") { 'restée' } else { 'retirée' }))" (
       (Test-Path $sentinel) -and $after -eq $artefacts) $out
-    $o = Start-Session $wt $cache
+    $o = Start-Session $wt $cache -Acquire
     Check 'après git clean, le même emplacement est repris' ((Get-Link "$wt\target") -like "Junction|$slot") $o
 
-    $o = Start-Session $wt $cache
     $out = & git -C $repo worktree remove $wt 2>&1 | Out-String
     $how = 'git worktree remove'
     if ($LASTEXITCODE -ne 0) { $out += & git -C $repo worktree remove --force $wt 2>&1 | Out-String; $how += ' --force' }
@@ -112,9 +129,12 @@ try {
       (Test-Path $sentinel) -and $after -eq $artefacts -and -not (Test-Path "$wt\.git")) $out
     if ($left) { [IO.Directory]::Delete("$wt\target") }   # la jonction seule, sans suivre le lien
 
-    # Libération du bail utilisé et de l'emplacement essayé (fichiers régénérables de l'essai seulement).
-    if ((Get-Content -LiteralPath $lease -Raw).Trim() -eq [IO.Path]::GetFullPath($wt)) { Remove-Item -LiteralPath $lease -Force }
-    Get-ChildItem -LiteralPath $slot -Force | Where-Object { $_.Name -notin $before } | Remove-Item -Recurse -Force
+    # Nettoyage de l'emplacement essayé (fichiers de l'essai seulement), puis libération du bail : dans cet ordre,
+    # pour ne jamais supprimer les fichiers d'une session qui aurait repris le bail entre-temps.
+    if ((Get-Content -LiteralPath $lease -Raw).Trim() -eq [IO.Path]::GetFullPath($wt)) {
+      Get-ChildItem -LiteralPath $slot -Force | Where-Object { $_.Name -notin $before } | Remove-Item -Recurse -Force
+      Remove-Item -LiteralPath $lease -Force
+    }
     Check 'bail libéré' (-not (Test-Path $lease))
   }
 } finally {

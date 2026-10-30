@@ -56,9 +56,10 @@ flamegraph*.svg
 # --- Secrets (S28, SEC0-09) : jamais dans le dépôt ---
 .env*
 !.env.example
-id_*
-!id_*.rs
-!id_*/
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
 *.pem
 *.key
 *.p12

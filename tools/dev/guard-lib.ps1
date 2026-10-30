@@ -11,6 +11,38 @@ function ConvertTo-FullPath([string]$Path, [string]$Base) {
   try { return [IO.Path]::GetFullPath(($p -replace '/', '\'), $Base).TrimEnd('\') } catch { return $null }
 }
 
+# Chemin canonique pour les gardes : variables du dossier personnel développées, préfixes \\?\ et \\.\
+# retirés, flux NTFS (« : » après le lecteur) retirés, points et espaces finaux retirés, noms 8.3 résolus.
+# Lève une exception pour un partage UNC local ou administratif, ou pour un nom 8.3 irrésoluble.
+function ConvertTo-CanonicalPath([string]$Path, [string]$Base) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+  $p = $Path.Trim()
+  foreach ($v in '${HOME}', '$HOME', '$env:HOME', '$env:USERPROFILE', '${env:USERPROFILE}', '%USERPROFILE%') {
+    $p = $p.Replace($v, $HOME, [StringComparison]::OrdinalIgnoreCase)
+  }
+  $p = $p -replace '/', '\'
+  $p = $p -replace '^\\\\[?.]\\UNC\\', '\\' -replace '^\\\\[?.]\\', ''
+  if ($p -match '^\\\\([^\\]+)\\([^\\]+)') {
+    $hostRe = '^(?i)(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?|' + [regex]::Escape("$env:COMPUTERNAME") + ')$'
+    if ($Matches[1] -match $hostRe -or $Matches[2] -match '^[a-zA-Z]\$$') { throw "partage UNC local ou administratif : $Path" }
+  }
+  $p = ConvertTo-FullPath $p $Base
+  if (-not $p) { throw "chemin illisible : $Path" }
+  $colon = $p.IndexOf(':', 2)
+  if ($colon -ge 0) { $p = $p.Substring(0, $colon) }   # flux NTFS : fichier::$DATA, fichier:flux
+  $p = (($p -split '\\') | ForEach-Object { if ($_ -match '^[a-zA-Z]:$') { $_ } else { $_.TrimEnd('. ') } }) -join '\'
+  if ($p -match '~\d') {   # nom court 8.3 : résolu par le système, sinon refus
+    if (-not ('TsGuard.Native' -as [type])) {
+      Add-Type -Namespace TsGuard -Name Native -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern uint GetLongPathName(string s, System.Text.StringBuilder l, uint n);'
+    }
+    $known = if (Test-Path -LiteralPath $p) { $p } else { Get-ExistingDir $p }
+    $sb = [Text.StringBuilder]::new(32768)
+    if ($known -and [TsGuard.Native]::GetLongPathName($known, $sb, 32768) -gt 0) { $p = $sb.ToString() + $p.Substring($known.Length) }
+    if ($p -match '~\d') { throw "nom court (8.3) irrésoluble : $Path" }
+  }
+  return $p.TrimEnd('\')
+}
+
 # Vrai si $Path est $Root ou se trouve dessous (comparaison sans casse, séparateur exigé).
 function Test-UnderPath([string]$Path, [string]$Root) {
   if (-not $Path -or -not $Root) { return $false }

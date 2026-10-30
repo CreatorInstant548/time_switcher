@@ -1,0 +1,20 @@
+#!/bin/sh
+# reference-transaction : refs/heads/main ne bouge que vers refs/remotes/origin/main, c'est-à-dire par
+# avance rapide après fetch (git pull --ff-only) ou par création à cette valeur. Refus de sa suppression,
+# et de toute mise à jour si origin/main est absente. Couvre ce que pre-commit ne voit pas :
+# revert, cherry-pick, rebase, am, reset, update-ref, branch -f (SEC0-13).
+# spec: carnet architecture-securite.md SEC0-13
+[ "$1" = "prepared" ] || exit 0
+. "$(dirname "$0")/common.sh"
+
+while read -r old new ref; do
+  [ "$(printf '%s' "$ref" | tr 'A-Z' 'a-z')" = "refs/heads/main" ] || continue
+  # Suppression : nouvelle valeur nulle (Git envoie aussi une ancienne valeur nulle, « peu importe »).
+  case $new in *[!0]*) ;; *) fail "suppression de main interdite (SEC0-13)." ;; esac
+  [ "$old" = "$new" ] && continue   # valeur inchangée
+  upstream=$(git rev-parse -q --verify refs/remotes/origin/main 2>/dev/null) ||
+    fail "main ne bouge pas tant que refs/remotes/origin/main est absente (SEC0-13) : git fetch origin d'abord."
+  [ "$new" = "$upstream" ] ||
+    fail "main ne bouge que vers origin/main, par git pull --ff-only (SEC0-13) ; tout autre changement passe par une branche et une PR."
+done
+exit 0
