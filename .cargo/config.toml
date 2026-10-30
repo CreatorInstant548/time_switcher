@@ -1,0 +1,5 @@
+# Réglages communs à toutes les machines. Interdits ici (E7) : target-dir, linker, rustflags,
+# et les sections source, registries, patch et replace.
+
+[alias]
+xtask = "run --locked -p xtask --"

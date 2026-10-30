@@ -1,0 +1,48 @@
+# Interdictions du cœur : SEC0-22, architecture §9.2, corrections E1, E5 et m2.
+# Seules les crates d'hôte et d'outil peuvent s'en exempter localement (docs/dev/espace-travail.md).
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+disallowed-methods = [
+    { path = "chrono::Local::now", reason = "horloge murale : le cœur n'utilise que le temps de jeu entier", allow-invalid = true },
+    { path = "chrono::Utc::now", reason = "horloge murale : le cœur n'utilise que le temps de jeu entier", allow-invalid = true },
+    { path = "getrandom::fill", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "getrandom::fill_uninit", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "getrandom::getrandom", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "getrandom::u32", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "getrandom::u64", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "rand::random", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "rand::random_bool", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "rand::random_iter", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "rand::random_range", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "rand::random_ratio", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "rand::rng", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "rand::thread_rng", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "rand_core::SeedableRng::from_os_rng", reason = "graine tirée du système : dériver la graine de la clé du monde", allow-invalid = true },
+    { path = "std::env::args", reason = "le cœur ne lit pas la ligne de commande : passer la valeur par la configuration" },
+    { path = "std::env::var", reason = "le cœur ne lit pas l'environnement : passer la valeur par la configuration" },
+    { path = "std::env::var_os", reason = "le cœur ne lit pas l'environnement : passer la valeur par la configuration" },
+    { path = "std::env::vars", reason = "le cœur ne lit pas l'environnement : passer la valeur par la configuration" },
+    { path = "std::fs::File::create", reason = "aucune E/S dans le cœur : l'hôte lit et écrit les fichiers" },
+    { path = "std::fs::File::open", reason = "aucune E/S dans le cœur : l'hôte lit et écrit les fichiers" },
+    { path = "std::fs::OpenOptions::open", reason = "aucune E/S dans le cœur : l'hôte lit et écrit les fichiers" },
+    { path = "std::fs::read", reason = "aucune E/S dans le cœur : l'hôte lit et écrit les fichiers" },
+    { path = "std::fs::read_dir", reason = "aucune E/S dans le cœur : l'hôte lit et écrit les fichiers" },
+    { path = "std::fs::read_to_string", reason = "aucune E/S dans le cœur : l'hôte lit et écrit les fichiers" },
+    { path = "std::fs::write", reason = "aucune E/S dans le cœur : l'hôte lit et écrit les fichiers" },
+    { path = "std::hash::RandomState::new", reason = "graine aléatoire du système : itération non déterministe" },
+    { path = "std::time::Instant::elapsed", reason = "lit l'horloge : le cœur n'utilise que le temps de jeu entier" },
+    { path = "std::time::Instant::now", reason = "horloge : le cœur n'utilise que le temps de jeu entier" },
+    { path = "std::time::SystemTime::elapsed", reason = "lit l'horloge : le cœur n'utilise que le temps de jeu entier" },
+    { path = "std::time::SystemTime::now", reason = "horloge murale : le cœur n'utilise que le temps de jeu entier" },
+]
+
+disallowed-types = [
+    { path = "hashbrown::HashMap", reason = "itération non déterministe : utiliser BTreeMap", allow-invalid = true },
+    { path = "hashbrown::HashSet", reason = "itération non déterministe : utiliser BTreeSet", allow-invalid = true },
+    { path = "rand::rngs::OsRng", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "rand::rngs::ThreadRng", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
+    { path = "std::collections::HashMap", reason = "itération non déterministe : utiliser BTreeMap" },
+    { path = "std::collections::HashSet", reason = "itération non déterministe : utiliser BTreeSet" },
+]
