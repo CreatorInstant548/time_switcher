@@ -225,16 +225,31 @@ impl StreamKeys {
         }
     }
 
-    /// Clé du flux `stream`.
+    /// Clé du flux `stream`. `match` exhaustif à indices constants : un indice hors du tableau
+    /// serait refusé à la compilation (`unconditional_panic`), donc `get` ne panique jamais.
     pub const fn get(&self, stream: Stream) -> &StreamKey {
-        &self.streams[stream as usize]
+        let s = &self.streams;
+        match stream {
+            Stream::Ai => &s[0],
+            Stream::Combat => &s[1],
+            Stream::Social => &s[2],
+            Stream::Economy => &s[3],
+            Stream::Population => &s[4],
+            Stream::Weather => &s[5],
+            Stream::CityGen => &s[6],
+            Stream::CityServer => &s[7],
+            Stream::PopGen => &s[8],
+            Stream::PopHidden => &s[9],
+            Stream::Furnish => &s[10],
+            Stream::Identification => &s[11],
+        }
     }
 
     /// Graine cosmétique de `subject` pour l'usage `usage` (`cosmetic/<usage>`) et le créneau
     /// `slot` : BLAKE3 à clé, sous la racine cosmétique, de `usage ‖ subject (u64 LE) ‖ slot
-    /// (u64 LE)` (injectif : la fin a une longueur fixe). Le nom d'usage est une chaîne fixe
-    /// du système appelant.
-    pub fn cosmetic_seed(&self, usage: &str, subject: StableId, slot: u64) -> CosmeticSeed {
+    /// (u64 LE)` (injectif : la fin a une longueur fixe). L'usage est une chaîne `'static`,
+    /// fixée à la compilation par le système appelant.
+    pub fn cosmetic_seed(&self, usage: &'static str, subject: StableId, slot: u64) -> CosmeticSeed {
         let mut hasher = blake3::Hasher::new_keyed(&self.cosmetic.0);
         hasher.update(usage.as_bytes());
         hasher.update(&subject.to_snapshot_raw().to_le_bytes());

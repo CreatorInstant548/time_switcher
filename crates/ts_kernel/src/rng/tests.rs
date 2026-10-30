@@ -39,6 +39,37 @@ fn contexts_are_built_from_names() {
     assert!(!contexts.contains(COSMETIC_CONTEXT));
 }
 
+/// Rang attendu de chaque flux, par un `match` exhaustif sans joker : un flux ajouté oblige à
+/// écrire son rang ici, et un rang changé fait échouer le test.
+const fn expected_rank(s: Stream) -> usize {
+    match s {
+        Stream::Ai => 0,
+        Stream::Combat => 1,
+        Stream::Social => 2,
+        Stream::Economy => 3,
+        Stream::Population => 4,
+        Stream::Weather => 5,
+        Stream::CityGen => 6,
+        Stream::CityServer => 7,
+        Stream::PopGen => 8,
+        Stream::PopHidden => 9,
+        Stream::Furnish => 10,
+        Stream::Identification => 11,
+    }
+}
+
+#[test]
+fn ranks_are_stable() {
+    let keys = keys();
+    for s in Stream::ALL {
+        let rank = expected_rank(s);
+        assert!(rank < Stream::COUNT, "{s:?}");
+        assert_eq!(Stream::ALL[rank], s);
+        assert_eq!(s as usize, rank);
+        assert!(core::ptr::eq(keys.get(s), &keys.streams[rank]), "{s:?}");
+    }
+}
+
 #[test]
 fn stream_keys_are_blake3_derived_and_distinct() {
     let world = WorldKey::from_bytes(*b"time_switcher_t5");
@@ -115,7 +146,7 @@ fn draw_is_pure() {
 }
 
 /// Chi-deux sur 1 024 bacs : 1 023 degrés de liberté, moyenne 1 023, écart type ≈ 45,2. Les
-/// bornes à ± 6 écarts types refusent aussi une sortie trop régulière.
+/// bornes à ± 4 écarts types refusent aussi une sortie trop régulière.
 fn assert_uniform(values: impl Iterator<Item = u64>, bin: impl Fn(u64) -> usize, what: &str) {
     let mut counts = [0u64; 1024];
     let mut n = 0u64;
@@ -128,7 +159,7 @@ fn assert_uniform(values: impl Iterator<Item = u64>, bin: impl Fn(u64) -> usize,
         .iter()
         .map(|&c| (c as f64 - expected).powi(2) / expected)
         .sum();
-    assert!((752.0..1294.0).contains(&chi2), "{what} : chi-deux {chi2}");
+    assert!((842.0..1204.0).contains(&chi2), "{what} : chi-deux {chi2}");
 }
 
 #[test]
@@ -154,8 +185,23 @@ fn chi_square_over_a_million_draws() {
     );
 }
 
+/// Chi-deux conjoint : les 5 bits forts de deux tirages voisins forment un bac sur 1 024. Une
+/// dépendance entre voisins déséquilibre les bacs.
+#[test]
+fn joint_chi_square_of_neighbouring_draws() {
+    let keys = keys();
+    let key = keys.get(Stream::Population);
+    let joint = |a: u64, b: u64| (a >> 59) << 5 | b >> 59;
+    let slots =
+        (0..1_000_000u64).map(|i| joint(draw(key, sid(7), i, 0), draw(key, sid(7), i + 1, 0)));
+    assert_uniform(slots, |v| v as usize, "créneaux voisins, 5 × 5 bits");
+    let subjects =
+        (0..1_000_000u64).map(|i| joint(draw(key, sid(i), 3, 0), draw(key, sid(i + 1), 3, 0)));
+    assert_uniform(subjects, |v| v as usize, "sujets voisins, 5 × 5 bits");
+}
+
 /// Équilibre des bits de `a ^ b` sur 10⁵ paires : chaque bit vaut 1 dans la moitié des cas, à
-/// ± 6 écarts types (≈ 158), si les deux suites sont indépendantes.
+/// ± 4 écarts types (σ ≈ 158), si les deux suites sont indépendantes.
 fn assert_independent(pairs: impl Iterator<Item = (u64, u64)>, what: &str) {
     let mut ones = [0u32; 64];
     let mut n = 0u32;
@@ -169,7 +215,7 @@ fn assert_independent(pairs: impl Iterator<Item = (u64, u64)>, what: &str) {
     }
     for (bit, &count) in ones.iter().enumerate() {
         let deviation = (f64::from(count) - f64::from(n) / 2.0).abs();
-        assert!(deviation < 950.0, "{what} : bit {bit}, écart {deviation}");
+        assert!(deviation < 633.0, "{what} : bit {bit}, écart {deviation}");
     }
 }
 
