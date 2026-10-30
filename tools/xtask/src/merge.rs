@@ -107,7 +107,7 @@ fn drift_refusal(why: &str) -> String {
         format!(
             "merges suspended: the GitHub settings drift from {SETTINGS_FILE} (issue \
              repo-settings-drift). AS-38 exception: only a PR that changes {SETTINGS_FILE} alone, \
-             whose drift recomputed with the head's file is empty, goes through, with a conforming \
+             whose file passes the S2 invariants (AS-41) and leaves no drift, goes through, with a conforming \
              history and hooks and every other check green. Refused: {why}"
         ),
         "align tools/ci/repo-settings.json with GitHub in such a PR, or the orchestrator runs \
@@ -525,7 +525,9 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
     println!("  {count} fichier(s)");
     if repair {
         step("6a", "settings repair exception (AS-38)");
-        // Condition 2 only once condition 1 holds: the script reads the head's file.
+        // Condition 2 only once condition 1 holds: the script reads the head's file. The main
+        // copy's script (equal to origin/main, S4) first applies its S2 invariants to that file,
+        // which pin every protective value (AS-41): a file that records a weakening is refused.
         let why = if let Err(e) = repair_only(count, &paths) {
             Some(e)
         } else if !tree.iter().any(|f| f == SETTINGS_FILE) {
@@ -536,7 +538,8 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
             None
         } else {
             Some(format!(
-                "the drift recomputed with {SETTINGS_FILE} of the head {sha} is not empty"
+                "{SETTINGS_FILE} of the head {sha} fails the S2 invariants of origin/main's \
+                 script (AS-41), or the drift recomputed with it is not empty"
             ))
         };
         match why {
@@ -1256,6 +1259,14 @@ mod tests {
             "{calls:#?}"
         );
         assert!(!calls.iter().any(|c| c.contains("-Apply")), "{calls:#?}");
+        // AS-41: the script run is the main copy's (S2 of origin/main by S4), never the head's.
+        let sep = std::path::MAIN_SEPARATOR;
+        let main_script =
+            format!("main{sep}tools{sep}dev{sep}repo-settings.ps1 -Check -SourceCommit {SHA}");
+        assert!(
+            calls.iter().any(|c| c.ends_with(&main_script)),
+            "{calls:#?}"
+        );
         // Both approvals were read, though the sensitive list is not consulted for them.
         assert!(calls.iter().any(|c| c.contains("/issues/7/comments")));
     }
@@ -1276,6 +1287,11 @@ mod tests {
             (
                 json!([{ "filename": "tools/ci/Repo-Settings.json" }]),
                 "tools/ci/Repo-Settings.json\0".to_owned(),
+            ),
+            // AS-41: a head that also changes the script (S2 invariants) is no repair PR.
+            (
+                json!([{ "filename": SETTINGS_FILE }]),
+                format!("{SETTINGS_FILE}\0tools/dev/repo-settings.ps1\0"),
             ),
         ] {
             let more = vec![

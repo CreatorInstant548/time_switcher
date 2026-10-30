@@ -60,6 +60,55 @@ foreach ($k in $mutations.Keys) {
   Check "S2 refuse : $k" ((Get-Invalid $c).Count -gt 0)
 }
 
+# AS-41 : chaque champ figé, un par un : valeur affaiblie, valeur en texte, champ retiré ; plus un champ
+# inconnu par objet. Les valeurs sûres sont celles du script ; le fichier livré les respecte (cas ci-dessus).
+function Get-Weaker($V) {
+  if ($V -is [bool]) { return -not $V }
+  if ($V -is [int] -or $V -is [long]) { return $V + 1 }
+  if ($V -is [string]) { return "$V-x" }
+  return , @('merge')   # liste ou objet : remplacé par une autre liste
+}
+$pins = [ordered]@{
+  ruleset_main           = @({ param($c) $c.ruleset_main }, (Get-RulesetPins 'main'))
+  ruleset_pilotage       = @({ param($c) $c.ruleset_pilotage }, (Get-RulesetPins 'pilotage'))
+  pull_request           = @({ param($c) (Get-Rule $c 'ruleset_main' 'pull_request')['parameters'] }, $PullRequestParameters)
+  required_status_checks = @({ param($c) (Get-Rule $c 'ruleset_main' 'required_status_checks')['parameters'] }, $StatusCheckParameters)
+  repo                   = @({ param($c) $c.repo }, $RepoValues)
+}
+foreach ($k in $ActionsValues.Keys) { $pins["actions.$k"] = @({ param($c) $c.actions[$k] }.GetNewClosure(), $ActionsValues[$k]) }
+foreach ($s in $pins.Keys) {
+  $get, $safe = $pins[$s]
+  foreach ($f in @($safe.Keys)) {
+    $c = New-Cfg; (& $get $c)[$f] = Get-Weaker $safe[$f]
+    Check "AS-41 refuse $s.$f affaibli" ((Get-Invalid $c).Count -gt 0)
+    if ($safe[$f] -is [bool] -or $safe[$f] -is [int]) {
+      $c = New-Cfg; (& $get $c)[$f] = "$($safe[$f])".ToLowerInvariant()
+      Check "AS-41 refuse $s.$f en texte" ((Get-Invalid $c).Count -gt 0)
+    }
+    $c = New-Cfg; (& $get $c).Remove($f)
+    Check "AS-41 refuse $s.$f absent" ((Get-Invalid $c).Count -gt 0)
+  }
+  $c = New-Cfg; (& $get $c)['champ_inconnu'] = $false
+  Check "AS-41 refuse un champ inconnu dans $s" ((Get-Invalid $c).Count -gt 0)
+}
+# Listes figées : autres formes affaiblies ; paramètres neutres seulement avec leur valeur neutre.
+foreach ($m in @(@('squash', 'merge'), @('squash', 'rebase'), @(), @('Squash'))) {
+  $c = New-Cfg; (Get-Rule $c 'ruleset_main' 'pull_request')['parameters']['allowed_merge_methods'] = $m
+  Check "AS-41 refuse allowed_merge_methods $(J $m)" ((Get-Invalid $c).Count -gt 0)
+}
+foreach ($v in @(@{ x = @(@{ context = 'ci-ok'; integration_id = 15368 }, @{ context = 'autre' }) }, @{ x = @() })) {
+  $c = New-Cfg; (Get-Rule $c 'ruleset_main' 'required_status_checks')['parameters']['required_status_checks'] = $v.x
+  Check "AS-41 refuse required_status_checks $(J $v.x)" ((Get-Invalid $c).Count -gt 0)
+}
+$c = New-Cfg; (Get-Rule $c 'ruleset_main' 'pull_request')['parameters']['automatic_copilot_code_review_enabled'] = $false
+Check 'AS-41 accepte un paramètre neutre à sa valeur neutre' ((Get-Invalid $c).Count -eq 0)
+$c = New-Cfg; (Get-Rule $c 'ruleset_main' 'pull_request')['parameters']['required_reviewers'] = @(@{ minimum_approvals = 0 })
+Check 'AS-41 refuse un paramètre neutre sans sa valeur neutre' ((Get-Invalid $c).Count -gt 0)
+$c = New-Cfg; $c.ruleset_main['rules'] = @($c.ruleset_main['rules']) + @(@{ type = 'merge_queue' })
+Check 'AS-41 refuse une règle hors liste' ((Get-Invalid $c).Count -gt 0)
+$c = New-Cfg; (Get-Rule $c 'ruleset_pilotage' 'deletion')['parameters'] = @{}
+Check 'AS-41 refuse des paramètres sur une règle qui n''en a pas' ((Get-Invalid $c).Count -gt 0)
+
 # Comparaison : réponse de GitHub conforme, avec les champs ignorés ; puis écarts.
 $want = (New-Cfg).ruleset_main
 $got = ConvertFrom-Json (ConvertTo-Json -InputObject $want -Depth 30) -AsHashtable -Depth 50
@@ -167,7 +216,26 @@ try { $r = Read-Config $mark; $o = Read-Config 'origin/main' } finally { Pop-Loc
 Check 'Read-Config lit le commit source, pas le disque' ($r -is [Collections.IDictionary] -and $r['marque'] -eq 1 -and -not $r.Contains('disque'))
 Check 'Read-Config d''origin/main' ($o -is [Collections.IDictionary] -and $o.Contains('ruleset_main') -and -not $o.Contains('marque'))
 G -C $M checkout -q -- tools/ci/repo-settings.json
-Expect '-SourceCommit d''un commit hors de main' (Run-Settings $M $S @('-Check', '-SourceCommit', $mark)) 'distant origin hors de github\.com'
+$r = Run-Settings $M $S @('-Check', '-SourceCommit', $mark)
+Check "-SourceCommit : fichier du commit lu et refusé par S2 avant GitHub (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.Out -match 'sections attendues' -and $r.Out -notmatch 'distant')
+# AS-41 : un fichier affaibli dans la tête est refusé par S2, avec les invariants du script de la copie
+# principale (égal à origin/main par S4), même si la tête modifie aussi le script (refusé par ailleurs par
+# la condition 1 de merge).
+G -C $M switch -q -c affaibli main
+$weak = ConvertFrom-Json $text -AsHashtable -Depth 50; $weak.repo['allow_auto_merge'] = $true
+Set-Content (Join-Path $M 'tools/ci/repo-settings.json') (ConvertTo-Json $weak -Depth 30)
+G -C $M commit -q -am 'docs(essai): fichier affaibli'
+$weakSha = "$(& git -C $M rev-parse HEAD)".Trim()
+$lax = (Get-Content -Raw $S).Replace('function Get-Invalid($C) {', 'function Get-Invalid($C) { return , [Collections.Generic.List[string]]::new()')
+Set-Content (Join-Path $M 'tools/dev/repo-settings.ps1') $lax -NoNewline
+G -C $M commit -q -am 'docs(essai): script sans invariants'
+$laxSha = "$(& git -C $M rev-parse HEAD)".Trim()
+G -C $M switch -q main
+foreach ($x in @(@('fichier affaibli', $weakSha), @('fichier affaibli et script de la tête sans invariants', $laxSha))) {
+  $r = Run-Settings $M $S @('-Check', '-SourceCommit', $x[1])
+  Check "AS-41 -SourceCommit : $($x[0]) refusé (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.Out -match 'repo\.allow_auto_merge doit valoir false')
+}
+Check 'le script de la tête n''est pas celui de la copie principale' ((Get-Content -Raw $S) -cne $lax)
 Expect '-SourceCommit d''un commit sans le fichier' (Run-Settings $M $S @('-Check', '-SourceCommit', $nofile)) "absent du commit $nofile"
 G -C $M rm -q tools/ci/repo-settings.json; G -C $M commit -q -m 'docs(essai): sans fichier'; G -C $M push -q origin main
 Expect 'fichier absent d''origin/main' (Run-Settings $M $S @('-Check')) 'absent d''origin/main'

@@ -33,6 +33,35 @@ $NeutralParameters = @{
   automatic_copilot_code_review_enabled = 'false'   # pull_request : relecture automatique par Copilot, désactivée
   required_reviewers                    = '[]'      # pull_request : relecteurs obligatoires par motif, aucun
 }
+# S2, AS-41 : valeur sûre de CHAQUE champ du fichier, fixée ici (clés fermées). Seuls les paramètres neutres
+# ci-dessus peuvent s'ajouter, avec leur valeur neutre ; tout champ inconnu est refusé. Ainsi un fichier ne
+# peut entériner aucun affaiblissement fait à la main sur GitHub, même par une PR de réparation (AS-38).
+function Get-RulesetPins([string]$Branch) {
+  return [ordered]@{ name = $Branch; target = 'branch'; enforcement = 'active'; bypass_actors = @()
+                     conditions = @{ ref_name = @{ include = @("refs/heads/$Branch"); exclude = @() } } }
+}
+$RuleTypes = @{ main = @('deletion', 'non_fast_forward', 'pull_request', 'required_linear_history', 'required_status_checks')
+                pilotage = @('deletion', 'non_fast_forward') }
+$PullRequestParameters = [ordered]@{
+  allowed_merge_methods = @(, 'squash'); dismiss_stale_reviews_on_push = $false; require_code_owner_review = $false
+  require_extra_approval_for_unattributed_changes = $false; require_last_push_approval = $false
+  required_approving_review_count = 0; required_review_thread_resolution = $false
+}
+$StatusCheckParameters = [ordered]@{
+  do_not_enforce_on_create = $false; strict_required_status_checks_policy = $true
+  required_status_checks = @(, [ordered]@{ context = 'ci-ok'; integration_id = $ActionsAppId })   # R1
+}
+$RepoValues = [ordered]@{   # R2 : squash seulement, sans fusion automatique ; un PATCH ne change rien d'autre
+  allow_auto_merge = $false; allow_merge_commit = $false; allow_rebase_merge = $false; allow_squash_merge = $true
+  delete_branch_on_merge = $true; squash_merge_commit_title = 'PR_TITLE'
+}
+$ActionsValues = [ordered]@{   # R4, S5 ; patterns_allowed : liste fermée $Patterns, vérifiée à part
+  permissions = [ordered]@{ allowed_actions = 'selected'; enabled = $true; sha_pinning_required = $true }
+  selected_actions = [ordered]@{ github_owned_allowed = $false; verified_allowed = $false }
+  workflow = [ordered]@{ can_approve_pull_request_reviews = $false; default_workflow_permissions = 'read' }
+  fork_pr_workflows_private_repos = [ordered]@{ require_approval_for_fork_pr_workflows = $false; run_workflows_from_fork_pull_requests = $false
+                                                send_secrets_and_variables = $false; send_write_tokens_to_workflows = $false }
+}
 
 function Stop-With([int]$Code, [string]$Message) { [Console]::Error.WriteLine("repo-settings : $Message"); exit $Code }
 function Invoke-Git {
@@ -117,56 +146,62 @@ function Test-RefPattern([string]$Pattern, [string]$Branch, [string]$Default) {
   try { return "refs/heads/$Branch" -like ($Pattern -replace '\*\*/?', '*') } catch { return $true }   # motif illisible
 }
 
+# AS-41 : chaque clé de $Want doit valoir sa valeur sûre ; une clé de $Free est vérifiée ailleurs ; une clé de
+# $Neutral n'est permise qu'avec sa valeur neutre ; toute autre clé est refusée. Clés comparées avec la casse.
+function Add-Pinned($Obj, $Want, [string]$Path, [string[]]$Free, $Neutral, $Bad) {
+  if ($Obj -isnot [Collections.IDictionary]) { $Bad.Add("$Path : objet attendu"); return }
+  $keys = @($Obj.Keys | ForEach-Object { "$_" })
+  foreach ($k in $Want.Keys) {
+    if ($k -cnotin $keys -or (J $Obj[$k]) -cne (J $Want[$k])) { $Bad.Add("$Path.$k doit valoir $(J $Want[$k]) (S2, AS-41)") }
+  }
+  foreach ($k in $keys) {
+    if ($k -cin @($Want.Keys) -or $k -cin $Free) { continue }
+    if ($k -cin @($Neutral.Keys) -and (J $Obj[$k]) -ceq $Neutral[$k]) { continue }
+    $Bad.Add("$Path.$k : champ inconnu, ou paramètre neutre sans sa valeur neutre (S2, AS-41)")
+  }
+}
+
 # S2 : invariants du fichier ; motifs de refus (liste vide si le fichier est valide).
 function Get-Invalid($C) {
   $bad = [Collections.Generic.List[string]]::new()
   if ($C -isnot [Collections.IDictionary] -or (J @($C.Keys)) -cne (J @('actions', 'repo', 'ruleset_main', 'ruleset_pilotage'))) {
     $bad.Add('sections attendues : ruleset_main, ruleset_pilotage, repo, actions'); return , $bad
   }
-  $specs = @(@('ruleset_main', 'main', @('pull_request', 'required_status_checks', 'required_linear_history', 'non_fast_forward', 'deletion')),
-             @('ruleset_pilotage', 'pilotage', @('non_fast_forward', 'deletion')))
-  foreach ($s in $specs) {
-    $key, $branch, $needed = $s; $r = $C[$key]
+  foreach ($branch in 'main', 'pilotage') {
+    $key = "ruleset_$branch"; $r = $C[$key]
     if ($r -isnot [Collections.IDictionary]) { $bad.Add("$key : objet attendu"); continue }
-    if (-not "$($r['name'])" -or $r['target'] -cne 'branch' -or $r['enforcement'] -cne 'active') { $bad.Add("$key : name, target branch et enforcement active exigés") }
-    if ($r['bypass_actors'] -isnot [Collections.IList] -or @($r['bypass_actors']).Count -ne 0) { $bad.Add("$key : bypass_actors doit être une liste vide") }
-    if ((J $r['conditions']) -cne (J @{ ref_name = @{ include = @("refs/heads/$branch"); exclude = @() } })) { $bad.Add("$key : conditions.ref_name doit viser refs/heads/$branch seulement") }
+    # Contournement, enforcement, branche visée, nom : figés (R1, R3).
+    Add-Pinned $r (Get-RulesetPins $branch) $key @('rules') @{} $bad
     $types = @(@($r['rules']) | ForEach-Object { "$($_['type'])" })
-    foreach ($t in $needed) { if ($t -cnotin $types) { $bad.Add("$key : règle $t absente") } }
+    foreach ($t in $RuleTypes[$branch]) { if ($t -cnotin $types) { $bad.Add("$key : règle $t absente") } }
+    foreach ($t in $types) { if ($t -cnotin $RuleTypes[$branch]) { $bad.Add("$key : règle « $t » hors liste (AS-41)") } }
     if (@($types | Select-Object -Unique).Count -ne $types.Count) { $bad.Add("$key : règle en double") }
+    foreach ($rule in @($r['rules'])) {
+      $want = @(if ("$($rule['type'])" -cin 'pull_request', 'required_status_checks') { 'parameters', 'type' } else { 'type' })
+      if ($rule -isnot [Collections.IDictionary] -or (J @($rule.Keys)) -cne (J $want)) { $bad.Add("$key : règle $($rule['type']) : clés attendues $($want -join ', ')") }
+    }
   }
   if ($bad.Count) { return , $bad }
-  if ($C.ruleset_main['name'] -ceq $C.ruleset_pilotage['name']) { $bad.Add('les deux rulesets portent le même nom') }
   $rules = @($C.ruleset_main['rules'])
-  $pr = ($rules | Where-Object { $_['type'] -ceq 'pull_request' })['parameters']
-  if ($pr -isnot [Collections.IDictionary]) { $bad.Add('ruleset_main : pull_request sans parameters') }
-  $sc = ($rules | Where-Object { $_['type'] -ceq 'required_status_checks' })['parameters']
-  $checks = if ($sc -is [Collections.IDictionary]) { @($sc['required_status_checks']) } else { @() }
-  $ci = @($checks | Where-Object { $_ -is [Collections.IDictionary] -and $_['context'] -ceq 'ci-ok' })
-  if (-not ($sc -is [Collections.IDictionary] -and (Test-True $sc['strict_required_status_checks_policy']))) { $bad.Add('ruleset_main : strict_required_status_checks_policy doit valoir true') }
-  if ($ci.Count -eq 0 -or ($ci | Where-Object { -not (($_['integration_id'] -is [int] -or $_['integration_id'] -is [long]) -and $_['integration_id'] -eq $ActionsAppId) })) {
-    $bad.Add("ruleset_main : ci-ok requis, lié à GitHub Actions (integration_id $ActionsAppId, R1)")
+  foreach ($s in @(@('pull_request', $PullRequestParameters, $NeutralParameters), @('required_status_checks', $StatusCheckParameters, @{}))) {
+    $type, $want, $neutral = $s
+    $params = ($rules | Where-Object { $_['type'] -ceq $type })['parameters']
+    if ($params -isnot [Collections.IDictionary]) { $bad.Add("ruleset_main : $type sans parameters"); continue }
+    Add-Pinned $params $want "ruleset_main.$type" @() $neutral $bad
   }
-  $repo = $C.repo
-  # Clés fermées : un PATCH du dépôt ne peut rien changer d'autre (visibilité, branche par défaut…).
-  $repoKeys = 'allow_auto_merge', 'allow_merge_commit', 'allow_rebase_merge', 'allow_squash_merge', 'delete_branch_on_merge', 'squash_merge_commit_title'
-  if ($repo -isnot [Collections.IDictionary] -or (J @($repo.Keys)) -cne (J @($repoKeys))) { $bad.Add("repo : clés attendues $($repoKeys -join ', ')"); return , $bad }
-  if (-not ($repo -is [Collections.IDictionary] -and (Test-True $repo['allow_squash_merge']) -and (Test-False $repo['allow_merge_commit']) -and
-            (Test-False $repo['allow_rebase_merge']) -and (Test-False $repo['allow_auto_merge']))) {
-    $bad.Add('repo : squash seulement, sans fusion automatique (R2)')
-  }
+  if ($C.repo -isnot [Collections.IDictionary]) { $bad.Add('repo : objet attendu') } else { Add-Pinned $C.repo $RepoValues 'repo' @() @{} $bad }
   $act = $C.actions
   if ($act -isnot [Collections.IDictionary] -or (J @($act.Keys)) -cne (J @($ActionsApi.Keys)) -or
       @($act.Values | Where-Object { $_ -isnot [Collections.IDictionary] }).Count) {
     $bad.Add("actions : objets attendus $(@($ActionsApi.Keys) -join ', ')"); return , $bad
   }
-  $p = $act.permissions; $sel = $act.selected_actions; $wf = $act.workflow; $fork = $act.fork_pr_workflows_private_repos
-  if ($p['allowed_actions'] -cne 'selected' -or -not (Test-True $p['sha_pinning_required'])) { $bad.Add('actions.permissions : allowed_actions selected et sha_pinning_required true exigés (R4)') }
-  if (-not (Test-False $sel['github_owned_allowed']) -or -not (Test-False $sel['verified_allowed'])) { $bad.Add('actions.selected_actions : github_owned_allowed et verified_allowed doivent valoir false') }
-  $pats = @($sel['patterns_allowed'])
+  foreach ($k in $ActionsValues.Keys) {
+    $free = if ($k -ceq 'selected_actions') { @('patterns_allowed') } else { @() }
+    Add-Pinned $act[$k] $ActionsValues[$k] "actions.$k" $free @{} $bad
+  }
+  $pats = @($act.selected_actions['patterns_allowed'])
+  if ($act.selected_actions['patterns_allowed'] -isnot [Collections.IList]) { $bad.Add('actions.selected_actions.patterns_allowed : liste attendue') }
   foreach ($x in $pats) { if ("$x" -cnotin $Patterns) { $bad.Add("actions.selected_actions : motif « $x » hors de la liste fermée de SEC0-30") } }
-  if ($wf['default_workflow_permissions'] -cne 'read' -or -not (Test-False $wf['can_approve_pull_request_reviews'])) { $bad.Add('actions.workflow : jeton en lecture et aucune approbation par les Actions (R4)') }
-  if (-not (Test-False $fork['run_workflows_from_fork_pull_requests'])) { $bad.Add('actions.fork_pr_workflows_private_repos : aucun workflow pour les PR d''un fork (S5)') }
   # Chaque action des workflows d'origin/main doit rester permise, sinon -Apply casserait la CI.
   foreach ($f in @(Invoke-Git ls-tree --name-only origin/main .github/workflows/) | Where-Object { $_ -match '\.ya?ml$' }) {
     foreach ($m in [regex]::Matches((@(Invoke-Git show "origin/main:$f") -join "`n"), '(?m)^[\s-]*uses:\s*[''"]?([^\s''"#]+)')) {
@@ -262,16 +297,21 @@ if ($Source -cne 'origin/main') {
   & git cat-file -e "$($Source):$File" 2>$null
   if ($LASTEXITCODE) { Stop-With 2 "$File absent $From : rien à comparer" }
 }
+# S2 avant tout appel à GitHub, avec les invariants de ce script, celui d'origin/main (S4) : un fichier
+# refusé est déjà un écart, et GitHub n'est pas comparé à des valeurs refusées. Vaut aussi pour le
+# fichier de -SourceCommit : la voie de réparation ne peut pas entériner un affaiblissement (AS-41).
+$cfg = Read-Config $Source
+$invalid = if ($null -eq $cfg) { [Collections.Generic.List[string]]@("$File : JSON illisible") } else { Get-Invalid $cfg }
+foreach ($x in $invalid) { Write-Host "  REFUS du fichier : $x" }
+if ($invalid.Count) {
+  if ($Apply) { Stop-With 1 "$File d'origin/main refusé (S2) : rien n'est appliqué" }
+  Write-Host "repo-settings -Check : $($invalid.Count) écart(s), $File $From refusé (S2)"; exit 1
+}
 $url = "$(Invoke-Git config --get remote.origin.url)".Trim()
 if ($url -notmatch '^(https://github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(\.git)?$') { Stop-With 2 "distant origin hors de github.com : $url" }
 $Slug = $Matches[2]
 
-$cfg = Read-Config $Source
-$invalid = if ($null -eq $cfg) { [Collections.Generic.List[string]]@("$File : JSON illisible") } else { Get-Invalid $cfg }
-foreach ($x in $invalid) { Write-Host "  REFUS du fichier : $x" }
-
 if ($Apply) {
-  if ($invalid.Count) { Stop-With 1 "$File d'origin/main refusé (S2) : rien n'est appliqué" }
   Write-Host "repo-settings -Apply ($Slug, $File d'origin/main)"
   $list = @((Get-Api '/rulesets?includes_parents=false&per_page=100').Json)
   foreach ($key in 'ruleset_main', 'ruleset_pilotage') {
@@ -283,8 +323,7 @@ if ($Apply) {
   foreach ($k in $ActionsApi.Keys) { Invoke-Write 'PUT' $ActionsApi[$k] $cfg.actions[$k] }
 }
 
-# Fichier refusé : c'est déjà un écart, et GitHub n'est pas comparé à des valeurs refusées.
-$drift = if ($invalid.Count) { @($invalid) } else { @(Get-Drift $cfg) }
+$drift = @(Get-Drift $cfg)
 foreach ($d in $drift) { Write-Host "  ÉCART : $d" }
 $mode = if ($Apply) { '-Apply puis -Check' } else { '-Check' }
 if (@($drift).Count) { Write-Host "repo-settings $mode : $(@($drift).Count) écart(s) avec $File $From"; exit 1 }

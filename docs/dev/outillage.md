@@ -202,6 +202,7 @@ En cas d'erreur interne, la commande est refusée.
 - **[2] `verify-main`** (origine de chaque commit de `main`, réglages GitHub) et **`hooks verify`** : une anomalie suspend les fusions.
   - **Exception de réparation (AS-38)** : un écart des réglages **seul** (historique et crochets conformes) laisse passer une **PR de réparation**, vérifiée à l'étape **[6a]**, juste après la liste des fichiers. Il faut que toutes ces conditions soient réunies :
     - la PR ne modifie **que** `tools/ci/repo-settings.json`, selon la liste complète de l'étape [6] : les deux chemins d'un renommage, le diff local compris. La comparaison se fait octet par octet : une variante de casse ou un nom court 8.3 du fichier est un autre chemin (G8, B1) ;
+    - le fichier de la tête passe les **invariants S2** du script de la copie principale, égal à `origin/main` (S4), et jamais ceux de la PR. Ces invariants fixent la valeur sûre de chaque champ (AS-41, §6.2) : la voie de réparation ne peut donc pas entériner un affaiblissement fait à la main sur GitHub ;
     - l'écart **recalculé avec le fichier de la tête** de la PR (`repo-settings.ps1 -Check -SourceCommit <tête>`) est vide ;
     - tous les autres contrôles passent : `ci-ok` sur la tête, PR à jour, `review-ok` et `archsec-ok`, exigés même hors de la liste sensible.
 
@@ -293,13 +294,29 @@ C'est un chemin sensible. Il a quatre sections :
 Deux modes exclusifs, plus la forme réservée ci-dessous ; tout autre argument est refusé (code 2).
 
 **Forme réservée `-Check -SourceCommit <sha>` (AS-38)** : `-Check`, mais avec le fichier du commit `<sha>`, lu par `git show <sha>:tools/ci/repo-settings.json`, jamais sur le disque. Seul `cargo xtask merge` la lance, en processus enfant, pour la tête d'une PR de réparation (§3.3, étape [6a]). Le garde la refuse aux sessions (§3.2).
-- Le SHA doit compter exactement 40 caractères hexadécimaux minuscules, et le commit doit être présent localement après `git fetch`. Sinon : code 2.
+- Le SHA doit compter exactement 40 caractères hexadécimaux minuscules, le commit doit être présent localement après `git fetch`, et le fichier doit exister dans ce commit. Sinon : code 2.
+- Le fichier passe d'abord les invariants S2 de ce script, celui de la copie principale (AS-41) : un fichier affaibli donne le code 1, sans appel à GitHub.
 - Les préalables S4 restent tous en place, et les workflows comparés restent ceux d'`origin/main`.
 - `-Apply` n'a pas de forme `-SourceCommit`.
 
-- **Source** : le fichier est lu par `git show origin/main:tools/ci/repo-settings.json` (ou `<sha>:…` pour la forme réservée), **jamais sur le disque**. Une modification d'un worktree ne peut donc pas être appliquée avant d'avoir été fusionnée. Ordre des préalables, chacun avec son message (code 2) : arguments, préalables S4 ci-dessous, `git fetch origin` et égalité avec `origin/main`, présence du fichier sur `origin/main` (sinon il le dit et s'arrête), et enfin distant `origin` sur `github.com`.
+- **Source** : le fichier est lu par `git show origin/main:tools/ci/repo-settings.json` (ou `<sha>:…` pour la forme réservée), **jamais sur le disque**. Une modification d'un worktree ne peut donc pas être appliquée avant d'avoir été fusionnée.
+- **Ordre des préalables**, chacun avec son message (code 2) :
+  1. arguments (et, pour la forme réservée, format du SHA) ;
+  2. préalables S4 ci-dessous ;
+  3. `git fetch origin` et égalité avec `origin/main` ;
+  4. présence du fichier sur `origin/main` (sinon il le dit et s'arrête) ;
+  5. pour la forme réservée : présence du commit `<sha>` après `git fetch`, puis présence du fichier dans ce commit ;
+  6. **invariants S2** du fichier lu : un fichier refusé s'arrête là, avec le code 1, avant tout appel à GitHub ;
+  7. enfin, distant `origin` sur `github.com`.
 - **Préalables** (S4) : lancé depuis la racine de la copie principale, script de cette copie (pas celui d'un worktree), copie propre, sur `main`, égale à `origin/main`. Sinon : code 2.
-- **Invariants codés dans le script** (S2). Le fichier est refusé s'il manque à `ruleset_main` l'une des règles `pull_request`, `required_status_checks` (`ci-ok`, `strict`, `integration_id` 15368), `required_linear_history`, `non_fast_forward`, `deletion` ; si un `bypass_actors` n'est pas vide ; si un *ruleset* vise une autre branche ; si `repo` contient une autre clé que ses six clés (visibilité, branche par défaut… ne passent jamais par `-Apply`), permet autre chose que le squash ou la fusion automatique ; si `allowed_actions` n'est pas `selected`, si `sha_pinning_required` manque, si un motif sort de la liste fermée, si le jeton passe en écriture, si les Actions peuvent approuver, ou si les workflows des *forks* sont permis. Il est refusé aussi si une action utilisée par les workflows d'`origin/main` n'est couverte par aucun motif (`-Apply` casserait la CI). Affaiblir une règle demande donc de modifier aussi le script.
+- **Invariants codés dans le script** (S2, élargis par AS-41). **Chaque champ du fichier a sa valeur sûre fixée dans le script**, et les clés sont fermées : un champ inconnu, absent, d'un autre type (`"false"` en texte) ou d'une autre valeur est refusé. Seuls les paramètres neutres d'AS-30 (`automatic_copilot_code_review_enabled: false`, `required_reviewers: []`) peuvent s'ajouter, et seulement avec leur valeur neutre. Les tables du script couvrent :
+  - les deux *rulesets* : `name`, `target: branch`, `enforcement: active`, `bypass_actors: []`, `conditions` qui visent la seule branche ; règles exactement `deletion`, `non_fast_forward`, `required_linear_history`, `pull_request`, `required_status_checks` pour `main`, et `deletion`, `non_fast_forward` pour `pilotage`, sans doublon, sans paramètres pour les trois premières ;
+  - `pull_request` : `allowed_merge_methods: ["squash"]`, `required_approving_review_count: 0`, `dismiss_stale_reviews_on_push`, `require_code_owner_review`, `require_last_push_approval`, `required_review_thread_resolution` et `require_extra_approval_for_unattributed_changes` à `false` ;
+  - `required_status_checks` : `strict_required_status_checks_policy: true`, `do_not_enforce_on_create: false`, et exactement `[{context: ci-ok, integration_id: 15368}]` ;
+  - `repo` : ses six clés (visibilité, branche par défaut… ne passent jamais par `-Apply`), squash seulement, sans fusion automatique, branche supprimée après fusion, titre `PR_TITLE` ;
+  - Actions : `enabled`, `allowed_actions: selected`, `sha_pinning_required`, ni actions de GitHub ni vérifiées, motifs dans la liste fermée, jeton en lecture, aucune approbation par les Actions, et les quatre clés des *forks* à `false`.
+
+  Le fichier est refusé aussi si une action utilisée par les workflows d'`origin/main` n'est couverte par aucun motif (`-Apply` casserait la CI). Affaiblir une règle, ou changer une valeur, demande donc de modifier aussi le script. Un test par champ le vérifie (`test-repo-settings.ps1`).
 - **`-Check`** (lecture seule, `GET` seulement) compare GitHub au fichier et affiche chaque écart, avec la valeur attendue et la valeur lue ; code 1 s'il y en a un. Il signale :
   - un fichier refusé par les invariants ;
   - un *ruleset* attendu absent, en double, ou différent (règles indexées par type, listes comparées sans tenir compte de l'ordre) ;
