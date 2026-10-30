@@ -53,7 +53,7 @@ Partage des décisions : les règles de jeu reviennent à la conception, les dé
     - Jamais `git add -A` ni `git commit -a`. Le worktree est partagé : ces commandes emporteraient les modifications en cours des autres sessions.
     - Si le dépôt distant a avancé, faire `git pull --rebase origin pilotage` avant de pousser. Pas de PR, et la CI ne tourne pas sur cette branche.
   - *Pourquoi :*
-    - les carnets changent plusieurs fois par jour. Les faire passer par des PR userait les 2 000 minutes de CI et obligerait le responsable développement à fusionner les carnets des autres ;
+    - les carnets changent plusieurs fois par jour. Les faire passer par des PR userait les minutes de CI (3 000 par mois avec Pro) et obligerait le responsable développement à fusionner les carnets des autres ;
     - hors de Git, ils n'auraient ni historique ni copie de sauvegarde.
 - **Relève d'une session** : quand une session de niveau 1 ou 2 a été résumée deux fois, ou qu'elle s'embrouille, elle met son carnet à jour, puis une session neuve prend le relais à partir du carnet. L'orchestrateur suit la même règle.
 - **Un seul rédacteur par fichier.** Avant Git, deux sessions ne modifient jamais le même fichier ; après, chaque branche ne touche que les fichiers de sa tâche.
