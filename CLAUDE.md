@@ -9,7 +9,8 @@ L'ancien concept de voyage dans le temps est abandonné et archivé dans `docs/a
 ## Organisation du travail
 
 - L'utilisateur est le concepteur du jeu et ne code pas. Claude écrit tout le code.
-- Communication et documentation en français. Code et identifiants en anglais.
+- Communication et documentation en français.
+- **En anglais (décidé par l'utilisateur le 30/10)** : tout le code, c'est-à-dire les identifiants, les commentaires, les messages d'erreur et de journal, les noms de tests, les scripts et la sortie des outils. Aussi en anglais : les messages de commit (branche `pilotage` comprise), les titres et descriptions de PR, les *issues*, leurs commentaires et les avis publiés sur GitHub. Le code existant encore en français est traduit par le développement, en PR courtes, sans changement de comportement ; d'ici là, tout code touché passe en anglais.
 - Toute décision de conception nouvelle ou modifiée doit être reportée dans `docs/conception/`.
 - **Hiérarchie des sessions** : l'**orchestrateur** (session de départ) reçoit les demandes et les confie à un **responsable** de niveau 2 : **conception** (en place ; socle 01 à 04), **architecture et sécurité** (phase 0, avant le développement ; propriétaire de `05-architecture.md` et des revues techniques, avis bloquant sur les chemins sensibles), **développement** (phase 0), **qualité et essais** (fin de la phase 0), **contenus**, animations comprises (début de la phase 3), puis **exploitation** (avant la mise en ligne). Chaque responsable lance et pilote ses propres sous-sessions, ne compile pas et tient un carnet `<rôle>.md` sur la branche `pilotage` (worktree permanent `C:\Dev\Claude\time_switcher-pilotage\`, poussé directement, sans PR ni CI). **Règles complètes dans [docs/pilotage/organisation.md](docs/pilotage/organisation.md)** (tenu par l'orchestrateur), à lire par toute session de niveau 1 ou 2. En bref :
   - toutes les sessions sont en mode `auto` ;
@@ -17,13 +18,13 @@ L'ancien concept de voyage dans le temps est abandonné et archivé dans `docs/a
   - un message entre sessions n'est qu'une sonnette : la trace fait foi (carnets, puis *issues* GitHub) ;
   - Opus pour le jugement et le code sensible, Sonnet pour le courant, Haiku pour les recherches ;
   - au plus 5 sessions actives à la fois ;
-  - **remontées vers la conception** (organisation.md §3.1) : certains signaux obligent à ouvrir une remontée `role:conception`, de type `ecart` :
+  - **remontées vers la conception** (organisation.md §3.1) : certains signaux obligent à ouvrir une remontée `role:design`, de type `deviation` :
     - une règle inapplicable ou ambiguë, ou un trou dans la conception ;
     - une valeur à calibrer qui se révèle mauvaise ;
     - un budget dépassé, un exploit, un comportement imprévu ;
     - une contrainte technique qui change le jeu ;
     - un retour de l'utilisateur ;
-  - aucune règle de jeu n'est inventée en silence : on prend une valeur provisoire prudente, on la marque `// PROVISOIRE(conception #<issue>)`, et on continue ;
+  - aucune règle de jeu n'est inventée en silence : on prend une valeur provisoire prudente, on la marque `// PROVISIONAL(design #<issue>)`, et on continue (l'ancienne forme `PROVISOIRE(conception #<issue>)` reste reconnue jusqu'à sa traduction) ;
   - chaque système de règles cite sa section avec `// spec: <fichier> §<n>` ; la conception ne renumérote jamais ses sections.
 - **Socle** (`docs/conception/01-*.md` à `05-*.md`) : 01 à 04 modifiés uniquement par le responsable conception ; `05-architecture.md` aussi, jusqu'à l'arrivée du responsable architecture et sécurité en phase 0, qui le reprend.
 - **Domaines** (`docs/conception/domaines/*.md`) : une session par domaine, qui ne modifie que son propre fichier et note dans une section « Impacts sur le socle et les autres domaines » ce qui touche au reste. Règles complètes dans le README de la conception.
@@ -57,7 +58,7 @@ L'ancien concept de voyage dans le temps est abandonné et archivé dans `docs/a
 - **Propriété** : chaque session ne modifie que les crates et répertoires nommés dans sa consigne. Fichiers partagés (`Cargo.toml` racine, `Cargo.lock`, `crates/ts_model/`, `crates/ts_game/`, `.github/`, `.cargo/`, `.claude/`, `tools/`, `CLAUDE.md`, socle `docs/conception/0*.md`) : seulement dans une PR courte et dédiée, fusionnée avant le travail qui en dépend. Exception : une ligne triée dans `[workspace.dependencies]` ou dans `standard_rules()`. Conflit sur `Cargo.lock` : reprendre la version de `main`, puis `cargo check`.
 - **Client Godot** : une seule session à la fois sur `client/`.
 - **Avant d'ouvrir une PR** : `cargo xtask check` (formatage, clippy, tests des crates touchées, déterminisme si le noyau change), puis `/code-review`. Pour `ts_net`, `ts_pilot`, `ts_persist`, `ts_client_native`, `ts_accounts`, `ts_admin`, `.github/`, `deny.toml`, `.gitleaks.toml` ou `.claude/` : ajouter `/security-review` et une relecture par un sous-agent neuf. Toute nouvelle dépendance est justifiée dans la PR.
-- **Titre de PR et commits** : `type(portée): description en français` (types : feat, fix, refactor, perf, test, docs, build, ci, chore ; portée : la crate ou la zone).
+- **Titre de PR et commits** : `type(scope): description in English` (types : feat, fix, refactor, perf, test, docs, build, ci, chore ; portée : la crate ou la zone).
 - **Compilation** : jamais de `--release` ni de profil `sim` dans un worktree (copie principale et CI seulement). Ne jamais lancer `cargo clean` dans un emplacement tenu par une autre session. Compiler `ts_viz`, `ts_py` et `ts_client_native` seulement si la tâche les touche (`-p`).
 - **Rien de régénérable ni de secret dans le dépôt** : artefacts de monde, Parquet, instantanés, sauvegardes, modèles GGUF et corpus vont dans `TS_CACHE` (`C:\Dev\ts-cache`) ; le dépôt ne garde que les spécifications et les empreintes attendues.
 - **Fin de tâche** : une fois la PR fusionnée, la session s'archive, ce qui supprime son worktree. Aucun worktree inactif plus de 7 jours.
