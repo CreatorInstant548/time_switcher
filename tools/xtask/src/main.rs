@@ -9,6 +9,7 @@ mod exemptions;
 mod manifests;
 mod metadata;
 mod scan;
+mod spec_map;
 mod steps;
 mod sys;
 mod workflows;
@@ -116,7 +117,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
 }
 
 fn main() -> ExitCode {
-    let opts = match parse(&sys::args()) {
+    let args = sys::args();
+    if args.first().map(String::as_str) == Some("spec-map") {
+        return spec_map::run(&args[1..]);
+    }
+    let opts = match parse(&args) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{e}");

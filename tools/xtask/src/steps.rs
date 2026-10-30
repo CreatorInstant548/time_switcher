@@ -73,7 +73,7 @@ impl Ctx {
     /// Fichiers suivis, plus non suivis et non ignorés (F2). Chacun doit être un fichier ordinaire
     /// présent sur le disque : un lien (hors `SYMLINK_EXEMPT`), un fichier suivi mais supprimé ou
     /// un autre objet font échouer toute étape qui lit l'arbre (I3).
-    fn files(&self) -> Result<&[String], String> {
+    pub(crate) fn files(&self) -> Result<&[String], String> {
         let init = || {
             let files = self.git_paths(&["ls-files", "-z", "-co", "--exclude-standard"])?;
             let mut errors = Vec::new();
@@ -122,7 +122,7 @@ impl Ctx {
             .map_err(Clone::clone)
     }
 
-    fn read(&self, rel: &str) -> Result<Vec<u8>, String> {
+    pub(crate) fn read(&self, rel: &str) -> Result<Vec<u8>, String> {
         sys::read(&self.root.join(rel))
     }
 }
@@ -645,9 +645,10 @@ pub fn workflows(cx: &Ctx) -> Outcome {
     }
 }
 
-pub fn spec_map(_: &Ctx) -> Outcome {
-    println!("  AVERTISSEMENT : la sous-commande spec-map n'existe pas encore (T4).");
-    Outcome::Skipped("spec-map absent (T4)".to_owned())
+/// `spec-map check` : renvois du code vers la conception et vers `origin/pilotage` (T4).
+pub fn spec_map(cx: &Ctx) -> Outcome {
+    let (errors, note) = tri!(crate::spec_map::check(cx));
+    from_errors(errors, note)
 }
 
 #[cfg(test)]

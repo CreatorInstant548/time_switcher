@@ -1,0 +1,4 @@
+# Renvois « spec: » faux hors de tools/xtask/, tolérés le temps de les corriger (H3).
+# Une entrée par ligne : fichier | ligne | texte du renvoi | raison | #issue (role:dev)
+# La liste ne peut que diminuer : une entrée dont le renvoi est corrigé ou a disparu fait échouer
+# spec-map check. Elle doit être vide à la fin de la phase 0. Vide à ce jour.
