@@ -6,7 +6,7 @@
 
 - Socle 01 à 04, domaines et README de la conception.
 - 05-architecture.md et les revues techniques (architecture, sécurité, génération, développement par agents) : **repris par le responsable architecture et sécurité** (`local_83246e4f-58ef-4aba-85ca-86a56a5407e8`), arrivé en phase 0. Toute décision technique qui change le jeu passe encore par moi.
-- **Depuis le dépôt GitHub** : mes changements de conception passent par un worktree, une branche `claude/<sujet>` et une PR, fusionnée par le responsable développement ; les demandes entre rôles sont des *issues* (`role:conception`) ; ce carnet vit sur la branche `pilotage` (pull --rebase, commit, push).
+- **Depuis le dépôt GitHub** : mes changements de conception passent par un worktree, une branche `claude/<sujet>` et une PR, fusionnée par le responsable développement ; les demandes entre rôles sont des *issues* (`role:conception`) ; ce carnet vit sur la branche `pilotage` : **`git commit -- conception.md`** puis `git push origin pilotage`, jamais `git add -A` ni `git commit -a`, car le worktree est partagé (le commit f28c006 a emporté par erreur `developpement.md`, déjà indexé par le responsable développement : contenu intact, non annulé). Mes sessions de domaine n'écrivent pas sur `pilotage`.
 
 ## État au 30/10/2026
 
@@ -102,6 +102,7 @@
 | 30/10 | Utilisateur (dans cette session) | Boucle : tant que les trois revues ne sont pas satisfaites, la conception n'est pas finie et la phase 0 ne commence pas | Oui (décidé), avec une borne de 3 tours ; README, point 6 |
 | 30/10 | Orchestrateur | Tableau « Attendus mesurables » avant la fin de la conception | Fait : `docs/conception/attendus-mesurables.md` (M1 à M36) |
 | 30/10 | Responsable architecture et sécurité | Réponse à direction-artistique §12.9 (`architecture-securite.md` §8) : avis favorable, conditions techniques ; contrainte : la déclaration des contenus produits par IA reste globale (S7) | Accepté (décidé) ; direction-artistique v0.4.2 en [PR #4](https://github.com/CreatorInstant548/time_switcher/pull/4), relue et conforme, signalée au responsable développement pour la fusion |
+| 30/10 | Orchestrateur | Sur `pilotage`, ne commiter que son fichier (`git commit -- conception.md`) ; PR #4 fusionnée sans `ci-ok` par le responsable développement (règle de démarrage) | Appliqué |
 
 ## Sessions pilotées
 
