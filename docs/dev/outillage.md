@@ -193,22 +193,24 @@ Une affectation en tête (`$x = …`, `$env:X = …`) n'est pas une commande tir
 
 En cas d'erreur interne, la commande est refusée.
 
-### 3.3 Fusion : `tools/dev/merge-pr.ps1 <PR>` (provisoire)
+### 3.3 Fusion : `cargo xtask merge <PR>`
 
-**Provisoire, à supprimer par T3**, qui le remplace par `cargo xtask merge` : il ne doit rester qu'un seul chemin de fusion. C'est un chemin sensible, validé par archi-sécu, et la seule fusion permise par le garde. Dans l'ordre :
-1. Il est lancé depuis la **copie principale**, c'est-à-dire le script de la copie principale, jamais une copie modifiée dans un worktree. La copie principale doit être propre et sur `main` ; elle est mise à jour par `git pull --ff-only`.
-2. **Crochets** : `install-hooks.ps1 -Verify` doit réussir. Il vérifie l'empreinte du jeu et la valeur effective dans chaque copie de travail (SEC0-12, I6). Le contrôle de l'origine (`origin-check`, SEC0-17) reste à T3.
-3. `gh pr view` : PR ouverte, base `main`, hors brouillon, `MERGEABLE`, et en retard de 0 commit sur `main`.
-4. **Liste complète des fichiers**, par l'API `pulls/<n>/files` paginée. Un renommage compte ses deux chemins, `filename` et `previous_filename` (I10). Le nombre de fichiers doit égaler `changedFiles`, sinon la fusion est refusée. *Pourquoi : `gh pr view --json files` s'arrête à 100 fichiers (I5), et `gh pr diff --name-only` ne donne pas l'ancien chemin d'un renommage.*
-5. **Chemin sensible** : la PR doit porter les commentaires `review-ok: <sha de tête>` **et** `archsec-ok: <sha de tête>`. Sont sensibles :
-   - `.claude/`, `.github/`, `.cargo/`, `tools/`, `fuzz/`, `deny.toml`, `.gitleaks.toml`, `rust-toolchain.toml` ;
-   - les crates `ts_persist`, `ts_net`, `ts_pilot`, `ts_client_native`, `ts_accounts`, `ts_admin`, `ts_protocol` et `ts_view` ;
-   - un `Cargo.toml` dont le diff mentionne `[features]` ou `[profile…]` ;
-   - un `Cargo.lock` dont le diff ajoute une ligne `name = "…"`, c'est-à-dire une crate.
-6. **`ci-ok`** vert sur le SHA de tête, **exigé dès que `.github/workflows/ci.yml` existe sur `origin/main`**. Avant cela, le script avertit et rappelle de noter la sortie des vérifications dans le carnet du développement. Un `ci-ok` présent et rouge refuse toujours.
-7. `gh pr merge <PR> --squash --delete-branch --match-head-commit <sha>`, puis `git pull --ff-only`.
+`cargo xtask merge` a remplacé `merge-pr.ps1` (T3) : c'est le **seul chemin de fusion**. C'est un chemin sensible, validé par archi-sécu. Le détail est dans [xtask](xtask.md) §6. Dans l'ordre, le premier contrôle qui échoue arrête tout. Les numéros sont ceux qu'affiche la commande (`[1]`, `[3-4]`, etc.) :
+- **[1] Copie principale** propre, sur `main`, mise à jour par `git pull --ff-only`. Le binaire doit être construit depuis `main` (J2). La commande est refusée en mode CI.
+- **[2] `verify-main`** (origine de chaque commit de `main`, réglages GitHub) et **`hooks verify`** : une anomalie suspend les fusions.
+- **[3-4] État de la PR** : ouverte, base `main`, hors brouillon, `MERGEABLE`, en retard de 0 commit sur `main`, titre conforme (A31).
+- **[5] `ci-ok`** vert sur le SHA de tête, venu de `ci.yml` (G3).
+- **[6] Liste complète des fichiers**, par l'API `pulls/<n>/files` paginée. Un renommage compte ses deux chemins (I10). Le nombre de fichiers doit égaler `changedFiles`. L'arbre de tête est refusé s'il contient des chemins égaux à la casse près, ou un chemin non ASCII sous un chemin sensible (B1).
+- **[7] Chemins sensibles** : la liste `tools/ci/sensitive-paths.txt` d'`origin/main` (G8).
+- **[8-9] Workflows** de la tête, contrôlés avec le code de `main` (J1), et actions épinglées (J8).
+- **[10] Approbations**, pour un chemin sensible : `review-ok` **et** `archsec-ok`, chacun en première ligne d'un commentaire de la PR :
+  - sur le SHA de tête ;
+  - **ou reportés d'un SHA antérieur `A` de la même PR**, après une simple mise à jour depuis `main` (AS-40). Toutes les conditions W1 à W7 doivent être remplies ([xtask](xtask.md) §6.1). `merge` affiche alors `<avis> carried over from <A> to the head <tête> (AS-40, W1 to W5 hold)`.
 
-`-DryRun` fait tous les contrôles en lecture, sans fusion ; il est permis depuis un worktree.
+  Une **résolution de conflit** dans un fichier de la PR, un fichier ajouté ou retiré, ou un changement de `main` dans un fichier de la PR empêchent le report : l'approbation doit alors être **reposée sur la tête**. Le refus nomme la condition qui a échoué.
+- **[11] Fusion** : l'état de la PR est relu. Puis `gh pr merge <PR> --squash --delete-branch --match-head-commit <sha>` et `git pull --ff-only`.
+
+`--dry-run` fait tous les contrôles, sans fusion ; hors de la copie principale, son résultat est au mieux « OK sauf J2 ».
 
 ### 3.4 Coût, limites et risques connus
 

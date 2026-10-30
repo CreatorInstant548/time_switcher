@@ -4,6 +4,7 @@
 //! spec: carnet architecture-securite.md SEC0-15, SEC0-17 ; §9.6 G3 ; §9.8 J3, J5
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -21,6 +22,37 @@ pub type Output = (Option<i32>, Vec<u8>, String);
 /// qui prouve par exemple qu'un `--dry-run` n'appelle jamais `gh pr merge` (AS-23 point 2).
 pub trait Run {
     fn run(&self, dir: &Path, prog: &str, args: &[&str]) -> Result<Output, String>;
+
+    /// Wait before retrying a GitHub read (V4); tests replace it so they never sleep.
+    fn pause(&self, d: Duration) {
+        sys::sleep(d);
+    }
+}
+
+/// HTTP statuses of a failed `gh api` read that are retried as transient (V4).
+const TRANSIENT: [u16; 4] = [500, 502, 503, 504];
+/// Pauses before the 2nd and 3rd attempts: 3 attempts at most (V4).
+const BACKOFF: [u64; 2] = [2, 5];
+
+/// HTTP status quoted by `gh` in its error output (`gh: Not Found (HTTP 404)`, `HTTP 502: …`).
+pub fn http_status(stderr: &str) -> Option<u16> {
+    stderr.match_indices("HTTP ").find_map(|(i, m)| {
+        let rest = &stderr[i + m.len()..];
+        let code = rest.get(..3)?;
+        let whole = !rest[3..].starts_with(|c: char| c.is_ascii_digit());
+        (whole && code.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| code.parse().ok())
+            .flatten()
+    })
+}
+
+/// `gh api` arguments that make a plain `GET`: no method, field or input option (V4). Only such a
+/// read is ever retried.
+pub fn is_get(args: &[&str]) -> bool {
+    args.first() == Some(&"api")
+        && args[1..]
+            .iter()
+            .all(|a| *a == "--paginate" || !a.starts_with('-'))
 }
 
 pub struct System;
@@ -175,12 +207,57 @@ impl Repo {
 
     /// `gh api` en lecture, toutes pages.
     pub fn api_all(&self, path: &str) -> Result<Vec<Value>, String> {
-        pages(&self.gh(&["api", "--paginate", path])?)
+        self.read_api(&["api", "--paginate", path], pages)
     }
 
     pub fn api(&self, path: &str) -> Result<Value, String> {
-        serde_json::from_str(&self.gh(&["api", path])?)
-            .map_err(|e| format!("réponse de GitHub illisible pour {path} : {e}"))
+        self.read_api(&["api", path], |t| {
+            serde_json::from_str(t)
+                .map_err(|e| format!("réponse de GitHub illisible pour {path} : {e}"))
+        })
+    }
+
+    /// A `gh api` `GET`, retried with bounded backoff on HTTP 500, 502, 503 or 504 and on an
+    /// empty or unparsable (truncated) response; never on 4xx, never for a write (V4). After the
+    /// last attempt the error stays a refusal. `parse` must only decode JSON.
+    fn read_api<T>(
+        &self,
+        args: &[&str],
+        parse: impl Fn(&str) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let retry = is_get(args);
+        let mut attempt = 0;
+        loop {
+            let (code, out, err) = self.runner.run(&self.main, "gh", args)?;
+            let (why, transient) = if code == Some(0) {
+                match String::from_utf8(out) {
+                    Ok(t) if !t.trim().is_empty() => match parse(&t) {
+                        Ok(v) => return Ok(v),
+                        Err(e) => (e, true),
+                    },
+                    _ => (
+                        format!("empty or non UTF-8 answer to gh {}", args.join(" ")),
+                        true,
+                    ),
+                }
+            } else {
+                let status = http_status(&err);
+                (
+                    format!("échec de « gh {} » : {}", args.join(" "), err.trim()),
+                    status.is_some_and(|s| TRANSIENT.contains(&s)),
+                )
+            };
+            let Some(wait) = BACKOFF.get(attempt).filter(|_| retry && transient) else {
+                return Err(why);
+            };
+            println!(
+                "  GitHub read failed, attempt {} of {}, retrying in {wait} s: {why}",
+                attempt + 1,
+                BACKOFF.len() + 1
+            );
+            self.runner.pause(Duration::from_secs(*wait));
+            attempt += 1;
+        }
     }
 
     /// Corps de tous les commentaires d'une PR.
@@ -357,10 +434,23 @@ pub fn judge_ci(
 /// Un commentaire dont la **première ligne** est exactement `<tag>: <sha>` (I3) : une ligne citée
 /// plus bas, dans un avis défavorable par exemple, ne vaut pas approbation.
 pub fn approved(bodies: &[String], tag: &str, sha: &str) -> bool {
-    let want = format!("{tag}: {sha}");
-    bodies
-        .iter()
-        .any(|b| b.lines().next().is_some_and(|l| l.trim_end() == want))
+    approved_shas(bodies, tag).iter().any(|s| s == sha)
+}
+
+/// SHAs approved by a comment whose first line is exactly `<tag>: <sha>` (I3), most recent
+/// first, without repeats (AS-40).
+pub fn approved_shas(bodies: &[String], tag: &str) -> Vec<String> {
+    let prefix = format!("{tag}: ");
+    let mut out: Vec<String> = Vec::new();
+    for b in bodies.iter().rev() {
+        let line = b.lines().next().map(str::trim_end).unwrap_or_default();
+        if let Some(sha) = line.strip_prefix(prefix.as_str()).filter(|s| is_sha(s))
+            && !out.iter().any(|s| s == sha)
+        {
+            out.push(sha.to_owned());
+        }
+    }
+    out
 }
 
 /// SHA de commit complet, en hexadécimal minuscule.
@@ -449,6 +539,109 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// Plays the scripted outputs in order (the last one repeats); notes calls and pauses.
+    struct Script {
+        outs: Vec<Output>,
+        log: Log,
+    }
+
+    /// Calls and pauses (seconds) seen by a [`Script`].
+    type Log = std::rc::Rc<std::cell::RefCell<(Vec<String>, Vec<u64>)>>;
+
+    impl Run for Script {
+        fn run(&self, _dir: &Path, prog: &str, args: &[&str]) -> Result<Output, String> {
+            let mut log = self.log.borrow_mut();
+            log.0.push(format!("{prog} {}", args.join(" ")));
+            Ok(self.outs[(log.0.len() - 1).min(self.outs.len() - 1)].clone())
+        }
+
+        fn pause(&self, d: Duration) {
+            self.log.borrow_mut().1.push(d.as_secs());
+        }
+    }
+
+    fn scripted(outs: Vec<Output>) -> (Repo, Log) {
+        let log = Log::default();
+        let repo = Repo {
+            main: PathBuf::from("main"),
+            here: PathBuf::from("main"),
+            slug: "o/r".to_owned(),
+            dry_run: false,
+            ci: false,
+            cache: std::env::temp_dir().join(format!("xtask-retry-{}", std::process::id())),
+            home: None,
+            runner: Box::new(Script {
+                outs,
+                log: std::rc::Rc::clone(&log),
+            }),
+        };
+        (repo, log)
+    }
+
+    fn ok(s: &str) -> Output {
+        (Some(0), s.as_bytes().to_vec(), String::new())
+    }
+
+    fn http(code: u16) -> Output {
+        (
+            Some(1),
+            Vec::new(),
+            format!("gh: HTTP {code}: Bad Gateway (https://api.github.com/x)\n"),
+        )
+    }
+
+    /// V4: GET retried on 5xx and on an empty or truncated answer, at most 3 attempts with growing
+    /// pauses, then a refusal; never on 4xx.
+    #[test]
+    fn retries_transient_reads_only() {
+        for first in [http(502), http(500), ok(""), ok("{\"id\":"), ok("[1]\n[")] {
+            let (repo, pauses) = scripted(vec![first, ok("{\"id\":9}\n")]);
+            assert_eq!(repo.api("repos/o/r/x").unwrap()["id"], 9);
+            assert_eq!(pauses.borrow().1, [2]);
+            let (repo, _) = scripted(vec![http(503), ok("[{\"a\":1}]")]);
+            assert_eq!(repo.api_all("repos/o/r/y").unwrap().len(), 1);
+        }
+        let (repo, pauses) = scripted(vec![http(502)]);
+        let e = repo.api("repos/o/r/x").unwrap_err();
+        assert!(e.contains("HTTP 502"), "{e}");
+        assert_eq!(pauses.borrow().1, [2, 5]);
+        assert_eq!(pauses.borrow().0.len(), 3);
+        for code in [404, 403, 422, 501] {
+            let (repo, pauses) = scripted(vec![http(code), ok("{}")]);
+            assert!(repo.api_all("repos/o/r/x").is_err(), "{code}");
+            assert!(pauses.borrow().1.is_empty(), "{code}");
+            assert_eq!(pauses.borrow().0.len(), 1, "{code}");
+        }
+        assert_eq!(http_status("gh: Not Found (HTTP 404)"), Some(404));
+        assert_eq!(http_status("gh: HTTP 5023"), None);
+        assert_eq!(http_status("connection reset"), None);
+    }
+
+    /// V4: a write is never retried, even on a transient status.
+    #[test]
+    fn never_retries_writes() {
+        assert!(is_get(&["api", "--paginate", "repos/o/r/x"]));
+        for w in [
+            &["api", "-X", "POST", "repos/o/r/x"][..],
+            &["api", "--method", "PUT", "repos/o/r/x"],
+            &["api", "repos/o/r/x", "-f", "a=b"],
+            &["api", "repos/o/r/x", "--input", "f"],
+            &["pr", "merge", "7"],
+        ] {
+            assert!(!is_get(w), "{w:?}");
+        }
+        let (repo, pauses) = scripted(vec![ok("[]"), http(502), ok("u")]);
+        assert!(repo.open_issue("k", "t", "b").is_err());
+        assert!(pauses.borrow().1.is_empty());
+        let calls = pauses.borrow().0.clone();
+        let creates = calls
+            .iter()
+            .filter(|c| c.starts_with("gh issue create"))
+            .count();
+        assert_eq!(creates, 1, "{calls:?}");
+        let _ = std::fs::remove_dir_all(&repo.cache); // temporary issue body of this test only
     }
 
     #[test]
