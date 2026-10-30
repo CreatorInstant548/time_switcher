@@ -70,3 +70,8 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
     - le dev relance l'exécution 41051384808 toutes les 2 h ;
     - runner auto-hébergé écarté (installation d'un service et téléchargement d'un binaire : accord de l'utilisateur requis ; et `gh api POST` refusé par le garde) ;
     - mode dégradé `ci-local: <sha> pass` (proposé) : verdict d'archi-sécu attendu. Chemins sensibles exclus sauf accord explicite. CI relancée sur `main` au retour d'Actions.
+  - **Verdict d'archi-sécu (AS-29)** : le mode dégradé est accepté avec les conditions D1 à D6, mais il y a une impasse d'amorçage. La PR qui l'ajoute ne peut pas obtenir `ci-ok`, et aucun contournement n'est permis.
+  - **Décidé** :
+    - le dev prépare une PR d'amorçage, qui contient le code et `tools/ci/degraded-mode.txt`, et la laisse ouverte ;
+    - seul l'utilisateur peut la fusionner depuis GitHub, ou rétablir Actions. Il en est informé, sans qu'on lui demande rien ;
+    - si Actions revient, le fichier est retiré et la PR est fusionnée normalement.
