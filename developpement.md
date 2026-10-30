@@ -81,14 +81,15 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | (orchestrateur) | `claude/fin-mode-local`, #1 | Fusionnée | sans objet (documentation) | relue | sans objet | f60e5bc |
 | (conception) | `claude/da-declaration-ia`, #4 | Fusionnée | sans objet (documentation, pas encore de CI) | relue | sans objet | de84d92 |
 | (orchestrateur) | `claude/sous-agents`, #3 | Fusionnée | sans objet (documentation) | relue | sans objet | 4991209 |
-| T1 | `claude/outillage-agents`, [#5](https://github.com/CreatorInstant548/time_switcher/pull/5), tête **92ecc11** (3ᵉ version + correction ciblée) | 2ᵉ relecture refusée ; **`review-ok: 92ecc11`** posé par le 3ᵉ relecteur neuf après vérification de la correction ciblée ; `archsec-ok` demandé ; m7 à m15 → issues | sans objet (pas encore de xtask) ; tests du sous-agent : guards 131/131, hooks 16/16, slots 16/16 | **9 constats** (1 bloquant : emplacement pris par toute session de worktree) | relecture neuve : **refusée** (B1 alias `--no-verify` ; I1 outils hors matcher ; I2 `main` déplacé sans commit ; I3 gitleaks désactivable ; I4 `gh pr merge`/`gh api`) ; lot de 13 corrections renvoyé à l'auteur | — |
+| T1 | `claude/outillage-agents`, [#5](https://github.com/CreatorInstant548/time_switcher/pull/5), tête 92ecc11 | **Fusionnée** | sans objet (pas encore de xtask) ; tests 451/451, 57/57, 12/12 ; `merge-pr.ps1 5 -DryRun` conforme | 9 constats, traités | 3 relectures neuves ; `review-ok` et `archsec-ok` sur 92ecc11 | **93fc98a** |
 
 ## Sessions et agents actifs
 
 | Nom | Tâche | Modèle | Emplacement | Démarré |
 |---|---|---|---|---|
 | sous-agent t0-machine | T0 | Sonnet | aucun (hors dépôt) | 30/10, **terminée** |
-| sous-agent t1-outillage | T1 | Opus | worktree isolé, `claude/outillage-agents` | 30/10 |
+| sous-agent t1-outillage | T1 | Opus | worktree isolé | 30/10, **terminée** (fusionnée) |
+| sous-agent t2a-espace | T2a | Opus | worktree isolé, `claude/espace-travail`, emplacement par `-Acquire` | 30/10 |
 
 ## Demandes envoyées
 
@@ -126,3 +127,4 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 - 30/10 : 3ᵉ relecture de la PR #5 : 1 bloquant (B1 ter), 4 importants, 6 mineurs. **Décidé** : correction ciblée (B1 ter ; I7 `pack-refs`/`gc` cassés par `reference-transaction` ; I8 faux refus ; I9 `gh pr close` et autres ; I10 renommages dans `merge-pr.ps1`), que je vérifie moi-même par lecture du diff et rejeu des sondes, sans 4ᵉ tour (décision de convergence de l'orchestrateur). m7 à m12 deviendront des issues `role:dev` après la fusion.
 - 30/10 : consigne T2a (notes partagées, `consigne-T2a.md`) **validée avec corrections E1 à E9** par archi-sécu (son §9.4) ; corrections intégrées à la consigne ; E6 reportée dans T2b. Lancement après la fusion de la PR #5.
 - 30/10 : `review-ok: 92ecc11…` posé sur la PR #5 (tests 451/451, 57/57, 12/12). `archsec-ok` demandé à archi-sécu. Constats non bloquants m7 à m15 à ouvrir en issues après la fusion.
+- 30/10 : **PR #5 fusionnée** (93fc98a), après `review-ok` et `archsec-ok` sur 92ecc11. Amorçage : `merge-pr.ps1` n'existait pas encore sur `main` ; ses contrôles ont tourné en `-DryRun` depuis la branche (conformes), puis `gh pr merge 5 --squash --delete-branch --match-head-commit 92ecc11…` (décidé : seule fois hors du script). `install-hooks.ps1 -Verify` conforme depuis la copie principale. Worktrees et branches des sous-agents retirés. Issues ouvertes : #7 (faux refus m7 à m10, m14, m15) et #8 (m11 à m13, coût de pwsh) ; l'issue #6 d'archi-sécu va dans T3. **T2a lancée.**
