@@ -308,3 +308,10 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - #47 et #49 ont leurs approbations (AS-35, AS-36, `archsec-ok` sur f0752c2 et 002c995) et attendent leur mise à jour depuis `main`.
   - Issue #50 : signature du manifeste (AS-37).
   - Consigne T8b (#46, décodeur canonique du noyau, F4) prête.
+- 30/10 : `-Apply` fait par l'orchestrateur : les rulesets `main` (26213563) et `pilotage` (26213564) sont actifs, et `integration_id` 15368 est accepté (E5 sans objet).
+  - `-Check` signale 1 écart : GitHub ajoute d'office `require_extra_approval_for_unattributed_changes = true`.
+  - **Impasse** : `merge` est suspendu par l'écart, y compris pour la PR qui le corrige. Aucune exception codée n'est possible, puisque J2 fait tourner le xtask de `main`.
+  - **AS-38**, décidé avec l'orchestrateur :
+    - voie 1 : **PR #51** (2 lignes : `false`, `required_reviewers: []`), avec `review-ok`, `archsec-ok` et `ci-ok`, fusionnée **une seule fois par le titulaire du compte, depuis l'interface web**. Aucune session ne la fusionne ;
+    - voie 2 : une exception durable de réparation dans T3f (PR limitée à `repo-settings.json`, écart recalculé à vide avec le fichier de la tête, historique conforme, tous les contrôles), avec un test par condition.
+  - #47 (54119b2), #49 et T3f attendent.
