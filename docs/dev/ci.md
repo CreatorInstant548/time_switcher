@@ -78,7 +78,22 @@ Les valeurs viennent de `tools/dev/tools.lock` (clés `*.linux.*`, même version
 
 ## 4. Tâche périodique (`nightly.yml`)
 
-- **Chaque nuit** à 03:17 UTC, travail `advisories` : `cargo audit`, puis `cargo deny --locked check advisories`.
+- **Chaque nuit** à 03:17 UTC :
+  - `advisories` : `cargo audit`, puis `cargo deny --locked check advisories` ;
+  - `verify-main` (V3 du §9.14 du carnet d'archi-sécu, T3h) : `cargo xtask verify-main --dry-run --no-cache`, soit l'origine de **chaque** commit de `main` relue sur GitHub, sans le cache local de `TS_CACHE`, que toute session peut écrire (voir `tools/xtask/src/verify_cache.rs`). Détails ci-dessous.
+
+**Travail `verify-main`** :
+- **Droits** : `actions`, `checks`, `contents`, `issues` et `pull-requests` en lecture, rien en écriture. `GH_TOKEN` vaut le jeton du travail.
+- **Pas de `git fetch`** (décision d'archi-sécu du 30/10, m2 de la relecture de la #52). Le checkout garde `persist-credentials: false` : sur un dépôt privé, un `git fetch` n'aurait donc aucun identifiant. En mode CI (`CI=true` et `GITHUB_ACTIONS=true`), `verify-main` saute le fetch et lit les références du checkout `fetch-depth: 0`, qui apporte `origin/main` et `origin/pilotage` (J4). Il **refuse** si l'une des deux manque. Aucun identifiant Git dans le travail, pas de `gh auth setup-git`.
+- **`TS_CACHE`** vaut `${{ runner.temp }}/ts-cache`, défini sur l'étape : le contexte `runner` n'est pas disponible dans `jobs.<id>.env`. Sans lui, le chemin par défaut `C:/Dev/ts-cache` serait relatif sous Linux. Le cache réécrit par `--no-cache` disparaît avec l'exécuteur.
+- **`--dry-run`** (décidé) : le jeton, en lecture seule, ne peut pas ouvrir d'*issue*. Une anomalie affiche l'*issue* qui serait ouverte, et le travail échoue. `report` ouvre alors `nightly-failure`, avec le lien de l'exécution. L'*issue* `role:architecture` (J5) est ouverte par le prochain `cargo xtask merge` ou `verify-main` lancé en local, qui refait le même contrôle. `--dry-run` ne change rien d'autre ici : en CI, le contrôle des réglages est sauté de toute façon.
+- **`repo-settings.ps1 -Check` est sauté en CI** avec un avertissement visible dans le journal et dans le résumé de l'exécution, comme depuis la #42 (`GITHUB_TOKEN` n'a pas les droits d'administration). Il tourne à chaque `cargo xtask merge`.
+- **Vérification** : le travail ne se lance pas en local. À la première nuit après la fusion, ou par `workflow_dispatch`, le journal doit montrer, dans l'ordre :
+  - `mode CI : git fetch sauté` ;
+  - `--no-cache: full check` ;
+  - une ligne `conforme` par commit postérieur à la base ;
+  - l'avertissement sur `repo-settings.ps1 -Check` ;
+  - `Résultat : OK`.
 - **Le dimanche** (même heure), en plus, et seulement si `main` a changé depuis la dernière exécution hebdomadaire réussie (`main-changed.sh`, par l'API, avec `actions: read`) :
   - `windows` : `cargo xtask check --all` hors étapes de sécurité de `ci.yml` ;
   - `gitleaks-history` : gitleaks sur tout l'historique de toutes les branches, `--text`, avec son auto-test ;
@@ -102,7 +117,7 @@ Les valeurs viennent de `tools/dev/tools.lock` (clés `*.linux.*`, même version
 
 ## 7. Budget
 
-Offre GitHub Pro (depuis le 30/10/2026) : **3 000 min par mois** (M36). Un travail est compté à la minute supérieure, et une minute Windows compte double. Le responsable développement relève la consommation chaque semaine ; **à 80 % (2 400 min)**, il passe en **mode minimal** : plus de `rust-windows` sur PR (étiquette retirée, chemins sensibles vérifiés sous Windows par la tâche hebdomadaire seulement), et `nightly.yml` réduit à `advisories`.
+Offre GitHub Pro (depuis le 30/10/2026) : **3 000 min par mois** (M36). Un travail est compté à la minute supérieure, et une minute Windows compte double. Le responsable développement relève la consommation chaque semaine ; **à 80 % (2 400 min)**, il passe en **mode minimal** : plus de `rust-windows` sur PR (étiquette retirée, chemins sensibles vérifiés sous Windows par la tâche hebdomadaire seulement), et `nightly.yml` réduit à `advisories` et `verify-main`. `verify-main` reste (décidé) : sans lui, le cache local de `verify-main` n'est plus sûr (V3).
 
 **Coût estimé par exécution** (minutes facturées, à recaler sur les relevés) :
 
@@ -112,7 +127,7 @@ Offre GitHub Pro (depuis le 30/10/2026) : **3 000 min par mois** (M36). Un trava
 | PR Rust, cache chaud | 1 | 1 | 3 | 4 à 6 | 2 | 1 | ≈ 12 à 14 |
 | PR sur un chemin sensible | 1 | 1 | 3 | 4 à 6 | 2 × (8 à 15) | 1 | ≈ 26 à 42 |
 
-Tâche périodique : `advisories` ≈ 2 min par nuit (≈ 60 par mois) ; le dimanche, si `main` a changé, Windows 2 × (8 à 15), gitleaks 1 à 2, fuzzing 61 à 62 (une fois `fuzz/` créé) : ≈ 80 à 95 min par semaine.
+Tâche périodique : `advisories` ≈ 2 min par nuit (≈ 60 par mois) ; `verify-main` ≈ 2 à 4 min par nuit, compilation de `xtask` et lecture de tout l'historique sur l'API (≈ 60 à 120 par mois) ; le dimanche, si `main` a changé, Windows 2 × (8 à 15), gitleaks 1 à 2, fuzzing 61 à 62 (une fois `fuzz/` créé) : ≈ 80 à 95 min par semaine.
 
 **Relevé de la PR T13** (30/10, exécution verte 41011335457, sans cache, 2 crates) : `changes` 7 s, `pr-title` 3 s, `security` 42 s, `rust-linux` 41 s, `rust-windows` 78 s (chemin sensible, donc complet), `ci-ok` 3 s ; durée totale 86 s. Facturé : 5 min Linux + 2 min Windows × 2 = **9 min**. Le premier passage, en échec, en a coûté environ 7 : **≈ 16 min** pour la PR. L'API `timing` ne rend plus les minutes facturées (valeurs nulles) : le relevé se fait à partir des durées des travaux, arrondies à la minute supérieure, ou sur la page de facturation. Les estimations ci-dessus seront revues à la hausse avec la taille du code.
 

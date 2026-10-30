@@ -3,7 +3,8 @@
 //! Chaque commit postérieur à la base est le squash d'une PR fusionnée, reliée par l'API (J3), avec
 //! `ci-ok` vert sur sa tête (G3) et, pour un chemin sensible, `review-ok` et `archsec-ok` sur cette
 //! tête, recoupés avec le §9 du carnet d'archi-sécu (J4). Une anomalie ouvre une *issue* et suspend
-//! les fusions tant qu'elle n'est pas inscrite dans [`ACKNOWLEDGED`] (J5).
+//! les fusions tant qu'elle n'est pas inscrite dans [`ACKNOWLEDGED`] (J5). En mode CI, pas de
+//! `git fetch` : les références viennent du checkout (`refresh`).
 //! spec: carnet architecture-securite.md SEC0-17 ; §9.6 G3 ; §9.8 J3, J4, J5
 //! Voir aussi l'issue #6, point 2.
 
@@ -307,6 +308,32 @@ pub fn verify_or_report(repo: &Repo, use_cache: bool) -> Result<bool, String> {
     Ok(anomalies.is_empty() && settings)
 }
 
+/// Remote refs read by `check`: the history, and the architecture lead's log for J4.
+const REFS: [&str; 2] = ["origin/main", "origin/pilotage"];
+
+/// Brings [`REFS`] up to date. In CI mode there is no `git fetch` (m2 of #52, architecture lead's
+/// decision of 30/10): the nightly job keeps no Git credentials (`persist-credentials: false`) and
+/// its `fetch-depth: 0` checkout already brings both refs; a missing one is a refusal.
+fn refresh(repo: &Repo) -> Result<(), String> {
+    if !repo.ci {
+        return repo.git(&["fetch", "--quiet", "origin"]).map(drop);
+    }
+    println!("  mode CI : git fetch sauté, références du checkout (fetch-depth: 0)");
+    for r in REFS {
+        let spec = format!("refs/remotes/{r}^{{commit}}");
+        if !repo.ok(
+            &repo.main,
+            "git",
+            &["rev-parse", "--verify", "--quiet", &spec],
+        )? {
+            return Err(format!(
+                "{r} absent en mode CI, où git fetch est sauté : checkout avec fetch-depth: 0 requis"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn main(args: &[String]) -> ExitCode {
     let dry_run = args.iter().any(|a| a == "--dry-run");
     // --no-cache: full check of every commit (nightly job, V3); the cache is rewritten.
@@ -316,7 +343,7 @@ pub fn main(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let result = Repo::open(dry_run, true).and_then(|repo| {
-        repo.git(&["fetch", "--quiet", "origin"])?;
+        refresh(&repo)?;
         verify_or_report(&repo, !no_cache)
     });
     match result {
@@ -425,6 +452,65 @@ mod tests {
         let (r, calls) = settings(Some(1), true, false);
         assert_eq!(r, Ok(true));
         assert!(calls.is_empty(), "{calls:?}");
+    }
+
+    /// Answers `git fetch` and `git rev-parse` of the refs in `.0` with 0, any other
+    /// `git rev-parse` with 1; every call is noted.
+    struct Refs(Vec<&'static str>, Rc<RefCell<Vec<String>>>);
+
+    impl Run for Refs {
+        fn run(&self, _dir: &Path, prog: &str, args: &[&str]) -> Result<Output, String> {
+            let line = format!("{prog} {}", args.join(" "));
+            self.1.borrow_mut().push(line.clone());
+            let code = if line == "git fetch --quiet origin" {
+                0
+            } else if line.starts_with("git rev-parse --verify --quiet refs/remotes/") {
+                i32::from(
+                    !self
+                        .0
+                        .iter()
+                        .any(|r| line.ends_with(&format!("/{r}^{{commit}}"))),
+                )
+            } else {
+                return Err(format!("unexpected command: {line}"));
+            };
+            Ok((Some(code), Vec::new(), String::new()))
+        }
+    }
+
+    fn refresh_in(ci: bool, present: &[&'static str]) -> (Result<(), String>, Vec<String>) {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let repo = Repo {
+            main: PathBuf::from("main"),
+            here: PathBuf::from("main"),
+            slug: "o/r".to_owned(),
+            dry_run: true,
+            ci,
+            cache: std::env::temp_dir(),
+            home: None,
+            runner: Box::new(Refs(present.to_vec(), Rc::clone(&calls))),
+        };
+        let result = refresh(&repo);
+        let calls = calls.borrow().clone();
+        (result, calls)
+    }
+
+    /// m2 of #52: outside CI, `git fetch origin`; in CI mode, never a fetch, and a refusal when
+    /// `origin/main` or `origin/pilotage` is missing from the checkout.
+    #[test]
+    fn ci_mode_skips_fetch_and_needs_both_refs() {
+        let (r, calls) = refresh_in(false, &[]);
+        assert_eq!(r, Ok(()));
+        assert_eq!(calls, ["git fetch --quiet origin"]);
+        let (r, calls) = refresh_in(true, &["main", "pilotage"]);
+        assert_eq!(r, Ok(()), "{calls:?}");
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        for (present, missing) in [(["main"], "origin/pilotage"), (["pilotage"], "origin/main")] {
+            let (r, calls) = refresh_in(true, &present);
+            let e = r.unwrap_err();
+            assert!(e.starts_with(missing), "{e}");
+            assert!(!calls.iter().any(|c| c.contains("fetch")), "{calls:?}");
+        }
     }
 
     const COMMIT: &str = "1111111111111111111111111111111111111111";
