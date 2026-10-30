@@ -21,7 +21,6 @@ mod slots;
 mod spec_map;
 mod steps;
 mod sys;
-mod verify_cache;
 mod verify_main;
 mod workflows;
 
@@ -30,8 +29,7 @@ use std::process::ExitCode;
 
 use steps::{Ctx, Outcome};
 
-/// Empreinte des entrées de construction, inscrite par `build.rs` (J2, AS-23 point 1) ; clé du
-/// cache de `verify-main` (V2).
+/// Empreinte des entrées de construction, inscrite par `build.rs` (J2, AS-23 point 1).
 pub const BUILT_FROM: &str = env!("XTASK_INPUTS_SHA256");
 
 type Step = (&'static str, &'static str, fn(&Ctx) -> Outcome);

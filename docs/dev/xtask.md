@@ -159,5 +159,7 @@ Si une seule condition échoue, l'approbation doit être **reposée sur `H`**. C
 - Les bases de fusion viennent de `compare/<x>...<y>`.
 - Les bases sont des commits de `main`, lus dans l'historique local.
 - Au plus 5 SHA candidats sont examinés, du plus récent au plus ancien, après avoir écarté ceux qui ne sont pas dans la PR.
-- Tout est relu sur GitHub à chaque exécution. Un commit sensible n'utilise jamais le cache de `verify-main` (V5).
+- Tout est relu sur GitHub à chaque exécution (V5). `verify-main` n'a plus de cache local depuis T3e-2.
 - Une lecture qui échoue fait échouer le candidat, jamais l'inverse.
+
+**Portée de `verify-main` depuis T3e-2** (AS-31 E3). Chaque commit de `main` postérieur à la base doit avoir un seul parent, pour que sa sensibilité se calcule. Un commit **non sensible** ne demande rien d'autre et ne lit rien sur GitHub : le *ruleset* `main` impose la PR, `ci-ok` et l'historique linéaire, et `repo-settings.ps1 -Check` surveille ce *ruleset* à chaque `cargo xtask merge` (il est sauté en CI). Un commit **sensible** garde tout : squash d'une PR fusionnée (J3), `ci-ok` sur sa tête (G3), `review-ok` et `archsec-ok` sur la tête ou reportés (§6.1), puis J4. `--no-cache` reste accepté, sans effet, pour la tâche de nuit, jusqu'à la PR `.github/` qui le retirera.
