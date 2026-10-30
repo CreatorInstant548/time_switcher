@@ -1,4 +1,4 @@
-// spec: carnet architecture-securite.md SEC0-24 (révisé), AS-36
+// spec: carnet architecture-securite.md SEC0-24 (révisé), §10
 //! Writes the initial corpus of the `decode` target (`ts_persist::fuzzing::seeds`) into the
 //! directory given as argument, with two snapshots of a world of the fuzzing rules. The
 //! corpus is regenerable and never committed.

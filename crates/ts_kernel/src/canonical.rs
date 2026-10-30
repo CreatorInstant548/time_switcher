@@ -1,4 +1,4 @@
-// spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md AS-36, SEC0-23, C6
+// spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §10, SEC0-23, C6
 //! Decoder of the canonical encoding: the twin of [`StateWriter`] and of the snapshot
 //! encoding. It reads **untrusted bytes** (a solo save), so:
 //! - no panic on any input: the anti-panic lints below are denied in this module, with no
@@ -36,7 +36,7 @@ use crate::{
     DayOrigin, KERNEL_FAMILY, Money, RulesFingerprint, Scheduled, SimTime, StableId, TimedEvent,
 };
 
-// spec: carnet architecture-securite.md SEC0-23, AS-36
+// spec: carnet architecture-securite.md SEC0-23, §10
 /// Bounds of the canonical decoder. `ts_persist` passes the same values as its own
 /// `Limits` (`max_part_len`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +45,7 @@ pub struct CanonicalLimits {
     pub max_len: u64,
 }
 
-// spec: carnet architecture-securite.md SEC0-23, AS-36
+// spec: carnet architecture-securite.md SEC0-23, §10
 /// Why canonical bytes were refused. Positions `at` are byte offsets in the input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanonicalError {
@@ -138,7 +138,7 @@ fn len64(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
-// spec: revues/architecture.md §11.3 ; carnet architecture-securite.md AS-36
+// spec: revues/architecture.md §11.3 ; carnet architecture-securite.md §10
 /// Bounded reader of the canonical encoding, the twin of [`StateWriter`].
 pub struct StateReader<'a> {
     rest: &'a [u8],
@@ -340,7 +340,7 @@ impl<'a> StateReader<'a> {
     }
 }
 
-// spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md AS-36
+// spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §10
 /// Decoding twin of [`crate::StateHash`]: reads exactly what `hash_state` writes, and
 /// refuses with a typed error anything else. Required by state components and resources.
 pub trait StateDecode: Sized {
@@ -576,7 +576,7 @@ pub(crate) struct Decoded {
     pub(crate) captured: Vec<Captured>,
 }
 
-// spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md AS-36
+// spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §10
 /// Decodes a header and a canonical state against the state types `entries` declared by
 /// the rules: families sorted, each with exactly its state types, in declaration order.
 pub(crate) fn decode(

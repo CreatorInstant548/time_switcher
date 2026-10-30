@@ -572,7 +572,7 @@ pub(crate) fn hash_world(
 /// Contexte BLAKE3 de l'empreinte d'une valeur isolée, écrit en dur.
 const VALUE_CONTEXT: &str = "time_switcher 2026-10-30 state value v1";
 
-// spec: revues/architecture.md §11.3 ; carnet architecture-securite.md AS-39
+// spec: revues/architecture.md §11.3 ; carnet architecture-securite.md §10
 /// Canonical bytes of one value: exactly what [`StateHash::hash_state`] writes, the bytes
 /// the value has inside a snapshot. For tests of encodings outside the kernel; it gives no
 /// [`StateWriter`].
@@ -580,7 +580,7 @@ pub fn state_hash_bytes<T: StateHash + ?Sized>(value: &T) -> Vec<u8> {
     encode_with(|w| value.hash_state(w))
 }
 
-// spec: revues/architecture.md §11.3 ; carnet architecture-securite.md AS-39
+// spec: revues/architecture.md §11.3 ; carnet architecture-securite.md §10
 /// BLAKE3 digest of [`state_hash_bytes`], under a context of its own (never equal to a
 /// family digest).
 pub fn state_hash_digest<T: StateHash + ?Sized>(value: &T) -> StateDigest {

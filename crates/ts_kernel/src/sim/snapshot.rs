@@ -127,7 +127,7 @@ pub trait Snapshot: Sized {
     ) -> Result<Sim, RestoreError>;
 }
 
-// spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §9.10 L4, AS-36
+// spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §9.10 L4, §10
 /// Instantané en mémoire : copies des valeurs. [`MemorySnapshot::header_bytes`] and
 /// [`MemorySnapshot::canonical_bytes`] give its bytes, and
 /// [`MemorySnapshot::from_canonical`] decodes them back; a host stores them with
@@ -177,14 +177,14 @@ impl MemorySnapshot {
         &self.canonical
     }
 
-    // spec: revues/architecture.md §12.1 ; carnet architecture-securite.md AS-36
+    // spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §10
     /// What the canonical state does not hold: rules fingerprint, tick length, date and
     /// active plugins (layout in `crate::canonical`). Never a key (L4).
     pub fn header_bytes(&self) -> Vec<u8> {
         canonical::write_header(&self.rules, self.tick_ms, self.now, &self.plugins)
     }
 
-    // spec: revues/architecture.md §12.1 ; carnet architecture-securite.md AS-36, SEC0-23
+    // spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §10, SEC0-23
     /// Decodes a snapshot from [`Self::header_bytes`] and [`Self::canonical_bytes`], read
     /// against the state types of `layout`. The bytes are untrusted: they are bounded by
     /// `limits`, checked for canonical form, and the date of the header must equal the date
@@ -232,7 +232,7 @@ fn layout_of(entries: &[StateEntry]) -> Vec<(&'static str, bool)> {
 /// nothing of that world is kept but the declared state types.
 const LAYOUT_KEY: [u8; 16] = *b"ts layout only\0\0";
 
-// spec: revues/architecture.md §12.1 ; carnet architecture-securite.md AS-36
+// spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §10
 /// State types declared by a rule set, in declaration order: what decoding a snapshot
 /// needs to read the values of each type.
 pub struct StateLayout {

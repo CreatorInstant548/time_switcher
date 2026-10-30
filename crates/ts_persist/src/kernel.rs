@@ -14,7 +14,7 @@ pub const META_PART: &str = "kernel.meta";
 /// Part holding `MemorySnapshot::canonical_bytes`, the kernel's canonical state.
 pub const STATE_PART: &str = "kernel.state";
 
-// spec: revues/architecture.md §12.1 ; carnet architecture-securite.md SEC0-23, AS-36
+// spec: revues/architecture.md §12.1 ; carnet architecture-securite.md SEC0-23, §10
 /// Encodes a kernel snapshot into an envelope with the parts [`META_PART`] and
 /// [`STATE_PART`]. **No key**: the kernel snapshot carries none (L4), and this crate never
 /// sees one (Q4).
@@ -35,7 +35,7 @@ pub fn encode_snapshot(
     )
 }
 
-// spec: carnet architecture-securite.md SEC0-23, §9.13, AS-36 ; revues/securite.md S24
+// spec: carnet architecture-securite.md SEC0-23, §9.13, §10 ; revues/securite.md S24
 /// Decodes an envelope written by [`encode_snapshot`]: exactly the two kernel parts, each
 /// checked by the codec, then read by `MemorySnapshot::from_canonical` against the state
 /// types of `layout`, bounded by `limits.max_part_len`.

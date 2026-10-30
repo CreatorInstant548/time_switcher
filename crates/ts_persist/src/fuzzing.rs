@@ -127,7 +127,7 @@ fn split_direct(data: &[u8]) -> Option<(&[u8], &[u8])> {
     rest.split_at_checked(usize::from(u16::from_le_bytes(*len)))
 }
 
-// spec: carnet architecture-securite.md SEC0-24 (révisé), AS-36
+// spec: carnet architecture-securite.md SEC0-24 (révisé), §10
 /// Runs every decoder on `data` with [`Limits::fuzzing`], without `restore`:
 /// - the whole chain, envelope, manifest, parts, then `MemorySnapshot::from_canonical` on
 ///   the kernel parts (as `decode_snapshot` does);
@@ -153,7 +153,7 @@ pub fn decode(data: &[u8]) -> Result<Parts, DecodeError> {
     Ok(parts)
 }
 
-// spec: carnet architecture-securite.md SEC0-24 (révisé), AS-36
+// spec: carnet architecture-securite.md SEC0-24 (révisé), §10
 /// Initial corpus of the target: valid envelopes, stored and compressed, including one per
 /// snapshot of `snapshots` (taken from a world of [`rules`]), and each snapshot as a direct
 /// input of the kernel decoder. Written by `fuzz/seeds` into the corpus directory
