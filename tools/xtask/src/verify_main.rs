@@ -106,7 +106,7 @@ fn check_commit(
             ));
         }
     };
-    let cached = cached.filter(|f| f.merge_commit_sha == sha && is_sha(&f.head) && f.pr > 0);
+    // Entries were validated when the cache was loaded (`verify_cache::load`).
     let mut facts = match cached {
         Some(f) => f.clone(),
         None => match pull_of(repo, sha)? {

@@ -29,6 +29,10 @@ use std::process::ExitCode;
 
 use steps::{Ctx, Outcome};
 
+/// Empreinte des entrées de construction, inscrite par `build.rs` (J2, AS-23 point 1) ; clé du
+/// cache de `verify-main` (V2).
+pub const BUILT_FROM: &str = env!("XTASK_INPUTS_SHA256");
+
 type Step = (&'static str, &'static str, fn(&Ctx) -> Outcome);
 
 /// Étapes de `check`, dans l'ordre d'exécution. Les noms sont stables (`--only`, CI).

@@ -5,7 +5,9 @@
 //! on every run. Key: `BUILT_FROM` (V2) and the SHA-256 of `tools/ci/sensitive-paths.txt` from
 //! `origin/main`; any other value, or any read or format error, drops the whole cache and every
 //! commit is checked in full. `TS_CACHE` is writable by every session, so an entry can be forged:
-//! the nightly job runs `verify-main --no-cache` over the whole history (V3).
+//! the nightly job runs `verify-main --no-cache` over the whole history (V3). A `--dry-run` also
+//! writes it (decided): its facts are real GitHub reads, and a binary built from other inputs has
+//! another `BUILT_FROM`, so its entries are never used by the one built from `main`.
 //! spec: carnet architecture-securite.md SEC0-17 ; §9.6 G3 ; §9.8 J3, J4
 
 use std::collections::BTreeMap;
@@ -95,21 +97,22 @@ impl Cache {
     /// The cache for this run; empty with `--no-cache` (`use_cache` false) or when it cannot be
     /// used, in which case every commit is checked in full.
     pub fn open(repo: &Repo, use_cache: bool) -> Result<Self, String> {
-        let built_from = crate::merge::BUILT_FROM;
-        Self::open_with(
+        let fingerprint = sensitive_fingerprint(repo)?;
+        Ok(Self::open_with(
             path(repo),
-            built_from,
-            &sensitive_fingerprint(repo)?,
+            crate::BUILT_FROM,
+            &fingerprint,
             use_cache,
-        )
+        ))
     }
 
+    /// Never fails: an unusable cache is empty, every commit is then checked in full.
     pub fn open_with(
         path: PathBuf,
         built_from: &str,
         sensitive_paths: &str,
         use_cache: bool,
-    ) -> Result<Self, String> {
+    ) -> Self {
         let commits = if use_cache {
             load(&path, built_from, sensitive_paths).unwrap_or_else(|why| {
                 println!("  cache not used ({why}): full check");
@@ -119,13 +122,13 @@ impl Cache {
             println!("  --no-cache: full check, cache rewritten from what is read now");
             BTreeMap::new()
         };
-        Ok(Self {
+        Self {
             path,
             built_from: built_from.to_owned(),
             sensitive_paths: sensitive_paths.to_owned(),
             commits,
             changed: !use_cache,
-        })
+        }
     }
 
     pub fn get(&self, sha: &str) -> Option<&Facts> {
@@ -198,41 +201,17 @@ mod tests {
     fn unusable_cache_is_ignored() {
         let d = dir("ignored");
         let p = d.join("verify-main").join("cache.json");
-        assert!(
-            Cache::open_with(p.clone(), "b", "s", true)
-                .unwrap()
-                .commits
-                .is_empty()
-        );
-        let mut c = Cache::open_with(p.clone(), "b", "s", true).unwrap();
+        let open = |b: &str, s: &str, use_cache| Cache::open_with(p.clone(), b, s, use_cache);
+        assert!(open("b", "s", true).commits.is_empty());
+        let mut c = open("b", "s", true);
         c.put(SHA, facts());
         c.save();
-        assert_eq!(
-            Cache::open_with(p.clone(), "b", "s", true)
-                .unwrap()
-                .get(SHA),
-            Some(&facts())
-        );
+        assert_eq!(open("b", "s", true).get(SHA), Some(&facts()));
         // sensitive-paths.txt or BUILT_FROM changed.
-        assert!(
-            Cache::open_with(p.clone(), "b", "s2", true)
-                .unwrap()
-                .get(SHA)
-                .is_none()
-        );
-        assert!(
-            Cache::open_with(p.clone(), "b2", "s", true)
-                .unwrap()
-                .get(SHA)
-                .is_none()
-        );
+        assert!(open("b", "s2", true).get(SHA).is_none());
+        assert!(open("b2", "s", true).get(SHA).is_none());
         // --no-cache reads nothing.
-        assert!(
-            Cache::open_with(p.clone(), "b", "s", false)
-                .unwrap()
-                .get(SHA)
-                .is_none()
-        );
+        assert!(open("b", "s", false).get(SHA).is_none());
         let text = sys::read_text(&p).unwrap();
         for bad in [
             text[..text.len() / 2].to_owned(),
@@ -247,12 +226,7 @@ mod tests {
         ] {
             sys::write(&p, bad.as_bytes()).unwrap();
             assert!(load(&p, "b", "s").is_err(), "{bad}");
-            assert!(
-                Cache::open_with(p.clone(), "b", "s", true)
-                    .unwrap()
-                    .get(SHA)
-                    .is_none()
-            );
+            assert!(open("b", "s", true).get(SHA).is_none());
         }
         let _ = std::fs::remove_dir_all(&d); // temporary files of this test only
     }

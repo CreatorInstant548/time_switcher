@@ -18,8 +18,8 @@ use serde_json::Value;
 use crate::github::{Repo, approved, is_sha, same_path};
 use crate::{build_inputs, hooks, sensitive, verify_main, workflows};
 
-/// Empreinte des entrées de construction, inscrite par `build.rs` (J2, AS-23 point 1).
-pub const BUILT_FROM: &str = env!("XTASK_INPUTS_SHA256");
+use crate::BUILT_FROM;
+
 const TYPES: [&str; 9] = [
     "feat", "fix", "refactor", "perf", "test", "docs", "build", "ci", "chore",
 ];
