@@ -95,7 +95,19 @@ impl std::error::Error for RestoreError {}
 /// - durable references therefore use `StableId`, and [`crate::StableIndex`] maps them to
 ///   entities;
 /// - any iteration whose effect depends on its order sorts by `StableId`, since query order
-///   is not part of the state.
+///   is not part of the state;
+/// - systems are built fresh, so nothing outside the declared state survives a restore:
+///   `Local<T>` values, change detection (`Added`, `Changed`, `is_changed`), pending
+///   `Message`s, undeclared resources and entities without [`StableEntity`] all start
+///   over. A rule plugin therefore keeps no state from one tick to the next outside its
+///   declared state: no `Local<T>` across ticks, no game logic on `Added` or `Changed`,
+///   `Message`s written and read within the same tick with an explicit phase order, no
+///   undeclared game resource or entity, and rebuildable caches declared with
+///   `transient_component` (AS-27, see [`Plugin`]);
+/// - enforced before the first rule plugin merges (phase 1) by a generic restore test and
+///   `clippy.toml` bans, see #31 (AS-27).
+// TODO(#31): enforce the no-hidden-state contract automatically.
+// spec: revues/architecture.md §11.1, §12.4
 pub trait Snapshot: Sized {
     /// Prend l'instantané.
     fn snapshot(sim: &Sim, scope: SnapshotScope) -> Self;

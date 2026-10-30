@@ -24,6 +24,27 @@ use crate::{Phase, StateHash};
 /// A system must therefore leave the state unchanged on a tick with no due event and no
 /// entity in full simulation: no per-tick counter, no `Local` accumulator, no polling of the
 /// clock. Otherwise skipping and ticking would give different worlds.
+///
+/// **No hidden state between ticks** (architecture §11.1, §12.4): a restore builds fresh
+/// systems and keeps only the declared state, yet restoring at any tick k > 0 must give
+/// exactly the uninterrupted run. A plugin therefore keeps **no** state from one tick to the
+/// next outside its declared state (the components and resources registered with
+/// [`SimBuilder::state_component`] and [`SimBuilder::state_resource`]). In particular
+/// (AS-27):
+/// - no `Local<T>` kept from one tick to the next;
+/// - no game logic based on `Added` or `Changed` (nor on `is_changed`): change ticks
+///   restart on restore;
+/// - a `Message` is written **and** read within the same tick, with an explicit phase
+///   order between writer and reader;
+/// - no undeclared game resource or game entity: every persistent entity carries
+///   [`crate::StableEntity`];
+/// - a cache that can be rebuilt from the state is declared with
+///   [`SimBuilder::transient_component`].
+///
+/// Enforced before the first rule plugin merges (phase 1) by a generic restore test and
+/// `clippy.toml` bans, see #31 (AS-27).
+// TODO(#31): enforce this contract automatically.
+// spec: revues/architecture.md §11.1, §12.4
 pub trait Plugin {
     /// Nom stable et unique du greffon (par exemple `"economy"`).
     fn name(&self) -> &'static str;
