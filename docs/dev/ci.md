@@ -30,12 +30,19 @@ Déclencheurs : `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_
 | `changes` | toujours | `tools/ci/changes.sh --summary` : tableau des zones et chemins sensibles touchés, dans le résumé de l'exécution |
 | `pr-title` | PR seulement | titre au format `type(portée): description`, même motif que le crochet `commit-msg` ; le titre passe par `env:` (SEC0-31) |
 | `security` | toujours, quels que soient les chemins | gitleaks épinglé et son auto-test ; `cargo xtask check --only workflows,gitleaks,deny`, plus `audit` si `Cargo.lock` change. Avertit si la PR touche la zone `ci` (G5 étendu, voir plus bas) |
-| `rust-linux` | zone `rust` ou `ci` | `cargo xtask check --all --only fmt,clippy,test,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map` |
+| `rust-linux` | zone `rust` ou `ci` | `cargo xtask check --all --only fmt,clippy,test,determinism,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map` |
 | `rust-windows` | push sur `main`, étiquette `ci:windows`, ou zone `sensitive` | même chose, sans `fmt` |
-| `ci-ok` | toujours (`always()`) | lit `needs.<travail>.result` (G2) : `changes`, `security` et, sur une PR, `pr-title` doivent valoir `success` ; `rust-linux` et `rust-windows` peuvent valoir `skipped`. Sur un brouillon, il **échoue** au lieu d'être sauté, car GitHub tient un contrôle sauté pour réussi |
+| `ci-ok` | toujours (`always()`) | lit `needs.<travail>.result` (G2) : `changes`, `security` et, sur une PR, `pr-title` doivent valoir `success` ; `rust-linux` et `rust-windows` peuvent valoir `skipped`. Sur un brouillon, il **échoue** au lieu d'être sauté, car GitHub tient un contrôle sauté pour réussi. Délai : 10 min pour le travail, 2 min pour son étape (voir plus bas) |
+
+**Déterminisme en CI** (Y5 du §9.15 du carnet d'archi-sécu, T9c) :
+- **Version courte** : l'étape `determinism` de `xtask check` est dans les listes de `rust-linux` et de `rust-windows`. Elle lance les tests de `ts_toy` dans deux processus, à 1 et à 4 fils, et compare leurs résultats entre eux puis aux valeurs dorées de `data/golden/ts_toy.json`. Sa présence dans `rust-linux` est **obligatoire** : comparer les résultats de Linux aux valeurs dorées, bénies en local sous Windows, est la seule preuve entre plateformes (relecture de la #64). `ci-ok` accepte toujours `rust-linux` sauté : l'étape ne tourne que si la PR touche les zones `rust` ou `ci`.
+- **Quand elle tourne** : avec `--all`, l'étape ne filtre pas les fichiers touchés (`touches_toy` ne sert qu'en local, sans `--all`). C'est donc la condition du travail qui décide : zone `rust` ou `ci` pour `rust-linux`. La zone `rust` couvre `crates/` (`ts_toy`, `ts_kernel`, `ts_persist` et toutes les autres dépendances de `ts_toy`), `tools/xtask/` (le vérificateur) et, depuis T9c, `data/golden/` : une PR qui ne change qu'une valeur dorée relance donc la comparaison. Toute PR de la zone `rust` paie la version courte (décidé : moins d'une minute, et une dépendance de `ts_toy` touchée sans le savoir ne passe pas au travers).
+- **An complet** : chaque semaine, travail `determinism` de `nightly.yml` (§4).
+
+**Délai de `ci-ok`** (*issue* #61, décidé) : d'après l'incident observé, le `timeout-minutes` d'un travail a aussi compté l'attente d'un exécuteur. Le 30/10, lors d'un incident de GitHub Actions, `ci-ok` a attendu 3 min 25 s et a été annulé à 2 min alors que tout était vert. Le travail a donc 10 min, et son unique étape garde un `timeout-minutes: 2`, qui borne le script lui-même. Coût nul en temps normal : le travail ne fait que lire des résultats (3 s), et un travail n'est facturé que pendant qu'il tourne.
 
 **Zones** (`changes.sh`), calculées sur `git diff <base commune> <tête>` ; une base absente ou inconnue retient toutes les zones :
-- `rust` : `crates/`, `tools/xtask/`, `fuzz/`, `.cargo/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml`, `deny.toml` ;
+- `rust` : `crates/`, `tools/xtask/`, `fuzz/`, `.cargo/`, `data/golden/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml`, `deny.toml` ;
 - `python` : `python/`, `*.py`, `pyproject.toml`, `uv.lock` ; `web` : `admin-web/`, `package.json`, `pnpm-*.yaml` ; `client` : `client/` (aucun travail encore) ;
 - `ci` : ce que la CI exécute pour se contrôler, soit `.github/`, `tools/ci/`, `tools/xtask/`, `tools/dev/tools.lock`, `tools/dev/hooks/gitleaks.toml` ; `docs` : `docs/`, `*.md` ;
 - `sensitive` : `tools/ci/sensitive-paths.txt`, **union** de sa version d'`origin/main` et de celle de la PR (une PR ne peut pas s'en retirer). Les sections `[features]` et `[profile.*]` d'un `Cargo.toml` sont comparées entre la base et la tête, clés pointées de la racine comprises ; `Cargo.lock` est sensible quand il ajoute un nom de crate ;
@@ -104,7 +111,9 @@ puis il fait J4 avec ces faits frais. Une entrée forgée ne peut donc pas ratta
 - **Le dimanche** (même heure), en plus, et seulement si `main` a changé depuis la dernière exécution hebdomadaire réussie (`main-changed.sh`, par l'API, avec `actions: read`) :
   - `windows` : `cargo xtask check --all` hors étapes de sécurité de `ci.yml` ;
   - `gitleaks-history` : gitleaks sur tout l'historique de toutes les branches, `--text`, avec son auto-test ;
-  - `fuzz` : 60 min réparties entre les cibles de `fuzz/`. **Sauté** tant que `fuzz/` n'existe pas. Les plantages sont téléversés, gardés 7 jours.
+  - `fuzz` : 60 min réparties entre les cibles de `fuzz/`. **Sauté** tant que `fuzz/` n'existe pas. Les plantages sont téléversés, gardés 7 jours ;
+  - `determinism` (Y5, T9c) : `cargo xtask determinism --full`, sous Linux. La version courte et l'an complet (365 jours simulés, instantané au jour 182) tournent à 1 et à 4 fils, dans des processus distincts, chacun comparé à ses propres valeurs dorées de `data/golden/ts_toy.json` (clés `short.*` et `year.*`). Environ 75 s d'exécution en debug, plus la compilation de `ts_toy` et de ses dépendances. Droits : `actions` et `contents` en lecture. Un échec rejoint `report`, qui ouvre `nightly-failure` ;
+  - `windows` comprend aussi l'étape `determinism` (version courte), comme `rust-windows`.
 - **`workflow_dispatch`** (essais) lance tout, sans contrôle de changement de `main`. Aucune entrée (`inputs`).
 - **Limite acceptée** (décidé) : « réussie » porte sur toute l'exécution. Tant qu'`advisories` échoue sur un avis RustSec, les travaux hebdomadaires repassent chaque dimanche, même sans changement de `main` (≈ 30 min de plus par semaine). L'*issue* `nightly-failure` signale déjà la cause.
 - Un push sur `main` n'analyse que l'arbre (plage `origin/main..HEAD` vide) : ses commits ont été analysés dans la PR, et le seront dans l'historique complet du dimanche.
@@ -134,7 +143,9 @@ Offre GitHub Pro (depuis le 30/10/2026) : **3 000 min par mois** (M36). Un trava
 | PR Rust, cache chaud | 1 | 1 | 3 | 4 à 6 | 2 | 1 | ≈ 12 à 14 |
 | PR sur un chemin sensible | 1 | 1 | 3 | 4 à 6 | 2 × (8 à 15) | 1 | ≈ 26 à 42 |
 
-Tâche périodique : `advisories` ≈ 2 min par nuit (≈ 60 par mois) ; `verify-main` ≈ 2 à 4 min par nuit, compilation de `xtask` et lecture de tout l'historique sur l'API (≈ 60 à 120 par mois) ; le dimanche, si `main` a changé, Windows 2 × (8 à 15), gitleaks 1 à 2, fuzzing 61 à 62 (une fois `fuzz/` créé) : ≈ 80 à 95 min par semaine.
+Tâche périodique : `advisories` ≈ 2 min par nuit (≈ 60 par mois) ; `verify-main` ≈ 2 à 4 min par nuit, compilation de `xtask` et lecture de tout l'historique sur l'API (≈ 60 à 120 par mois) ; le dimanche, si `main` a changé, Windows 2 × (8 à 15), gitleaks 1 à 2, fuzzing 61 à 62 (une fois `fuzz/` créé), déterminisme complet 3 à 6 (compilation comprise) : ≈ 85 à 100 min par semaine. En mode minimal, le travail `determinism` s'arrête avec les autres travaux du dimanche ; la version courte reste dans `rust-linux`.
+
+**Version courte du déterminisme dans `rust-linux`** : ≈ 1 min de plus par PR de la zone `rust` (compilation des tests de `ts_toy`, déjà faite par l'étape `test`, puis deux processus). À recaler sur le relevé de la PR T9c.
 
 **Relevé de la PR T13** (30/10, exécution verte 41011335457, sans cache, 2 crates) : `changes` 7 s, `pr-title` 3 s, `security` 42 s, `rust-linux` 41 s, `rust-windows` 78 s (chemin sensible, donc complet), `ci-ok` 3 s ; durée totale 86 s. Facturé : 5 min Linux + 2 min Windows × 2 = **9 min**. Le premier passage, en échec, en a coûté environ 7 : **≈ 16 min** pour la PR. L'API `timing` ne rend plus les minutes facturées (valeurs nulles) : le relevé se fait à partir des durées des travaux, arrondies à la minute supérieure, ou sur la page de facturation. Les estimations ci-dessus seront revues à la hausse avec la taille du code.
 

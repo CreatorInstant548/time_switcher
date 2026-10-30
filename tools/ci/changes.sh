@@ -130,7 +130,7 @@ done < <(printf '%s\n' "$tree" | LC_ALL=C grep '[^ -~]' || true)
 
 for f in "${files[@]}"; do
   case $f in
-    crates/*|tools/xtask/*|fuzz/*|.cargo/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|clippy.toml|rustfmt.toml|deny.toml)
+    crates/*|tools/xtask/*|fuzz/*|.cargo/*|data/golden/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|clippy.toml|rustfmt.toml|deny.toml)
       z_rust=true ;;
   esac
   case $f in python/*|*.py|pyproject.toml|uv.lock) z_python=true ;; esac
