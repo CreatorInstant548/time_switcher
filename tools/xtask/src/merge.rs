@@ -353,13 +353,19 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
         "copie principale propre, sur main, à jour ; binaire construit depuis main (J2)",
     );
     let j2 = main_copy(repo, j2_check)?;
-    step("2", "verify-main (SEC0-17) et hooks verify (SEC0-35)");
+    step(
+        "2",
+        "verify-main (SEC0-17, réglages GitHub AS-30 R5) et hooks verify (SEC0-35)",
+    );
     let history = verify_main::verify_or_report(repo)?;
     let hooks_ok = hooks::verify_or_report(repo)?;
     let suspended = (!history || !hooks_ok).then(|| {
         refuse(
-            "fusions suspendues : anomalie de l'historique ou des crochets",
-            "lever l'anomalie (issue role:architecture), puis cargo xtask verify-main et cargo xtask hooks verify",
+            "fusions suspendues : anomalie de l'historique, écart des réglages GitHub \
+             (issue repo-settings-drift) ou anomalie des crochets",
+            "lever l'anomalie (issue role:architecture) ; pour un écart des réglages, \
+             l'orchestrateur lance pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply \
+             depuis la copie principale ; puis cargo xtask verify-main et cargo xtask hooks verify",
         )
     });
     match &suspended {

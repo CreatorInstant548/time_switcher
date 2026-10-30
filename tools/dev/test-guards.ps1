@@ -473,6 +473,19 @@ $cases = @(
   @('Bash', 'main', 'm=-Apply; pwsh tools/dev/repo-settings.ps1 $m', 'D'),
   @('Bash', 'main', 'pwsh tools/dev/repo-settings.ps1 "$M"', 'D'),
   @('PowerShell', 'main', 'pwsh tools/dev/repo-settings.ps1 -Check:$false', 'D'),
+  # B1 : nom court 8.3, motif dans tools/, nom fabriqué par concaténation.
+  @('Bash', 'main', 'pwsh tools/dev/REPO-S~1.PS1 -Apply', 'D'),
+  @('PowerShell', 'main', 'pwsh -NoProfile -File tools\dev\repo-s~1.ps1 -Apply', 'D'),
+  @('Bash', 'main', 'pwsh tools/d?v/repo-setting?.ps1 -Apply', 'D'),
+  @('Bash', 'main', 'pwsh tools/d*/REPO-S~1.PS1 -Apply', 'D'),
+  @('Bash', 'main', 'pwsh tools/*/r*-sett*.ps1 -Apply', 'D'),
+  @('PowerShell', 'main', "& ('tools/dev/repo-' + 'settings.ps1') -Apply", 'D'),
+  @('PowerShell', 'main', "pwsh -File ('tools/dev/' + 'repo-settings.ps1') -Apply", 'D'),
+  @('PowerShell', 'main', "& ('tools/dev/re' + 'po-settings.ps1') -Apply", 'D'),
+  @('PowerShell', 'main', "& (`"tools/dev/repo`" + `"-settings.ps1`") -Apply", 'D'),
+  @('PowerShell', 'main', "`$p = 'tools/dev/repo-' + 'settings.ps1'; & `$p -Apply", 'D'),
+  @('Bash', 'wt', 'ls tools/dev/repo-s*', 'A'),
+  @('Bash', 'wt', 'sed -n 1,20p tools/dev/repo-settings.ps1', 'D'),   # B2 : laissé en l'état (sed -i écrit)
   # gh api en écriture : refusé partout ailleurs, y compris depuis la copie principale.
   @('Bash', 'main', 'gh api -X PUT repos/o/r/rulesets/1 --input r.json', 'D'),
   @('Bash', 'main', 'gh api --method PATCH repos/o/r -f allow_auto_merge=true', 'D'),

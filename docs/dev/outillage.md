@@ -159,7 +159,7 @@ pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check
 pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply
 ```
 
-Tout autre segment qui cite le script est refusé : autre argument, `;` ou `&&`, redirection, autre chemin (`./tools/…`, barres obliques inverses, chemin absolu), motif (`repo-set*`), `pwsh -Command`, `bash -c`, `&`, `Start-Process`, argument tiré d'une variable. Un segment de lecture ou de données peut le citer : `cat`, `grep`, `git diff`, `git add`, titre de PR. Le fichier `tools/ci/repo-settings.json` contient `settings.json` dans son nom : la règle SEC0-35 refuse donc de le nommer dans une commande d'écriture (`git add tools/ci/repo-settings.json`). On passe par son dossier : `git add tools/ci/`.
+Tout autre segment qui cite le script est refusé : autre argument, `;` ou `&&`, redirection, autre chemin (`./tools/…`, barres obliques inverses, chemin absolu), motif (`repo-set*`, ou un motif dans `tools/` avec `repo-s`, `sett` ou `~<chiffre>` comme `tools/d?v/repo-setting?.ps1`), nom court 8.3 (`REPO-S~1.PS1`), nom fabriqué par concaténation (`'repo-'+'settings.ps1'`, ou tout nom du script qui n'apparaît en clair qu'une fois les guillemets et les `+` retirés), `pwsh -Command`, `bash -c`, `&`, `Start-Process`, argument tiré d'une variable. Un segment de lecture ou de données peut le citer : `cat`, `grep`, `git diff`, `git add`, titre de PR. Le fichier `tools/ci/repo-settings.json` contient `settings.json` dans son nom : la règle SEC0-35 refuse donc de le nommer dans une commande d'écriture (`git add tools/ci/repo-settings.json`). On passe par son dossier : `git add tools/ci/`.
 
 **`gh pr merge` est refusé : la fusion passe par `pwsh tools/dev/merge-pr.ps1 <PR>`**, depuis la copie principale (§3.3). Le message de refus le dit.
 
@@ -236,7 +236,7 @@ pwsh -NoProfile -File tools/dev/test-guards.ps1        # table des commandes ref
 pwsh -NoProfile -File tools/dev/test-hooks.ps1         # crochets Git et install-hooks, dans un TS_CACHE jetable
 pwsh -NoProfile -File tools/dev/test-slots.ps1         # logique des baux, dans un TS_CACHE jetable
 pwsh -NoProfile -File tools/dev/test-slots.ps1 -Real   # plus les vérifications du §6.3, dans les vrais emplacements
-pwsh -NoProfile -File tools/dev/test-repo-settings.ps1 # invariants de repo-settings.json, comparaison, arguments ; sans appel à GitHub
+pwsh -NoProfile -File tools/dev/test-repo-settings.ps1 # invariants, comparaison ; arguments et refus S4 dans un dépôt jetable dont origin est local : jamais d'appel à GitHub
 ```
 
 ## 5. Vérifications bloquantes de §6.3 (30/10/2026)
@@ -279,18 +279,18 @@ C'est un chemin sensible. Il a quatre sections :
 
 Deux modes exclusifs ; tout autre argument est refusé (code 2).
 
-- **Source** : le fichier est lu par `git show origin/main:tools/ci/repo-settings.json`, **jamais sur le disque**. Une modification d'un worktree ne peut donc pas être appliquée avant d'avoir été fusionnée. Le script fait `git fetch origin` d'abord. Si le fichier n'est pas sur `origin/main`, il le dit et s'arrête (code 2).
+- **Source** : le fichier est lu par `git show origin/main:tools/ci/repo-settings.json`, **jamais sur le disque**. Une modification d'un worktree ne peut donc pas être appliquée avant d'avoir été fusionnée. Ordre des préalables, chacun avec son message (code 2) : arguments, préalables S4 ci-dessous, `git fetch origin` et égalité avec `origin/main`, présence du fichier sur `origin/main` (sinon il le dit et s'arrête), et enfin distant `origin` sur `github.com`.
 - **Préalables** (S4) : lancé depuis la racine de la copie principale, script de cette copie (pas celui d'un worktree), copie propre, sur `main`, égale à `origin/main`. Sinon : code 2.
 - **Invariants codés dans le script** (S2). Le fichier est refusé s'il manque à `ruleset_main` l'une des règles `pull_request`, `required_status_checks` (`ci-ok`, `strict`, `integration_id` 15368), `required_linear_history`, `non_fast_forward`, `deletion` ; si un `bypass_actors` n'est pas vide ; si un *ruleset* vise une autre branche ; si `repo` contient une autre clé que ses six clés (visibilité, branche par défaut… ne passent jamais par `-Apply`), permet autre chose que le squash ou la fusion automatique ; si `allowed_actions` n'est pas `selected`, si `sha_pinning_required` manque, si un motif sort de la liste fermée, si le jeton passe en écriture, si les Actions peuvent approuver, ou si les workflows des *forks* sont permis. Il est refusé aussi si une action utilisée par les workflows d'`origin/main` n'est couverte par aucun motif (`-Apply` casserait la CI). Affaiblir une règle demande donc de modifier aussi le script.
 - **`-Check`** (lecture seule, `GET` seulement) compare GitHub au fichier et affiche chaque écart, avec la valeur attendue et la valeur lue ; code 1 s'il y en a un. Il signale :
   - un fichier refusé par les invariants ;
   - un *ruleset* attendu absent, en double, ou différent (règles indexées par type, listes comparées sans tenir compte de l'ordre) ;
   - tout *ruleset* inconnu qui vise `main` ou `pilotage` (S3 ; motifs `~ALL`, `~DEFAULT_BRANCH` et jokers compris, de façon prudente) ;
-  - toute **protection de branche classique** encore présente, sur n'importe quelle branche (S3). `branches?protected=true` compte aussi les branches visées par un *ruleset* : chaque branche listée est relue par `branches/<nom>/protection` (404 : aucune) ;
+  - toute **protection de branche classique** encore présente, sur n'importe quelle branche (S3). `branches?protected=true` compte aussi les branches visées par un *ruleset* : chaque branche listée est relue par `branches/<nom>/protection`. Seul le 404 dont le message est « Branch not protected » vaut « aucune » ; tout autre 404 arrête `-Check` (code 2) ;
   - au-delà de 100 *rulesets* ou de 100 branches protégées, `-Check` s'arrête (code 2) : la pagination n'est pas gérée ;
   - toute différence des champs de `repo` et des quatre ressources d'Actions.
 
-  Champs ignorés, liste explicite : `id`, `node_id`, `source`, `source_type`, `_links`, `created_at`, `updated_at`, `current_user_can_bypass` d'un *ruleset* ; les champs de l'objet du dépôt absents du fichier ; `selected_actions_url`. Un paramètre de règle que GitHub ajoute avec sa valeur par défaut est affiché en note, sans écart.
+  Champs ignorés, liste explicite : `id`, `node_id`, `source`, `source_type`, `_links`, `created_at`, `updated_at`, `current_user_can_bypass` d'un *ruleset* ; les champs de l'objet du dépôt absents du fichier ; `selected_actions_url`. Un paramètre de règle présent sur GitHub et absent du fichier est un **écart** (par exemple `do_not_enforce_on_create: true`, qui affaiblirait la règle ; le fichier le fixe donc à `false`). Seule exception, une liste fermée et commentée dans le script, et seulement avec sa valeur neutre : `automatic_copilot_code_review_enabled: false` et `required_reviewers: []`, que GitHub peut renvoyer sans qu'on les envoie. Elle évite qu'un `-Apply` conforme laisse un écart qui suspendrait toutes les fusions.
 - **`-Apply`** : refuse un fichier invalide sans rien écrire. Sinon, crée (`POST`) ou remplace (`PUT`, identifiant retrouvé par nom) les deux *rulesets*, règle le dépôt (`PATCH`) et les quatre ressources d'Actions (`PUT`), puis relance `-Check` et échoue si un écart subsiste. Il ne supprime ni *ruleset* inconnu ni protection classique : `-Check` les signale.
 
 Codes de sortie : 0 conforme, 1 écart ou écriture refusée, 2 usage, préalable non rempli ou erreur.
@@ -298,7 +298,7 @@ Codes de sortie : 0 conforme, 1 écart ou écriture refusée, 2 usage, préalabl
 ### 6.3 Qui lance quoi
 
 - **`-Apply`** : l'**orchestrateur**, après la fusion de la PR qui modifie `repo-settings.json` ou le script, depuis la copie principale à jour. Ordre de R6 : fusion, `-Apply`, `-Check` vert, puis essai de poussée directe vers `main`, qui doit être refusé par GitHub. Entre la fusion de T3d et le premier `-Apply`, `-Check` est en écart : les fusions sont suspendues jusqu'à `-Apply`.
-- **`-Check`** : `cargo xtask verify-main`, donc **à chaque `cargo xtask merge`** (étape 2) et chaque nuit (AS-31 E4). Il lance `pwsh -NoProfile -NonInteractive -File <copie principale>\tools\dev\repo-settings.ps1 -Check` :
+- **`-Check`** : `cargo xtask verify-main`, donc **à chaque `cargo xtask merge`** (étape 2) et chaque nuit (AS-31 E4). Le contrôle de nuit doit tourner **en local**, dans la copie principale, puisqu'il est sauté en CI. Cette tâche planifiée n'existe pas encore : elle relève de T3e, suivie par l'issue que le responsable développement ouvrira. `verify-main` lance `pwsh -NoProfile -NonInteractive -File <copie principale>\tools\dev\repo-settings.ps1 -Check` :
   - code 1 (écart) : une *issue* `role:architecture` de clé `repo-settings-drift` est ouverte (ou réutilisée), et les fusions sont suspendues ;
   - autre code (préalable, réseau) : `verify-main` échoue ; en `--dry-run`, c'est un avertissement et le résultat reste un refus ;
   - **en CI** (`CI=true` et `GITHUB_ACTIONS=true`), le contrôle est **sauté** avec un avertissement dans le résumé du travail : `GITHUB_TOKEN` n'a pas les droits d'administration. Pour que ce saut ne serve pas à contourner le contrôle, `cargo xtask merge` **refuse** de tourner en mode CI ;

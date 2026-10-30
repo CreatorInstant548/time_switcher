@@ -310,10 +310,21 @@ function Get-MainCopyRootAt([string]$Dir) {
 # qui le cite (autre argument, autre chemin, Start-Process, &, bash -c, pwsh -Command, motif) : refus.
 $RepoSettingsForms = 'pwsh tools/dev/repo-settings.ps1 -Check', 'pwsh tools/dev/repo-settings.ps1 -Apply',
                      'pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check', 'pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply'
-function Get-RepoSettingsVerdict($Segments, [string]$Dir) {
+# Mot qui désigne le script : son nom ; son nom court 8.3 (REPO-S~1.PS1) ; un motif dans tools/dev/ ; un
+# motif dans tools/ qui contient repo-s, sett ou ~<chiffre> (tools/d?v/repo-setting?.ps1).
+function Test-RepoSettingsMention([string]$Tok) {
+  return $Tok -match '(?i)(^|[\\/\*\?\]])repo-settings(?!\.json$)|repo-s[^\\/\s]*~\d|[\\/]dev[\\/]+[^\\/\s]*[\*\?\[\{]' -or
+         $Tok -match '(?i)^(?=.*tools[\\/])(?=.*[\*\?\[])(?=.*(repo-s|sett|~\d))'
+}
+function Get-RepoSettingsVerdict($Segments, [string]$Dir, [string]$Text) {
+  # Nom fabriqué par concaténation ('repo-'+'settings.ps1', ("re"+"po-settings.ps1")) : refus.
+  $flat = $Text -replace '[''"`+\s()]', ''
+  $named = $Segments | ForEach-Object { $_ } | Where-Object { $_ -match '(?i)(?<![\w-])repo-settings' }
+  if ($Text -match '(?i)repo-[''"]|[''"]settings\.ps1' -or ($flat -match '(?i)(?<![\w-])repo-settings(?!\.json)' -and -not $named)) {
+    return 'nom de repo-settings.ps1 fabriqué par morceaux : refus (AS-30 R5, S4)'
+  }
   $data = $readCmds + $cdCmds + 'echo', 'printf', 'write-host', 'write-output', 'git', 'gh'
-  $calls = @($Segments | Where-Object {
-    (Get-Head $_) -notin $data -and (Get-ActiveWords $_ | Where-Object { $_ -match '(?i)(^|[\\/\*\?\]])repo-settings(?!\.json$)|[\\/]dev[\\/]+[^\\/\s]*[\*\?\[\{]' }) })
+  $calls = @($Segments | Where-Object { (Get-Head $_) -notin $data -and (Get-ActiveWords $_ | Where-Object { Test-RepoSettingsMention $_ }) })
   if (-not $calls) { return $null }
   if ($Segments.Count -ne 1 -or ($Segments[0] -join ' ') -cnotin $RepoSettingsForms) {
     return 'repo-settings.ps1 ne se lance que seul, sous la forme exacte « pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check » (ou -Apply) (AS-30 R5, S4)'
@@ -437,7 +448,7 @@ function Get-CommandVerdict([string]$Command, [string]$Tool, [string]$Cwd, [int]
   }
   $segments = Split-Command $text $Tool
   $xtaskInCommand = [bool]($segments | ForEach-Object { Get-ActiveWords $_ } | Where-Object { $_ -match '(?i)xtask' })
-  $v = Get-RepoSettingsVerdict $segments $Cwd
+  $v = Get-RepoSettingsVerdict $segments $Cwd $text
   if ($v) { return $v }
   $dir = $Cwd
   foreach ($s in $segments) {

@@ -22,8 +22,14 @@ $ActionsApi = [ordered]@{ permissions = '/actions/permissions'; selected_actions
 # reste de l'objet du dépôt (seuls les champs du fichier y sont comparés).
 $Ignored = '^ruleset_\w+\.(id|node_id|source|source_type|_links|created_at|updated_at|current_user_can_bypass)$',
            '^repo\.', '^actions\.permissions\.selected_actions_url$'
-# Paramètre d'une règle absent du fichier (valeur par défaut ajoutée par GitHub) : affiché, sans écart.
-$Noted = '^ruleset_\w+\.rules\.\w+\.parameters\.\w+$'
+# Paramètre de règle absent du fichier : un écart, sauf ceux de cette liste fermée, et seulement avec
+# leur valeur neutre (aucun effet sur la règle). GitHub peut les renvoyer sans qu'on les ait envoyés ;
+# les accepter ici évite qu'un -Apply conforme laisse un écart qui suspendrait toutes les fusions.
+# Toute autre valeur, ou tout autre paramètre (do_not_enforce_on_create: true…), est un écart.
+$NeutralParameters = @{
+  automatic_copilot_code_review_enabled = 'false'   # pull_request : relecture automatique par Copilot, désactivée
+  required_reviewers                    = '[]'      # pull_request : relecteurs obligatoires par motif, aucun
+}
 
 function Stop-With([int]$Code, [string]$Message) { [Console]::Error.WriteLine("repo-settings : $Message"); exit $Code }
 function Invoke-Git {
@@ -62,7 +68,9 @@ function Add-Diff($Want, $Got, [string]$Path, $Out) {
   foreach ($k in $Got.Keys) {
     $p = "$Path.$k"
     if ($Want.Contains($k) -or ($Ignored | Where-Object { $p -match $_ })) { continue }
-    if ($p -match $Noted) { Write-Host "  note : $p = $(J $Got[$k]) sur GitHub, absent du fichier (ignoré)"; continue }
+    if ($p -match '^ruleset_\w+\.rules\.\w+\.parameters\.\w+$' -and $k -cin @($NeutralParameters.Keys) -and (J $Got[$k]) -ceq $NeutralParameters[$k]) {
+      Write-Host "  note : $p = $(J $Got[$k]) sur GitHub, valeur neutre absente du fichier"; continue
+    }
     $Out.Add("$p : présent sur GitHub ($(J $Got[$k])), absent du fichier")
   }
 }
@@ -92,6 +100,11 @@ function Get-Api([string]$Path, [int[]]$Allow = @()) {
   $r = Invoke-Api $Path
   if ($r.Status -ne 200 -and $r.Status -notin $Allow) { Stop-With 2 "GET repos/$Slug$Path : échec (HTTP $($r.Status))" }
   return $r
+}
+
+# Réponse 404 de branches/<b>/protection qui dit bien « aucune protection classique ».
+function Test-NotProtected($R) {
+  return $R.Status -eq 404 -and $R.Json -is [Collections.IDictionary] -and $R.Json['message'] -ceq 'Branch not protected'
 }
 
 # Le motif de ref d'un ruleset peut-il viser cette branche ? (prudent : * couvre aussi /)
@@ -184,12 +197,14 @@ function Get-Drift($C) {
     }
   }
   # protected=true couvre aussi les branches visées par un ruleset : la protection classique se lit
-  # branche par branche (404 : aucune).
+  # branche par branche. Seul le 404 « Branch not protected » vaut « aucune » ; tout autre 404 est une erreur.
   $branches = @((Get-Api '/branches?protected=true&per_page=100').Json)
   if ($branches.Count -ge 100) { Stop-With 2 'plus de 100 branches protégées : pagination non gérée' }
   foreach ($b in $branches) {
-    $r = Get-Api "/branches/$([uri]::EscapeDataString($b['name']))/protection" -Allow 404
+    $path = "/branches/$([uri]::EscapeDataString($b['name']))/protection"
+    $r = Get-Api $path -Allow 404
     if ($r.Status -eq 200) { $out.Add("protection de branche classique sur $($b['name']) (S3)") }
+    elseif (-not (Test-NotProtected $r)) { Stop-With 2 "GET repos/$Slug$path : 404 inattendu ($(J $r.Json))" }
   }
   foreach ($k in $ActionsApi.Keys) {
     $r = Get-Api $ActionsApi[$k] -Allow 404, 409
@@ -210,9 +225,8 @@ if ($MyInvocation.InvocationName -eq '.') { return }   # chargé par tools/dev/t
 # --- Arguments et préalables ---
 if ($args.Count -ne 1 -or $args[0] -cnotin '-Check', '-Apply') { Stop-With 2 'usage : pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check|-Apply' }
 $Apply = $args[0] -ceq '-Apply'
-Invoke-Git fetch --quiet origin | Out-Null
-& git cat-file -e "origin/main:$File" 2>$null
-if ($LASTEXITCODE) { Stop-With 2 "$File absent d'origin/main : réglages pas encore fusionnés, rien à comparer ni à appliquer" }
+# S4 d'abord, puis le fichier d'origin/main, puis le distant : chaque refus a son message (testés par
+# tools/dev/test-repo-settings.ps1 dans un dépôt jetable dont origin est local, sans appel à GitHub).
 $common = "$(Invoke-Git rev-parse --path-format=absolute --git-common-dir)".Trim()
 $main = Split-Path ([IO.Path]::GetFullPath($common)) -Parent
 $top = "$(Invoke-Git rev-parse --show-toplevel)".Trim()
@@ -220,7 +234,10 @@ if (-not (Test-SamePath (Get-Location).Path $main) -or -not (Test-SamePath $top 
 if (-not (Test-SamePath $PSScriptRoot (Join-Path $main 'tools/dev'))) { Stop-With 2 "script lancé hors de la copie principale ($PSScriptRoot)" }
 if ("$(Invoke-Git branch --show-current)".Trim() -cne 'main') { Stop-With 2 'la copie principale n''est pas sur main' }
 if (@(Invoke-Git status --porcelain).Count) { Stop-With 2 'la copie principale n''est pas propre' }
+Invoke-Git fetch --quiet origin | Out-Null
 if ("$(Invoke-Git rev-parse HEAD)".Trim() -cne "$(Invoke-Git rev-parse origin/main)".Trim()) { Stop-With 2 'la copie principale n''est pas à jour d''origin/main : git pull --ff-only' }
+& git cat-file -e "origin/main:$File" 2>$null
+if ($LASTEXITCODE) { Stop-With 2 "$File absent d'origin/main : réglages pas encore fusionnés, rien à comparer ni à appliquer" }
 $url = "$(Invoke-Git config --get remote.origin.url)".Trim()
 if ($url -notmatch '^(https://github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(\.git)?$') { Stop-With 2 "distant origin hors de github.com : $url" }
 $Slug = $Matches[2]
