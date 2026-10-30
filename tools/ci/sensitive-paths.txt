@@ -38,6 +38,8 @@ tools/dev/
 tools/ci/
 deny.toml
 .gitleaks.toml
+# Any Cargo.lock change: a version bump of serde, serde_json or syn changes the merge barrier's code.
+Cargo.lock
 rust-toolchain
 rust-toolchain.toml
 fuzz/

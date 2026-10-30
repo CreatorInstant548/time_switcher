@@ -133,7 +133,7 @@ fn binary_check(repo: &Repo) -> Result<(), String> {
 
 /// Étape 1 : copie principale propre, sur `main`, à jour d'`origin/main` (par `--ff-only`).
 /// Rend faux en `--dry-run` si J2 n'est pas rempli (m1).
-fn main_copy(repo: &Repo) -> Result<bool, String> {
+fn main_copy(repo: &Repo, j2_check: J2Check) -> Result<bool, String> {
     let pull = "git pull --ff-only dans la copie principale";
     if repo.git(&["branch", "--show-current"])? != "main" {
         return Err(refuse(
@@ -165,7 +165,7 @@ fn main_copy(repo: &Repo) -> Result<bool, String> {
     }
     if repo.dry_run {
         let mut j2 = true;
-        if let Err(e) = binary_check(repo) {
+        if let Err(e) = j2_check(repo) {
             println!(
                 "  AVERTISSEMENT (--dry-run) : contrôle J2 non rempli, bloquant sans --dry-run :\n  {e}"
             );
@@ -189,7 +189,7 @@ fn main_copy(repo: &Repo) -> Result<bool, String> {
             "cd vers la copie principale, puis cargo xtask merge <PR>",
         ));
     }
-    binary_check(repo).map(|()| true)
+    j2_check(repo).map(|()| true)
 }
 
 /// PR ouverte, base `main`, hors brouillon, fusionnable, en retard de 0 commit, titre A31.
@@ -333,12 +333,19 @@ fn workflows_at(repo: &Repo, sha: &str) -> Result<(), String> {
 }
 
 /// Vrai si tout est conforme ; faux en `--dry-run` quand seul J2 manque (m1).
+/// J2 check of the running binary: [`binary_check`], replaced only in tests.
+type J2Check = fn(&Repo) -> Result<(), String>;
+
 fn run(repo: &Repo, pr: u64) -> Result<bool, String> {
+    run_with(repo, pr, binary_check)
+}
+
+fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
     step(
         "1",
         "copie principale propre, sur main, à jour ; binaire construit depuis main (J2)",
     );
-    let j2 = main_copy(repo)?;
+    let j2 = main_copy(repo, j2_check)?;
     step("2", "hooks verify (verify-main : PR suivante de T3a)");
     println!(
         "  AVERTISSEMENT : contrôle de l'origine de main (verify-main, SEC0-17) pas encore en place."
@@ -459,15 +466,16 @@ fn run(repo: &Repo, pr: u64) -> Result<bool, String> {
         println!("  review-ok et archsec-ok sur {sha}");
     }
     step("11", "fusion");
+    if let Some(why) = suspended {
+        return Err(why);
+    }
+    // m5: state read again right before gh pr merge (head SHA, mergeable, behind_by = 0).
     let again = pr_state(repo, pr)?;
     if again["headRefOid"].as_str() != Some(sha.as_str()) {
         return Err(refuse(
-            "la tête de la PR a changé pendant les contrôles",
-            &format!("relancer cargo xtask merge {pr}"),
+            "the PR head changed during the checks",
+            &format!("run cargo xtask merge {pr} again"),
         ));
-    }
-    if let Some(why) = suspended {
-        return Err(why);
     }
     if repo.dry_run {
         println!("  --dry-run : tous les contrôles sont passés ; aucune fusion (PR #{pr}, {sha}).");
@@ -495,28 +503,33 @@ fn run(repo: &Repo, pr: u64) -> Result<bool, String> {
             "-R",
             &repo.slug,
             "--json",
-            "state,mergeCommit",
+            "state,headRefOid,mergeCommit",
         ]);
         let v: Value = view
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
-        match v["state"].as_str() {
-            Some("MERGED") => {
+        // m4: the fallback only accepts a merge of the checked head.
+        match (v["state"].as_str(), v["headRefOid"].as_str()) {
+            (Some("MERGED"), Some(h)) if h == sha => {
                 println!(
                     "  AVERTISSEMENT : gh pr merge a signalé une erreur après la fusion ({e})."
                 );
                 Ok(String::new())
             }
             _ => Err(refuse(
-                format!("gh pr merge a échoué ({e})"),
+                format!("gh pr merge failed ({e})"),
                 &format!("gh pr view {pr}"),
             )),
         }
     })?;
-    repo.git(&["pull", "--ff-only", "--quiet"])?;
+    // m4: the PR is merged on GitHub; a failed local update is not a refusal.
+    if let Err(e) = repo.git(&["pull", "--ff-only", "--quiet"]) {
+        println!("  PR #{pr} merged ({sha}); local update failed: run git pull --ff-only ({e})");
+        return Ok(true);
+    }
     println!(
-        "  PR #{pr} fusionnée ({sha}) ; copie principale : {}",
+        "  PR #{pr} merged ({sha}); main copy: {}",
         repo.git(&["log", "--oneline", "-1"])?
     );
     Ok(true)
@@ -644,31 +657,75 @@ mod tests {
         }
     }
 
-    /// B4, AS-23 point 2 : en `--dry-run`, `gh pr merge` n'est jamais appelé, et aucune commande
-    /// n'écrit dans la copie principale (ni `pull`, ni `config`, ni `checkout`, ni *issue*). Seuls
-    /// les `git fetch` écrivent, dans `.git`.
-    #[test]
-    fn dry_run_never_merges() {
-        const SHA: &str = "c41e984ba8594dedd592744fcb69a70f3716cd87";
-        const MAIN: &str = "43b3509aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SHA: &str = "c41e984ba8594dedd592744fcb69a70f3716cd87";
+    const MAIN: &str = "43b3509aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    /// Commands that write to the main copy or to GitHub.
+    const WRITES: [&str; 18] = [
+        "gh pr merge",
+        "gh issue create",
+        "gh pr edit",
+        "git pull",
+        "git config",
+        "git checkout",
+        "git switch",
+        "git reset",
+        "git commit",
+        "git push",
+        "git update-ref",
+        "git merge ",
+        "git branch -f",
+        "git branch -d",
+        "git branch -D",
+        "git branch -m",
+        "git worktree add",
+        "git stash",
+    ];
+
+    /// Plays `merge` on recorded answers for a sensitive-free PR #7 whose every check passes,
+    /// `hooks verify` included (temporary cache with the pinned set, fake gitleaks, empty home).
+    fn scenario(dry_run: bool, j2_check: J2Check) -> (Result<bool, String>, Vec<String>) {
+        let base =
+            std::env::temp_dir().join(format!("xtask-merge-test-{}-{dry_run}", std::process::id()));
+        let (main, cache, home) = (base.join("main"), base.join("cache"), base.join("home"));
+        for d in [&main, &home] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let gitleaks = base.join("gitleaks.exe");
+        crate::sys::write(&gitleaks, b"fake gitleaks").unwrap();
+        let lock = format!(
+            "gitleaks.path = \"{}\"\ngitleaks.sha256 = \"{}\"\n",
+            gitleaks.display(),
+            crate::sha256::hex(b"fake gitleaks")
+        );
+        let set = vec![("tools.lock".to_owned(), lock.clone().into_bytes())];
+        let hash = hooks::set_hash(&set).unwrap();
+        std::fs::create_dir_all(cache.join("hooks").join(&hash)).unwrap();
+        crate::sys::write(
+            &cache.join("hooks").join(&hash).join("tools.lock"),
+            lock.as_bytes(),
+        )
+        .unwrap();
+        crate::sys::write(&cache.join("hooks").join("current.sha256"), hash.as_bytes()).unwrap();
+
         let pr = json!({"number": 7, "state": "OPEN", "baseRefName": "main", "headRefOid": SHA,
             "isDraft": false, "mergeable": "MERGEABLE", "changedFiles": 1,
-            "title": "docs(essai): x", "url": "u"});
+            "title": "docs(test): x", "url": "u"});
         let check = json!({"name": "ci-ok", "status": "completed", "conclusion": "success",
             "head_sha": SHA, "check_suite": {"id": 5}});
         let wfr = json!({"workflow_runs": [{"path": ".github/workflows/ci.yml", "workflow_id": 9,
             "head_sha": SHA, "check_suite_id": 5, "repository": {"full_name": "o/r"}}]});
-        let answers = [
+        let answers: Vec<(String, String)> = [
             ("git branch --show-current", "main".to_owned()),
             ("git status --porcelain", String::new()),
             ("git fetch", String::new()),
+            ("git pull", String::new()),
             ("git rev-parse", MAIN.to_owned()),
             ("git ls-tree", String::new()),
+            ("git ls-files", String::new()),
+            ("git log --oneline -1", "x".to_owned()),
             ("git cat-file -e", String::new()),
-            (
-                "git cat-file blob origin/main:tools/dev/tools.lock",
-                "gitleaks.path = \"x\"\n".to_owned(),
-            ),
+            ("git cat-file blob origin/main:tools/dev/tools.lock", lock),
             (
                 "git cat-file blob origin/main:tools/ci/sensitive-paths.txt",
                 include_str!("../../ci/sensitive-paths.txt").to_owned(),
@@ -680,8 +737,8 @@ mod tests {
                 &format!("git ls-tree -r -z --name-only --full-tree {SHA}") as &str,
                 "docs/a.md\0".to_owned(),
             ),
-            ("gh issue list", "[]".to_owned()),
             ("gh pr view 7", pr.to_string()),
+            ("gh pr merge 7", String::new()),
             (
                 "gh api repos/o/r/compare/",
                 json!({"behind_by": 0}).to_string(),
@@ -699,63 +756,47 @@ mod tests {
                 "gh api --paginate repos/o/r/pulls/7/files",
                 json!([{"filename": "docs/a.md"}]).to_string(),
             ),
-        ];
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .collect();
         let calls = Rc::new(RefCell::new(Vec::new()));
-        let nowhere = std::env::temp_dir().join("xtask-essai-inexistant");
         let repo = Repo {
-            main: nowhere.clone(),
-            here: nowhere.clone(),
+            main: main.clone(),
+            here: main,
             slug: "o/r".to_owned(),
-            dry_run: true,
-            cache: nowhere.join("cache"),
-            home: None,
+            dry_run,
+            cache,
+            home: Some(home),
             runner: Box::new(Fake {
                 calls: Rc::clone(&calls),
-                answers: answers
-                    .iter()
-                    .map(|(k, v)| ((*k).to_owned(), v.clone()))
-                    .collect(),
+                answers,
             }),
         };
-        // Crochets non conformes dans ce faux dépôt : suspension, mais le dry-run va jusqu'au bout.
-        let result = run(&repo, 7);
-        let calls = calls.borrow();
-        assert!(
-            result.is_err_and(|e| e.contains("fusions suspendues")),
-            "{calls:#?}"
-        );
+        let result = run_with(&repo, 7, j2_check);
+        let _ = std::fs::remove_dir_all(&base); // temporary files written above only
+        let calls = calls.borrow().clone();
+        (result, calls)
+    }
+
+    /// B4, AS-23 point 2: a `--dry-run` whose every check passes never calls `gh pr merge`, and
+    /// runs no command that writes to the main copy or to GitHub. Only the `git fetch` write, in
+    /// `.git`. The binary is not under the fake main copy's `target`, so J2 fails: « OK sauf J2 ».
+    #[test]
+    fn dry_run_never_merges() {
+        let (result, calls) = scenario(true, binary_check);
+        assert_eq!(result, Ok(false), "{calls:#?}");
         assert_eq!(
             calls
                 .iter()
                 .filter(|c| c.starts_with("gh pr view 7"))
                 .count(),
-            2,
-            "étape 11 atteinte"
+            2
         );
-        let writes = [
-            "gh pr merge",
-            "gh issue create",
-            "gh pr edit",
-            "git pull",
-            "git config",
-            "git checkout",
-            "git switch",
-            "git reset",
-            "git commit",
-            "git push",
-            "git update-ref",
-            "git merge ",
-            "git branch -f",
-            "git branch -d",
-            "git branch -D",
-            "git branch -m",
-            "git worktree add",
-            "git stash",
-        ];
-        for c in calls.iter() {
+        for c in &calls {
             assert!(
-                !writes.iter().any(|w| c.starts_with(w)),
-                "écriture en --dry-run : {c}"
+                !WRITES.iter().any(|w| c.starts_with(w)),
+                "write in --dry-run: {c}"
             );
             assert!(c.starts_with("gh ") || c.starts_with("git "), "{c}");
         }
@@ -763,6 +804,30 @@ mod tests {
             calls
                 .iter()
                 .any(|c| c == "git fetch --quiet origin pull/7/head")
+        );
+    }
+
+    /// Witness: the same scenario without `--dry-run` (J2 replaced) merges the checked head.
+    #[test]
+    fn real_run_merges_checked_head() {
+        let (result, calls) = scenario(false, |_| Ok(()));
+        assert_eq!(result, Ok(true), "{calls:#?}");
+        let merge =
+            format!("gh pr merge 7 -R o/r --squash --delete-branch --match-head-commit {SHA}");
+        assert_eq!(
+            calls.iter().filter(|c| **c == merge).count(),
+            1,
+            "{calls:#?}"
+        );
+        // m5: the PR state is read again right before gh pr merge.
+        let at = calls.iter().position(|c| *c == merge).unwrap();
+        assert!(
+            calls[..at]
+                .iter()
+                .rev()
+                .take(2)
+                .any(|c| c.starts_with("gh pr view 7")),
+            "{calls:#?}"
         );
     }
 }

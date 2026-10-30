@@ -121,7 +121,8 @@ pub fn patch_sections(manifest: &str) -> Vec<String> {
             if header.starts_with("patch") || header.starts_with("replace") {
                 out.push(line.trim().to_owned());
             }
-        } else if root && (squashed.starts_with("patch.") || squashed.starts_with("replace")) {
+        } else if root && (squashed.starts_with("patch") || squashed.starts_with("replace")) {
+            // Root keys: dotted (`patch.crates-io…`) or inline table (`patch = { … }`).
             out.push(line.trim().to_owned());
         }
     }
@@ -219,6 +220,7 @@ mod tests {
             "[replace]\n\"serde:1.0.0\" = { path = \"x\" }\n",
             "patch.crates-io.serde = { path = \"x\" }\n[package]\n",
             "replace = {}\n",
+            "patch = { crates-io = { serde = { path = \"x\" } } }\n[package]\n",
         ] {
             assert_eq!(patch_sections(bad).len(), 1, "{bad}");
         }
