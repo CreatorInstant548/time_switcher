@@ -282,13 +282,13 @@ fn pinned_dir(cx: &Ctx) -> Result<PathBuf, String> {
             .replace('\\', "/")
             .eq_ignore_ascii_case(&hooks.to_string_lossy().replace('\\', "/"))
     });
-    // Empreinte du jeu installé, écrite par install-hooks.ps1 ; -Verify recalcule le contenu.
+    // Empreinte du jeu installé, écrite par xtask hooks install ; hooks verify recalcule le contenu.
     let current = sys::read_text(&hooks.join("current.sha256")).unwrap_or_default();
     let hex = name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit());
     if !same_parent || !hex || !current.trim().eq_ignore_ascii_case(&name) {
         return Err(
             "core.hooksPath ne désigne pas la copie épinglée TS_CACHE/hooks/<current.sha256> : \
-             réinstaller les crochets (tools/dev/install-hooks.ps1)"
+             réinstaller les crochets (cargo xtask hooks install)"
                 .to_owned(),
         );
     }

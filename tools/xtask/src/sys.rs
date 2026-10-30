@@ -19,7 +19,7 @@ pub fn args() -> Vec<String> {
     std::env::args().skip(1).collect()
 }
 
-#[allow(clippy::disallowed_methods)] // outil : CARGO, TS_CACHE, CARGO_HOME, USERNAME, COMPUTERNAME.
+#[allow(clippy::disallowed_methods)] // outil : CARGO, TS_CACHE, CARGO_HOME, USERNAME, COMPUTERNAME, USERPROFILE.
 pub fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
@@ -83,6 +83,12 @@ pub fn run_captured(root: &Path, prog: &str, args: &[&str]) -> Result<(bool, Str
 
 /// Sortie standard d'une commande qui doit réussir.
 pub fn stdout_of(root: &Path, prog: &str, args: &[&str]) -> Result<String, String> {
+    String::from_utf8(bytes_of(root, prog, args)?)
+        .map_err(|_| format!("sortie non UTF-8 de {prog}"))
+}
+
+/// Sortie standard brute d'une commande qui doit réussir (contenu d'un objet Git).
+pub fn bytes_of(root: &Path, prog: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     let out = command(root, prog, args)
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
@@ -91,7 +97,50 @@ pub fn stdout_of(root: &Path, prog: &str, args: &[&str]) -> Result<String, Strin
     if !out.status.success() {
         return Err(format!("échec de « {prog} {} »", args.join(" ")));
     }
-    String::from_utf8(out.stdout).map_err(|_| format!("sortie non UTF-8 de {prog}"))
+    Ok(out.stdout)
+}
+
+/// Code de sortie seul, sorties tues : `git cat-file -e` et autres tests de présence.
+pub fn succeeds(root: &Path, prog: &str, args: &[&str]) -> Result<bool, String> {
+    let status = command(root, prog, args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("{prog} introuvable ou impossible à lancer : {e}"))?;
+    Ok(status.success())
+}
+
+#[allow(clippy::disallowed_methods)] // outil : copie épinglée des crochets, corps d'issue.
+pub fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    std::fs::write(path, bytes)
+        .map_err(|e| format!("écriture impossible de {} : {e}", path.display()))
+}
+
+/// Noms des entrées d'un dossier, avec vrai si c'est un fichier ordinaire (lien : faux).
+#[allow(clippy::disallowed_methods)] // outil : contenu de la copie épinglée des crochets.
+pub fn entries(dir: &Path) -> Result<Vec<(String, bool)>, String> {
+    let err = |e: std::io::Error| format!("lecture impossible de {} : {e}", dir.display());
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).map_err(err)? {
+        let e = e.map_err(err)?;
+        let file = std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.file_type().is_file());
+        out.push((e.file_name().to_string_lossy().into_owned(), file));
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Date de modification d'un fichier.
+pub fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+/// Dossier personnel de l'utilisateur (réglages de Claude Code, lus sans jamais être écrits).
+pub fn home() -> Option<PathBuf> {
+    env("USERPROFILE")
+        .or_else(|| env("HOME"))
+        .map(PathBuf::from)
 }
 
 /// SHA-256 d'un fichier, par l'outil du système (aucune crate de cryptographie ajoutée).

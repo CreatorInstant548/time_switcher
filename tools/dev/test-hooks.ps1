@@ -1,8 +1,13 @@
-# tools/dev/test-hooks.ps1 : essais des crochets Git et de install-hooks.ps1, dans un dépôt jetable
-# sous TS_CACHE\tmp\ (jamais dans le vrai dépôt). L'installation se fait dans un TS_CACHE jetable.
+# tools/dev/test-hooks.ps1 : essais des crochets Git et de cargo xtask hooks install|verify, dans un
+# dépôt jetable sous TS_CACHE\tmp\ (jamais dans le vrai dépôt). L'installation se fait dans un TS_CACHE
+# jetable, par le binaire xtask compilé depuis cette copie (le dépôt jetable joue la copie principale).
 # Sortie 1 si un essai échoue. Le faux secret est fabriqué à l'exécution : aucun n'est commis.
 $ErrorActionPreference = 'Stop'
 $dev = $PSScriptRoot
+$root = (Resolve-Path (Join-Path $dev '..\..')).Path
+& cargo build -q --locked -p xtask --manifest-path (Join-Path $root 'Cargo.toml')
+if ($LASTEXITCODE -ne 0) { 'test-hooks : compilation de xtask impossible.'; exit 1 }
+$xtask = Join-Path $root 'target\debug\xtask.exe'
 $realCache = if ($env:TS_CACHE) { $env:TS_CACHE } else { 'C:\Dev\ts-cache' }
 $tmp = Join-Path $realCache "tmp\hooks-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 $repo = Join-Path $tmp 'repo'; $remote = Join-Path $tmp 'remote.git'; $other = Join-Path $tmp 'autre'
@@ -24,7 +29,8 @@ function Add([string]$Path, [byte[]]$Bytes) {
   [IO.File]::WriteAllBytes($p, $Bytes); G add -- $Path | Out-Null
 }
 function Text([string]$s) { [Text.Encoding]::UTF8.GetBytes($s) }
-function Verify { & pwsh -NoProfile -File (Join-Path $dev 'install-hooks.ps1') -Repo $repo -Verify 2>&1 | Out-String }
+function Xtask { Push-Location $repo; try { & $xtask @args 2>&1 | Out-String } finally { Pop-Location } }
+function Verify { Xtask hooks verify --dry-run }
 function MainSha { "$(G rev-parse main)".Trim() }
 
 try {
@@ -33,8 +39,16 @@ try {
   & git init -q -b main $repo
   G config user.name essai | Out-Null; G config user.email essai@example.invalid | Out-Null
   G remote add origin $remote | Out-Null
-  Add 'README.md' (Text "essai`n"); G commit -q -m 'docs(essai): base' | Out-Null; G push -q origin main | Out-Null
-  $inst = & pwsh -NoProfile -File (Join-Path $dev 'install-hooks.ps1') -Repo $repo 2>&1 | Out-String
+  Add 'README.md' (Text "essai`n")
+  # Le jeu de crochets et tools.lock, lus par hooks install|verify dans origin/main du dépôt jetable.
+  foreach ($f in Get-ChildItem -LiteralPath (Join-Path $dev 'hooks') -File) { Add "tools/dev/hooks/$($f.Name)" ([IO.File]::ReadAllBytes($f.FullName)) }
+  Add 'tools/dev/tools.lock' ([IO.File]::ReadAllBytes((Join-Path $dev 'tools.lock')))
+  G commit -q -m 'docs(essai): base' | Out-Null; G push -q origin main | Out-Null
+  [IO.File]::WriteAllBytes((Join-Path $repo 'tools\dev\hooks\commit-msg'), (Text "# modifié`n"))
+  $inst = Xtask hooks install
+  Check 'installation refusée si un crochet diffère d''origin/main (J7)' (($LASTEXITCODE -ne 0) -and $inst -match 'commit-msg') $inst
+  Copy-Item -LiteralPath (Join-Path $dev 'hooks\commit-msg') -Destination (Join-Path $repo 'tools\dev\hooks\commit-msg')
+  $inst = Xtask hooks install
   Check 'installation' ($LASTEXITCODE -eq 0) $inst
   $v = Verify; Check 'vérification de l''empreinte et de la valeur effective' ($LASTEXITCODE -eq 0) $v
 

@@ -2,7 +2,9 @@
 # (Bash, PowerShell, Monitor, mcp__terminal__run_in_terminal). Refuse (code 2) par LISTE BLANCHE :
 # - git : options globales -C et --no-pager seulement ; sous-commandes permises, chacune avec ses règles ;
 #   toute autre sous-commande, tout alias, tout préfixe d'environnement : refus (SEC0-13, SEC0-14) ;
-# - gh : sous-commandes permises, api en lecture seule ; gh pr merge refusé (fusion par merge-pr.ps1, SEC0-15) ;
+# - gh : sous-commandes permises, api en lecture seule ; gh pr merge refusé (fusion par cargo xtask merge, SEC0-15) ;
+# - cargo xtask merge <PR> : seulement depuis la racine de la copie principale ; --dry-run partout ; toute autre
+#   forme qui lance la fusion (cargo run -p xtask … merge, binaire xtask) refusée (J2) ;
 # - réglages de Claude Code et configuration de Git : pure lecture seulement (SEC0-35) ;
 # - substitution ou évaluation avec un mot d'écriture Git : refus par prudence.
 # Les corps de heredoc cités (<<'EOF') et de here-string @'...'@ sont des données ; bash -c, pwsh -Command
@@ -240,11 +242,33 @@ function Get-GhVerdict([string[]]$T, [int]$At) {
       return 'gh pr edit --base est interdit : la base d''une PR reste main'
     }
     if ($sub -in $allowed[$top]) { return $null }
-    if ($top -eq 'pr' -and $sub -eq 'merge') { return 'gh pr merge est interdit : fusion par pwsh tools/dev/merge-pr.ps1 <PR> depuis la copie principale (SEC0-15)' }
+    if ($top -eq 'pr' -and $sub -eq 'merge') { return 'gh pr merge est interdit : fusion par cargo xtask merge <PR> depuis la racine de la copie principale (SEC0-15)' }
     return "gh $top $sub non permis (liste blanche de gh)"
   }
   if ($top -ne 'api') { return "gh $top non permis (alias ou commande hors liste blanche de gh)" }
   return Get-GhApiArgsVerdict $a
+}
+
+# J2 : cargo xtask merge <PR> seulement depuis la racine de la copie principale, qui compile le xtask de main ;
+# --dry-run (aucune écriture) partout. Toute autre forme qui lancerait la fusion est refusée.
+function Get-XtaskMergeVerdict([string[]]$S, [string]$Dir) {
+  $head = Get-Head $S
+  if ($head -notin 'cargo', 'xtask' -or -not ($S | Where-Object { $_ -ieq 'merge' })) { return $null }
+  if ($head -eq 'cargo') {
+    $sub = @($S | Select-Object -Skip 1 | Where-Object { -not $_.StartsWith('-') -and -not $_.StartsWith('+') })[0]
+    if ("$sub".ToLowerInvariant() -in 'test', 't', 'build', 'b', 'check', 'c', 'clippy', 'fmt', 'doc', 'tree') { return $null }
+  }
+  $exact = $S.Count -in 4, 5 -and $S[0] -ceq 'cargo' -and $S[1] -ceq 'xtask' -and $S[2] -ceq 'merge' -and $S[3] -match '^\d+$' -and
+           ($S.Count -eq 4 -or $S[4] -ceq '--dry-run')
+  if (-not $exact) { return 'seule la forme « cargo xtask merge <PR> [--dry-run] » lance la fusion (J2)' }
+  if ($S.Count -eq 5) { return $null }
+  $common = "$(& git -C $Dir rev-parse --path-format=absolute --git-common-dir 2>$null)".Trim()
+  $main = if ($LASTEXITCODE -eq 0 -and $common) { Split-Path ([IO.Path]::GetFullPath($common)) -Parent } else { '' }
+  $here = ConvertTo-FullPath $Dir $Dir
+  if (-not $main -or -not $here -or -not $here.Equals($main, [StringComparison]::OrdinalIgnoreCase)) {
+    return "cargo xtask merge se lance seulement depuis la racine de la copie principale ($main), pas depuis $Dir (J2)"
+  }
+  return $null
 }
 
 # Arguments de gh api : lecture seule (GET, sans champs), hors chemins d'écriture ; motif du refus ou $null.
@@ -391,6 +415,8 @@ function Get-CommandVerdict([string]$Command, [string]$Tool, [string]$Cwd, [int]
         if ($v) { return $v }
       }
     }
+    $v = Get-XtaskMergeVerdict $s $dir
+    if ($v) { return $v }
     for ($k = 0; $k -lt $s.Count; $k++) {
       # git ou gh en position de commande, ou n'importe où hors des commandes dont les arguments sont des données.
       $atCmd = $k -eq 0 -or $s[$k - 1] -in $prefixCmds -or $s[$k - 1] -match '^\w+=' -or $s[$k - 1] -eq 'env'
