@@ -45,6 +45,7 @@ impl fmt::Debug for Fingerprint {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentPack {
     cards: Vec<Card>,
+    canonical: Vec<u8>,
     fingerprint: Fingerprint,
 }
 
@@ -105,7 +106,7 @@ impl ContentPack {
         let mut total_cards: usize = 0;
         for (index, file) in files.iter().enumerate() {
             if !is_relative_path(&file.path) {
-                sink.push_with(|| Diagnostic::new(Code::BadPath, "", (0, 0), &file.path));
+                sink.push_with(|| Diagnostic::new(Code::BadPath, "", (0, 0), ""));
                 continue;
             }
             if u64::try_from(file.bytes.len()).map_or(true, |n| n > limits.max_file_bytes) {
@@ -141,8 +142,15 @@ impl ContentPack {
             return Err(errors);
         }
         let cards: Vec<Card> = by_id.into_values().map(|l| l.card).collect();
-        let fingerprint = fingerprint_of(&encode(&cards));
-        Ok(Self { cards, fingerprint })
+        let Some(canonical) = encode(&cards) else {
+            return Err(one(Diagnostic::new(Code::EncodingOverflow, "", (0, 0), "")));
+        };
+        let fingerprint = fingerprint_of(&canonical);
+        Ok(Self {
+            cards,
+            canonical,
+            fingerprint,
+        })
     }
 
     /// Cards, sorted by identifier.
@@ -156,8 +164,8 @@ impl ContentPack {
     }
 
     /// The canonical bytes the fingerprint is computed on.
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        encode(&self.cards)
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical
     }
 }
 
@@ -234,35 +242,41 @@ fn validate(
 
 /// Canonical encoding: `u32` version, `u32` card count, then per card (sorted by id) a one-byte
 /// kind tag and its fields. Integers are little-endian; a string is a `u32` byte length then
-/// its UTF-8 bytes; a list is a `u32` count then its elements in authored order.
-fn encode(cards: &[Card]) -> Vec<u8> {
-    fn put_u32(out: &mut Vec<u8>, n: usize) {
-        out.extend_from_slice(&u32::try_from(n).unwrap_or(u32::MAX).to_le_bytes());
-    }
-    fn put_str(out: &mut Vec<u8>, s: &str) {
-        put_u32(out, s.len());
-        out.extend_from_slice(s.as_bytes());
-    }
+/// its UTF-8 bytes; a list is a `u32` count then its elements in authored order. `None` if a
+/// length does not fit a `u32`: a length is never saturated, so the encoding stays injective
+/// whatever the [`Limits`].
+fn encode(cards: &[Card]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
-    put_u32(&mut out, cards.len());
+    put_u32(&mut out, cards.len())?;
     for card in cards {
         match card {
             Card::Item { id, name } => {
                 out.push(0x01);
-                put_str(&mut out, id);
-                put_str(&mut out, name);
+                put_str(&mut out, id)?;
+                put_str(&mut out, name)?;
             }
             Card::Activity { id, name, items } => {
                 out.push(0x02);
-                put_str(&mut out, id);
-                put_str(&mut out, name);
-                put_u32(&mut out, items.len());
-                items.iter().for_each(|i| put_str(&mut out, i));
+                put_str(&mut out, id)?;
+                put_str(&mut out, name)?;
+                put_u32(&mut out, items.len())?;
+                items.iter().try_for_each(|i| put_str(&mut out, i))?;
             }
         }
     }
-    out
+    Some(out)
+}
+
+pub(crate) fn put_u32(out: &mut Vec<u8>, n: usize) -> Option<()> {
+    out.extend_from_slice(&u32::try_from(n).ok()?.to_le_bytes());
+    Some(())
+}
+
+fn put_str(out: &mut Vec<u8>, s: &str) -> Option<()> {
+    put_u32(out, s.len())?;
+    out.extend_from_slice(s.as_bytes());
+    Some(())
 }
 
 fn fingerprint_of(bytes: &[u8]) -> Fingerprint {

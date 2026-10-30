@@ -5,11 +5,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ts_data::{Code, ContentPack, Diagnostic, Limits, LoadErrors, SourceFile, read_bounded};
-
 // spec: carnet architecture-securite.md SEC0-25, SEC0-26
-/// Deepest sub-directory level read. A technical bound, not a game value.
-const MAX_DIR_DEPTH: usize = 8;
+use ts_data::{Code, ContentPack, Diagnostic, Limits, LoadErrors, SourceFile, read_bounded};
 
 fn fail(code: Code, file: &str) -> LoadErrors {
     LoadErrors::single(Diagnostic::new(code, file, (0, 0), ""))
@@ -19,15 +16,28 @@ fn fail(code: Code, file: &str) -> LoadErrors {
 /// into a [`ContentPack`].
 ///
 /// - A symbolic link or junction, anywhere (the root included), fails the load: never followed.
-/// - Entries visited are counted against `limits.max_files`, directories too.
+/// - Entries visited are counted against `limits.max_files`, directories too, and the count is
+///   checked while a directory is listed, so a huge directory is never held whole.
+/// - Directories nested deeper than `limits.max_dir_depth` fail the load.
 /// - Each file is read under `limits.max_file_bytes` (metadata check, then a bounded read) and
 ///   all files together under `limits.max_total_bytes`.
 /// - Other files are ignored, whatever their name. Errors carry paths relative to `root`,
 ///   never the local path.
 ///
-/// Residual risk: a link swapped in between the link check and the opening of a file is
-/// followed. It takes a concurrent writer in the content directory, who could change the
-/// content anyway.
+/// # Residual risk R-ARCH-08 (AS-35), accepted
+///
+/// The checks and the opening are not atomic. A writer who can change the content directory
+/// concurrently could, between the link check and `File::open`:
+/// - swap a file for a symbolic link: the link is followed, but the handle opened is checked
+///   with `File::metadata()` and refused unless it is a regular file, and the read stays
+///   bounded by `take(max + 1)`;
+/// - replace a parent directory by a link: not detected, the files under it are read;
+/// - on Unix, swap a file for a FIFO: `open` blocks until a writer comes (the metadata check
+///   runs after the open, so it cannot prevent this).
+///
+/// All three need write access to the content directory, which already allows changing the
+/// content itself. Hardening with `O_NOFOLLOW` or `FILE_FLAG_OPEN_REPARSE_POINT` is tracked
+/// separately.
 pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, LoadErrors> {
     if fs::symlink_metadata(root)
         .map_err(|_| fail(Code::ReadFailed, ""))?
@@ -41,11 +51,13 @@ pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, Loa
     let mut total_bytes: u64 = 0;
     let mut pending = vec![(root.to_path_buf(), String::new(), 0_usize)];
     while let Some((dir, rel, depth)) = pending.pop() {
-        for (os_name, path) in read_dir_sorted(&dir).map_err(|()| fail(Code::ReadFailed, &rel))? {
-            visited = visited.saturating_add(1);
-            if visited > limits.max_files {
-                return Err(fail(Code::TooManyFiles, ""));
-            }
+        let room = limits.max_files.saturating_sub(visited);
+        let entries = read_dir_sorted(&dir, room).map_err(|e| match e {
+            DirError::Io => fail(Code::ReadFailed, &rel),
+            DirError::TooMany => fail(Code::TooManyFiles, ""),
+        })?;
+        visited = visited.saturating_add(entries.len());
+        for (os_name, path) in entries {
             let kind = fs::symlink_metadata(&path)
                 .map_err(|_| fail(Code::ReadFailed, &rel))?
                 .file_type();
@@ -66,7 +78,7 @@ pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, Loa
             if kind.is_symlink() {
                 return Err(fail(Code::SymlinkRefused, &child));
             } else if kind.is_dir() {
-                if depth >= MAX_DIR_DEPTH {
+                if depth >= limits.max_dir_depth {
                     return Err(fail(Code::TooDeep, &child));
                 }
                 pending.push((path, child, depth.saturating_add(1)));
@@ -84,19 +96,29 @@ pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, Loa
     ContentPack::build(files, limits)
 }
 
-/// Entries of `dir` as (name, path), sorted by name.
+enum DirError {
+    Io,
+    TooMany,
+}
+
+/// Entries of `dir` as (name, path), sorted by name; fails as soon as there are more than
+/// `room`.
 #[allow(clippy::disallowed_methods)] // host: lists a content directory.
-fn read_dir_sorted(dir: &Path) -> Result<Vec<(OsString, PathBuf)>, ()> {
+fn read_dir_sorted(dir: &Path, room: usize) -> Result<Vec<(OsString, PathBuf)>, DirError> {
     let mut out = Vec::new();
-    for entry in fs::read_dir(dir).map_err(|_| ())? {
-        let entry = entry.map_err(|_| ())?;
+    for entry in fs::read_dir(dir).map_err(|_| DirError::Io)? {
+        let entry = entry.map_err(|_| DirError::Io)?;
+        if out.len() >= room {
+            return Err(DirError::TooMany);
+        }
         out.push((entry.file_name(), entry.path()));
     }
     out.sort();
     Ok(out)
 }
 
-#[allow(clippy::disallowed_methods)] // host: opens one content file, then reads it bounded.
+/// Opens one file, checks the opened handle is a regular file (AS-35), then reads it bounded.
+#[allow(clippy::disallowed_methods)] // host: opens one content file.
 fn read_file(path: &Path, rel: &str, limits: &Limits) -> Result<SourceFile, Diagnostic> {
     let failed = || Diagnostic::new(Code::ReadFailed, rel, (0, 0), "");
     let file = fs::File::open(path).map_err(|_| failed())?;

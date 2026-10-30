@@ -134,6 +134,11 @@ fn symbolic_links_are_refused() {
     // A link to a file, a link to a directory, and a link as the root.
     let dir = scratch("link_file");
     if !symlink(&outside.join("secret.ron"), &dir.join("l.ron")) {
+        // Only Windows without the privilege may skip (the junction test covers it there);
+        // anywhere else the link must be creatable.
+        if !cfg!(windows) {
+            panic!("cannot create a symbolic link");
+        }
         return;
     }
     assert_eq!(
@@ -180,4 +185,70 @@ fn extension_in_any_case_and_total_size() {
     };
     let errors = load_content_dir(&dir, &limits).unwrap_err();
     assert_eq!(errors.diagnostics()[0].code, Code::TotalTooLarge);
+}
+
+#[test]
+fn directory_depth_bound_is_a_limit() {
+    let dir = scratch("depth_limit");
+    fs::create_dir_all(dir.join("a/b")).unwrap();
+    fs::write(dir.join("a/b/x.ron"), "[Item(id: \"item.x\", name: \"X\")]").unwrap();
+    let shallow = Limits {
+        max_dir_depth: 1,
+        ..Limits::default()
+    };
+    assert_eq!(
+        load_content_dir(&dir, &shallow).unwrap_err().diagnostics()[0].code,
+        Code::TooDeep
+    );
+    let enough = Limits {
+        max_dir_depth: 2,
+        ..Limits::default()
+    };
+    assert_eq!(load_content_dir(&dir, &enough).unwrap().cards().len(), 1);
+}
+
+#[test]
+fn entry_bound_is_checked_while_listing() {
+    let dir = scratch("listing");
+    for n in 0..20 {
+        fs::write(dir.join(format!("f{n}.txt")), "x").unwrap();
+    }
+    let limits = Limits {
+        max_files: 5,
+        ..Limits::default()
+    };
+    assert_eq!(
+        load_content_dir(&dir, &limits).unwrap_err().diagnostics()[0].code,
+        Code::TooManyFiles
+    );
+}
+
+/// A junction needs no privilege on Windows: the refusal is tested there even where symbolic
+/// links cannot be created.
+#[cfg(windows)]
+#[test]
+fn junctions_are_refused() {
+    let outside = scratch("junction_outside");
+    fs::write(
+        outside.join("secret.ron"),
+        "[Item(id: \"item.s\", name: \"S\")]",
+    )
+    .unwrap();
+    let dir = scratch("junction_dir");
+    let link = dir.join("j");
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(&outside)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "mklink /J failed");
+    let first = |p: &Path| {
+        load_content_dir(p, &Limits::default())
+            .unwrap_err()
+            .diagnostics()[0]
+            .code
+    };
+    assert_eq!(first(&dir), Code::SymlinkRefused);
+    assert_eq!(first(&link), Code::SymlinkRefused);
 }

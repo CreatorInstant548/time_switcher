@@ -35,6 +35,8 @@ pub enum Code {
     UnknownField,
     /// A kind of card that does not exist.
     UnknownKind,
+    /// A length does not fit the canonical encoding (a `u32`).
+    EncodingOverflow,
     /// The identifier does not follow the identifier grammar.
     InvalidId,
     /// The name is empty, too long or contains a control character.
@@ -63,6 +65,7 @@ impl Code {
             Self::MissingField => "DATA_MISSING_FIELD",
             Self::UnknownField => "DATA_UNKNOWN_FIELD",
             Self::UnknownKind => "DATA_UNKNOWN_KIND",
+            Self::EncodingOverflow => "DATA_ENCODING_OVERFLOW",
             Self::InvalidId => "DATA_INVALID_ID",
             Self::InvalidName => "DATA_INVALID_NAME",
             Self::DuplicateId => "DATA_DUPLICATE_ID",
@@ -87,6 +90,7 @@ impl Code {
             Self::MissingField => "champ obligatoire absent",
             Self::UnknownField => "champ inconnu",
             Self::UnknownKind => "type de fiche inconnu",
+            Self::EncodingOverflow => "longueur trop grande pour l'encodage",
             Self::InvalidId => "identifiant invalide",
             Self::InvalidName => "nom invalide",
             Self::DuplicateId => "identifiant déjà utilisé",
@@ -107,7 +111,7 @@ pub const MAX_DIAGNOSTICS: usize = 64;
 pub struct Diagnostic {
     /// Stable code.
     pub code: Code,
-    /// Relative path of the file, empty for a pack-wide error.
+    /// Relative path of the file, escaped like `detail`; empty for a pack-wide error.
     pub file: String,
     /// 1-based line, 0 if unknown.
     pub line: u32,
@@ -118,11 +122,12 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    /// Builds a diagnostic; `detail` is cut to its first 80 characters, then escaped.
+    /// Builds a diagnostic; `file` and `detail` are escaped (no newline or terminal escape
+    /// survives), and `detail` is cut to its first 80 characters first.
     pub fn new(code: Code, file: &str, position: (u32, u32), detail: &str) -> Self {
         Self {
             code,
-            file: file.to_owned(),
+            file: file.chars().flat_map(char::escape_debug).collect(),
             line: position.0,
             column: position.1,
             // Input text is escaped: no newline or terminal escape can forge a line of output.

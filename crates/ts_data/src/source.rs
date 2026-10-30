@@ -7,7 +7,7 @@ use crate::error::{Code, Diagnostic};
 
 // spec: carnet architecture-securite.md SEC0-25 ; carnet architecture-securite.md §9.13 T2
 /// Bounds on the content read. An input over a bound fails the load.
-// PROVISIONAL(design #43): all five values, to confirm by the design.
+// PROVISIONAL(design #43): all six values, to confirm by the design.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// Largest file, in bytes.
@@ -20,6 +20,8 @@ pub struct Limits {
     pub max_cards: usize,
     /// RON recursion limit (nesting depth).
     pub max_depth: usize,
+    /// Deepest sub-directory level a host reads.
+    pub max_dir_depth: usize,
 }
 
 impl Default for Limits {
@@ -30,6 +32,7 @@ impl Default for Limits {
             max_files: 4096,
             max_cards: 65_536,
             max_depth: 16,
+            max_dir_depth: 8,
         }
     }
 }

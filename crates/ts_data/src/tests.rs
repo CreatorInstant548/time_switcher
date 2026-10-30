@@ -318,7 +318,7 @@ fn canonical_bytes_and_fingerprint_reference_vector() {
     expected.extend_from_slice(b"item.a");
     expected.extend_from_slice(&1u32.to_le_bytes());
     expected.extend_from_slice(b"A");
-    assert_eq!(pack.canonical_bytes(), expected);
+    assert_eq!(pack.canonical_bytes(), expected.as_slice());
     assert_eq!(pack.fingerprint().to_string(), REFERENCE_FINGERPRINT);
     // Keyed derivation: not the plain hash of the bytes.
     assert_ne!(
@@ -418,4 +418,40 @@ fn many_errors_are_capped_and_counted() {
     assert_eq!(errors.diagnostics().len(), crate::MAX_DIAGNOSTICS);
     assert_eq!(errors.dropped(), 200 - crate::MAX_DIAGNOSTICS);
     assert!(errors.to_string().contains("136 autre(s) erreur(s)"));
+}
+
+#[test]
+fn lengths_are_never_saturated() {
+    let mut out = Vec::new();
+    assert!(crate::pack::put_u32(&mut out, 7).is_some());
+    assert_eq!(out, 7_u32.to_le_bytes());
+    // On a 32-bit target no `usize` exceeds `u32::MAX`, and there is nothing to refuse.
+    if let Ok(big) = usize::try_from(u64::from(u32::MAX) + 1) {
+        assert!(crate::pack::put_u32(&mut out, big).is_none());
+        assert!(crate::pack::put_u32(&mut out, usize::MAX).is_none());
+    }
+}
+
+#[test]
+fn file_name_is_escaped_in_diagnostics() {
+    let d = Diagnostic::new(
+        Code::RonSyntax,
+        "a\n/b.ron:1:1: [DATA_OK]\u{1b}[31m.ron",
+        (1, 1),
+        "",
+    );
+    assert!(
+        !d.file.contains('\n') && !d.file.contains('\u{1b}'),
+        "{:?}",
+        d.file
+    );
+    assert_eq!(d.to_string().lines().count(), 1);
+}
+
+#[test]
+fn bad_path_never_echoes_the_path() {
+    let d = first(build(vec![file("/absolute/hidden.ron", "[]")]));
+    assert_eq!(d.code, Code::BadPath);
+    assert!(d.file.is_empty() && d.detail.is_empty());
+    assert!(!d.to_string().contains("hidden"));
 }
