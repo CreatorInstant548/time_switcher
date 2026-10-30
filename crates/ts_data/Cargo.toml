@@ -1,0 +1,18 @@
+[package]
+name = "ts_data"
+version = "0.0.0"
+description = "Content pack of time_switcher: bounded RON loading, validation and fingerprint."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# No workspace dependency yet: the pack does not need `ts_kernel` or `ts_model` types.
+# No file access either (core crate, no I/O): the host reads the files, see `ts_runner`.
+[dependencies]
+blake3.workspace = true
+ron.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
