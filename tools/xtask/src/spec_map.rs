@@ -8,7 +8,7 @@ mod report;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -117,6 +117,11 @@ fn check_item(doc: &Doc, path: &str, item: &Item, targets: &mut Vec<Target>) -> 
     {
         return Err(format!("{path} : section §{s} introuvable"));
     }
+    if let Some(s) = sec
+        && doc.dups.contains(s)
+    {
+        return Err(format!("{path} : section §{s} ambiguë (titre en double)"));
+    }
     let at = sec.map_or(String::new(), |s| format!(" §{s}"));
     let target = |id: Option<String>| Target {
         doc: path.to_owned(),
@@ -183,6 +188,7 @@ fn build(
         for f in refs::scan(file, text) {
             match f.hit {
                 Hit::Spec(t) => parsed.push((file, f.line, refs::parse(&t), t)),
+                Hit::Bad(t, why) => parsed.push((file, f.line, Err(why), t)),
                 Hit::Mark(t) => marks.push(Mark {
                     file: file.clone(),
                     line: f.line,
@@ -254,16 +260,25 @@ fn load(cx: &Ctx) -> Result<Model, String> {
         return Err(format!("{PILOTAGE} absent : git fetch origin pilotage"));
     }
     let mut sources = Vec::new();
-    for f in files.iter().filter(|f| scanned(f)) {
+    for f in files.iter().filter(|f| scanned(f) && refs::scannable(f)) {
         // Un fichier qui n'est pas en UTF-8 est binaire : il ne porte aucun renvoi.
         if let Ok(text) = String::from_utf8(bytes(cx, f)?) {
             sources.push((f.clone(), text));
         }
     }
+    // Existence d'abord (sortie d'erreur de Git étouffée), puis le texte seul, sans sortie d'erreur.
     let fetch = |name: &str| {
         let spec = format!("{PILOTAGE}:{name}");
-        let shown = sys::run_captured(&cx.root, "git", &["show", "--end-of-options", &spec]);
-        shown.ok().filter(|(ok, _)| *ok).map(|(_, text)| text)
+        let probe = [
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &spec,
+        ];
+        let present = sys::run_captured(&cx.root, "git", &probe).is_ok_and(|(ok, _)| ok);
+        let show = ["show", "--end-of-options", &spec];
+        present.then(|| sys::stdout_of(&cx.root, "git", &show).ok())?
     };
     Ok(build(docs, &sources, &fetch))
 }
@@ -316,7 +331,7 @@ fn parse_known(text: &str) -> (Vec<Known>, Vec<String>) {
 /// Erreurs de `check` : renvois et marques faux hors de la liste fermée, et entrées périmées (H3).
 fn evaluate(m: &Model, known_text: &str) -> (Vec<String>, usize) {
     let (known, mut errors) = parse_known(known_text);
-    let mut used = BTreeSet::new();
+    let mut used = vec![false; known.len()];
     let cites = m
         .cites
         .iter()
@@ -335,13 +350,18 @@ fn evaluate(m: &Model, known_text: &str) -> (Vec<String>, usize) {
             .position(|k| k.file == *file && k.line == line && k.text == *text);
         match hit {
             Some(i) => {
-                used.insert(i);
+                used[i] = true;
                 tolerated += 1;
             }
             None => errors.push(format!("{file}:{line} : {msg} [{text}]")),
         }
     }
-    for (_, k) in known.iter().enumerate().filter(|(i, _)| !used.contains(i)) {
+    for k in known
+        .iter()
+        .zip(&used)
+        .filter(|(_, u)| !**u)
+        .map(|(k, _)| k)
+    {
         errors.push(format!(
             "known_bad.txt : entrée périmée ({}:{}), le renvoi est corrigé ou a disparu : retirer la ligne",
             k.file, k.line

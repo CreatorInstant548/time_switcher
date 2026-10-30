@@ -10,14 +10,18 @@ struct Style {
     slash: bool,
     /// `#` : Python, TOML, YAML, shell, PowerShell et fichiers sans extension.
     hash: bool,
+    /// Caractère d'échappement dans une chaîne entre guillemets (PowerShell : l'accent grave).
+    escape: u8,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Hit {
     /// Texte du renvoi, après `spec:`.
     Spec(String),
-    /// Texte du commentaire, qui commence par PROVISOIRE.
+    /// Texte de la marque, à partir de PROVISOIRE.
     Mark(String),
+    /// Commentaire qui ressemble à un renvoi sans en être un : texte et raison.
+    Bad(String, String),
 }
 
 #[derive(Debug, PartialEq)]
@@ -32,27 +36,48 @@ fn style(path: &str) -> Option<Style> {
         Some((stem, ext)) if !stem.is_empty() => ext,
         _ => "",
     };
-    let (slash, hash) = match ext {
-        "rs" | "cs" | "ron" | "ts" | "tsx" | "js" | "mjs" => (true, false),
-        "" | "py" | "toml" | "yml" | "yaml" | "sh" | "ps1" | "psm1" | "gd" => (false, true),
+    let (slash, hash, escape) = match ext {
+        "rs" | "cs" | "ron" | "ts" | "tsx" | "js" | "mjs" => (true, false, b'\\'),
+        "ps1" | "psm1" => (false, true, b'`'),
+        "" | "py" | "toml" | "yml" | "yaml" | "sh" | "gd" => (false, true, b'\\'),
         _ => return None,
     };
-    Some(Style { slash, hash })
+    Some(Style {
+        slash,
+        hash,
+        escape,
+    })
+}
+
+/// Un fichier de ce type peut porter des renvois : les autres ne sont même pas lus.
+pub fn scannable(path: &str) -> bool {
+    style(path).is_some()
 }
 
 /// Premier commentaire de la ligne hors d'une chaîne : son texte, et s'il est seul sur la ligne.
 fn comment(line: &str, st: Style) -> Option<(&str, bool)> {
     let b = line.as_bytes();
-    let mut quoted = false;
-    for (i, &c) in b.iter().enumerate() {
+    let (mut quoted, mut single, mut i) = (false, false, 0);
+    while i < b.len() {
         let alone = || line[..i].trim().is_empty();
-        match c {
-            b'"' if i == 0 || b[i - 1] != b'\\' => quoted = !quoted,
+        match b[i] {
+            c if c == st.escape && quoted => i += 1,
+            b'"' if !single => quoted = !quoted,
+            // Littéral de caractère de Rust : '"', 'x' ou '\"'.
+            b'\'' if st.slash && !quoted => {
+                if b.get(i + 2) == Some(&b'\'') {
+                    i += 2;
+                } else if b.get(i + 1) == Some(&b'\\') && b.get(i + 3) == Some(&b'\'') {
+                    i += 3;
+                }
+            }
+            b'\'' if st.hash && !quoted => single = !single,
             b'/' if !quoted && st.slash && b.get(i + 1) == Some(&b'/') => {
                 let text = line[i + 2..].trim_start_matches(['/', '!']).trim();
                 return Some((text, alone()));
             }
             b'#' if !quoted
+                && !single
                 && st.hash
                 && (i == 0 || b[i - 1].is_ascii_whitespace())
                 && b.get(i + 1) != Some(&b'!') =>
@@ -61,13 +86,14 @@ fn comment(line: &str, st: Style) -> Option<(&str, bool)> {
             }
             _ => {}
         }
+        i += 1;
     }
     None
 }
 
 /// Renvois (commentaire seul sur la ligne, qui commence par `spec:`) et marques PROVISOIRE
-/// (commentaire seul ou en fin de ligne, qui commence par PROVISOIRE). Un fichier d'un type
-/// inconnu n'est pas analysé.
+/// (commentaire seul ou en fin de ligne, qui contient PROVISOIRE suivi d'une parenthèse ou qui
+/// commence par PROVISOIRE). Un commentaire qui ressemble à un renvoi sans en être un est signalé.
 pub fn scan(path: &str, text: &str) -> Vec<Found> {
     let Some(st) = style(path) else {
         return Vec::new();
@@ -77,27 +103,46 @@ pub fn scan(path: &str, text: &str) -> Vec<Found> {
         let Some((c, alone)) = comment(line, st) else {
             continue;
         };
+        let near_miss = c
+            .to_ascii_lowercase()
+            .strip_prefix("spec")
+            .is_some_and(|r| r.trim_start().starts_with(':'));
         let hit = match c.strip_prefix("spec:") {
             Some(rest) if alone => Hit::Spec(rest.trim().to_owned()),
-            _ if c.starts_with("PROVISOIRE") => Hit::Mark(c.to_owned()),
-            _ => continue,
+            Some(_) => Hit::Bad(
+                c.to_owned(),
+                "renvoi spec: en fin de ligne : le mettre dans un commentaire seul sur sa ligne"
+                    .to_owned(),
+            ),
+            None if near_miss => Hit::Bad(
+                c.to_owned(),
+                "forme proche de spec: (minuscules, deux-points collés)".to_owned(),
+            ),
+            None => match c.find("PROVISOIRE(") {
+                Some(at) => Hit::Mark(c[at..].to_owned()),
+                None if c.starts_with("PROVISOIRE") => Hit::Mark(c.to_owned()),
+                None => continue,
+            },
         };
         found.push(Found { line: i + 1, hit });
     }
     found
 }
 
-/// Numéro de la remontée d'une marque : `PROVISOIRE(conception #12)`.
+/// Numéro de la remontée d'une marque (un entier non nul, comme une issue GitHub).
 pub fn mark(c: &str) -> Result<u64, String> {
     let bad = || "PROVISOIRE sans numéro de remontée (attendu : PROVISOIRE(conception #<n>))";
     let rest = c
         .strip_prefix("PROVISOIRE(conception #")
         .ok_or_else(|| bad().to_owned())?;
     let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-    if digits == 0 || !rest[digits..].starts_with(')') {
+    if !rest[digits..].starts_with(')') {
         return Err(bad().to_owned());
     }
-    rest[..digits].parse().map_err(|_| bad().to_owned())
+    match rest[..digits].parse() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => Err(bad().to_owned()),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

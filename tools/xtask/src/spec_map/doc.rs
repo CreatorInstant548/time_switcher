@@ -2,7 +2,7 @@
 //! bibliothèque Markdown).
 //! spec: carnet architecture-securite.md §7 ; §9.7
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Default)]
 pub struct Section {
@@ -23,6 +23,8 @@ pub struct IdDef {
 pub struct Doc {
     /// Clé de section (`3.1`, `5.3 bis`) vers section.
     pub sections: BTreeMap<String, Section>,
+    /// Clés portées par plusieurs titres : un renvoi à l'une d'elles est ambigu.
+    pub dups: BTreeSet<String>,
     pub ids: BTreeMap<String, Vec<IdDef>>,
 }
 
@@ -71,6 +73,9 @@ pub fn parse(text: &str) -> Doc {
                     // Le titre garde son texte, sans le numéro (et le suffixe) déjà dans la clé.
                     let words = key.split(' ').count();
                     let rest: Vec<&str> = title.split_whitespace().skip(words).collect();
+                    if doc.sections.contains_key(&key) {
+                        doc.dups.insert(key.clone());
+                    }
                     doc.sections.entry(key.clone()).or_insert_with(|| Section {
                         title: rest.join(" "),
                         body: String::new(),
@@ -115,8 +120,16 @@ pub fn section_key(title: &str) -> Option<String> {
     if !is_number(number) {
         return None;
     }
-    Some(match words.next() {
-        Some(s) if is_suffix(s) => format!("{number} {s}"),
+    // Une lettre seule n'est un suffixe que si le mot suivant ne commence pas par une minuscule :
+    // `3.10 b Titre` est la section « 3.10 b », mais `3. a priori` est la section 3.
+    let (first, next) = (words.next(), words.next());
+    Some(match first {
+        Some(s)
+            if is_suffix(s)
+                && (s.len() > 1 || next.is_none_or(|n| !n.starts_with(char::is_lowercase))) =>
+        {
+            format!("{number} {s}")
+        }
         _ => number.to_owned(),
     })
 }

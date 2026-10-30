@@ -128,6 +128,30 @@ fn parses_headings_and_ids() {
 }
 
 #[test]
+fn handles_ambiguous_titles() {
+    let d = doc::parse(&text(&[
+        "## 3. a priori",
+        "## 4. y compris",
+        "## 5. b Lettre",
+        "## 6. Phase 0",
+        "## 6. Phase 1",
+        "- **Z1** défini deux fois",
+    ]));
+    let keys: Vec<&str> = d.sections.keys().map(String::as_str).collect();
+    // Un mot en minuscules après la lettre est le début du titre, pas un suffixe.
+    assert_eq!(keys, ["3", "4", "5 b", "6"]);
+    assert_eq!(d.sections["3"].title, "a priori");
+    // Un numéro de section porté par deux titres est ambigu.
+    assert!(d.dups.contains("6") && !d.dups.contains("3"));
+    let mut docs = BTreeMap::new();
+    docs.insert("docs/conception/d.md".to_owned(), d);
+    let m = build(docs, &[("a.rs".to_owned(), rust("spec: d.md §6"))], &fetch);
+    assert!(m.cites[0].errors[0].contains("ambiguë"));
+    let m2 = model(&[("a.rs", rust("spec: combat.md §1"))]);
+    assert!(m2.cites[0].errors.is_empty());
+}
+
+#[test]
 fn recognises_identifier_shapes() {
     for id in ["S8", "M28", "SEC0-35", "AS-12", "R-ARCH-04", "T0-06", "F3"] {
         assert_eq!(
@@ -288,6 +312,10 @@ fn scans_comment_styles() {
         "let k = 5; // PROVISOIRE(conception #12)",
         "// PROVISOIRE sans numéro",
         "// la valeur est PROVISOIRE, à revoir",
+        "let q = '\"'; let m = 3; // PROVISOIRE(conception #4)",
+        "let p = \"C:\\\\\"; // PROVISOIRE(conception #5)",
+        "// Spec: d.md §4",
+        "// valeur PROVISOIRE(conception #)",
     ]);
     let hits = refs::scan("crates/x/src/lib.rs", &rs);
     let got: Vec<(usize, String)> = hits
@@ -295,6 +323,7 @@ fn scans_comment_styles() {
         .map(|f| match &f.hit {
             Hit::Spec(t) => (f.line, format!("spec {t}")),
             Hit::Mark(t) => (f.line, format!("mark {t}")),
+            Hit::Bad(t, _) => (f.line, format!("bad {t}")),
         })
         .collect();
     assert_eq!(
@@ -303,10 +332,19 @@ fn scans_comment_styles() {
             (2, "spec a.md §1".to_owned()),
             (3, "spec b.md §2".to_owned()),
             (4, "spec c.md §3".to_owned()),
+            (5, "bad spec: pas.md §9".to_owned()),
             (7, "mark PROVISOIRE(conception #12)".to_owned()),
             (8, "mark PROVISOIRE sans numéro".to_owned()),
+            (10, "mark PROVISOIRE(conception #4)".to_owned()),
+            (11, "mark PROVISOIRE(conception #5)".to_owned()),
+            (12, "bad Spec: d.md §4".to_owned()),
+            (13, "mark PROVISOIRE(conception #)".to_owned()),
         ]
     );
+    // PowerShell échappe par l'accent grave : une barre oblique inverse finale n'échappe rien.
+    let ps = "$p = \"C:\\dir\\\"  # PROVISOIRE(conception #6)";
+    assert_eq!(refs::scan("tools/x.ps1", ps).len(), 1);
+    assert!(refs::scannable("a.rs") && !refs::scannable("a.png"));
     // RON se commente par // et non par # (H7) ; Python, TOML, YAML, shell et PowerShell par #.
     assert_eq!(refs::scan("data/x.ron", "// spec: a.md §1").len(), 1);
     assert!(refs::scan("data/x.ron", "# spec: a.md §1").is_empty());
@@ -335,6 +373,7 @@ fn provisional_marks_need_an_issue() {
         "PROVISOIRE(conception #)",
         "PROVISOIRE(conception 12)",
         "PROVISOIRE(conception #12",
+        "PROVISOIRE(conception #0)",
     ] {
         assert!(refs::mark(bad).is_err(), "{bad}");
     }

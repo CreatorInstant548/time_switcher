@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::doc::{self, Doc};
 use super::report::Where;
-use super::{CONCEPTION, Model, Target, load};
+use super::{CONCEPTION, Model, load};
 use crate::steps::Ctx;
 use crate::sys;
 
@@ -81,11 +81,10 @@ pub(super) fn render_diff(m: &Model, old: &BTreeMap<String, Doc>, rev: &str) -> 
             .cites
             .iter()
             .filter(|c| {
-                let cites_it = |t: &&Target| t.doc == *d && t.id.is_none();
+                // Un renvoi `§3 D5` cite aussi la section 3, comme dans `report`.
                 c.targets
                     .iter()
-                    .filter(cites_it)
-                    .any(|t| t.section.as_ref().is_some_and(covers))
+                    .any(|t| t.doc == *d && t.section.as_ref().is_some_and(covers))
             })
             .map(|c| (c.file.clone(), c.line))
             .collect();
