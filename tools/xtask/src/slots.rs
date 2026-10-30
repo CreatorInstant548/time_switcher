@@ -46,10 +46,13 @@ pub struct Tree {
 }
 
 impl Tree {
-    /// Inactif depuis plus de `idle` à la date `now` (un arbre sans date l'est).
+    /// Inactif depuis plus de `idle` à la date `now`. Une erreur de mesure, ou un arbre sans
+    /// date, vaut « actif » : rien n'est alors supprimé.
     pub fn idle_for(&self, now: SystemTime, idle: Duration) -> bool {
-        self.newest
-            .is_none_or(|t| now.duration_since(t).is_ok_and(|d| d > idle))
+        self.errors == 0
+            && self
+                .newest
+                .is_some_and(|t| now.duration_since(t).is_ok_and(|d| d > idle))
     }
 }
 
@@ -431,6 +434,10 @@ mod tests {
         assert!(!tree.idle_for(t0 + day, day));
         assert!(tree.idle_for(t0 + day + Duration::from_secs(1), day));
         assert!(!tree.idle_for(t0 - day, day));
+        // Erreur de mesure ou arbre sans date : actif.
+        let unreadable = Tree { errors: 1, ..tree };
+        assert!(!unreadable.idle_for(t0 + day + day, day));
+        assert!(!Tree::default().idle_for(t0, day));
     }
 
     #[test]

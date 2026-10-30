@@ -71,7 +71,7 @@ const STEPS: [Step; 13] = [
     ("spec-map", "spec-map check", steps::spec_map),
 ];
 
-const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list      | cargo xtask slots | cargo xtask disk [--clean]";
+const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask slots | cargo xtask disk [--clean]";
 
 struct Options {
     all: bool,

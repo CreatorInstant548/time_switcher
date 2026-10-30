@@ -11,6 +11,11 @@
 //! - un emplacement tenu n'est jamais touché ; avant de vider un emplacement libre, son bail est
 //!   pris par création exclusive, comme dans `session-start.ps1`, et les verrous de Cargo aussi ;
 //!   `main` n'est nettoyé que depuis la copie principale ;
+//! - `TS_CACHE` est validé avant toute action (`check_cache`), et les baux comme les verrous
+//!   passent aussi par `within` : si `TS_CACHE\target` n'est pas une racine retenue, aucun bail ni
+//!   aucun emplacement n'est touché ;
+//! - `git worktree prune` et le retrait des dossiers orphelins ne visent que le dépôt attendu
+//!   (`repo_expected`) ;
 //! - un dossier de worktree n'est retiré que s'il est absent de `git worktree list`, sans `.git`,
 //!   et inactif depuis plus de 24 h.
 //!
@@ -46,6 +51,62 @@ const RUNS_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 const ORPHAN_IDLE: Duration = Duration::from_secs(24 * 3600);
 /// Une exécution qui contient ce fichier n'est jamais supprimée (§9.2 point 6).
 const KEEP_MARK: &str = "keep";
+/// `TS_CACHE` de la convention ; tout autre dossier doit porter le fichier repère `MARKER`.
+const DEFAULT_CACHE: &str = "C:/Dev/ts-cache";
+const MARKER: &str = ".ts-cache";
+
+fn default_cache() -> Option<PathBuf> {
+    fs::canonicalize(DEFAULT_CACHE).ok()
+}
+
+/// `p` est strictement sous `dir`.
+fn strictly_under(p: &Path, dir: &Path) -> bool {
+    p.starts_with(dir) && p != dir
+}
+
+/// Validation de `TS_CACHE` avant toute action (I1) : ni lien, au moins deux niveaux sous la
+/// racine du disque, et soit le chemin de la convention, soit un dossier sous `<convention>\tmp`,
+/// soit un dossier qui porte le fichier repère `.ts-cache`, posé exprès. Rend la forme canonique.
+pub fn check_cache(cache: &Path) -> Result<PathBuf, String> {
+    let shown = slots::show(cache);
+    let md = fs::symlink_metadata(cache).map_err(|_| format!("TS_CACHE introuvable : {shown}"))?;
+    if is_link(&md) || !md.is_dir() {
+        return Err(format!(
+            "TS_CACHE est un lien ou n'est pas un dossier : {shown}"
+        ));
+    }
+    let canon = root(cache, &[]).ok_or_else(|| {
+        format!("TS_CACHE à moins de deux niveaux de la racine du disque : {shown}")
+    })?;
+    let conventional =
+        default_cache().is_some_and(|d| canon == d || strictly_under(&canon, &d.join("tmp")));
+    let marked = fs::symlink_metadata(cache.join(MARKER)).is_ok_and(|m| m.is_file());
+    if conventional || marked {
+        Ok(canon)
+    } else {
+        Err(format!(
+            "TS_CACHE refusé : {shown} n'est ni {DEFAULT_CACHE}, ni sous {DEFAULT_CACHE}/tmp, \
+             et ne porte pas de fichier {MARKER}"
+        ))
+    }
+}
+
+/// Le dépôt courant est celui que `prune` et le retrait des dossiers orphelins peuvent viser (I2) :
+/// avec le `TS_CACHE` de la convention, toujours ; sinon, seulement un dépôt jetable dont la copie
+/// principale est sous `TS_CACHE\tmp` ou sous `<convention>\tmp`.
+pub fn repo_expected(cache: &Path, main_root: &Path) -> bool {
+    let default = default_cache();
+    if default.as_deref() == Some(cache) {
+        return true;
+    }
+    let Ok(main) = fs::canonicalize(main_root) else {
+        return false;
+    };
+    [Some(cache.join("tmp")), default.map(|d| d.join("tmp"))]
+        .into_iter()
+        .flatten()
+        .any(|tmp| strictly_under(&main, &tmp))
+}
 /// Le bail pris par `disk` est rafraîchi à ce rythme, bien en deçà des 10 min de grâce.
 const REFRESH_EVERY: Duration = Duration::from_secs(60);
 
@@ -175,8 +236,13 @@ impl Taken {
 /// Libère un bail orphelin par renommage atomique (un seul gagnant), puis le supprime, comme
 /// `Remove-OrphanLease`. Rend faux si le bail est redevenu tenu entre-temps : il est alors rendu,
 /// sans jamais écraser un bail pris dans l'intervalle (lien physique, qui échoue si le nom existe).
-fn release_orphan(lease: &Path, now: SystemTime) -> Result<bool, String> {
-    let tmp = lease.with_extension(format!("lease.stale-{}", std::process::id()));
+fn release_orphan(lease: &Path, now: SystemTime, roots: &[PathBuf]) -> Result<bool, String> {
+    let lease = within(lease, roots)?;
+    let lease = lease.as_path();
+    let tmp = within(
+        &lease.with_extension(format!("lease.stale-{}", std::process::id())),
+        roots,
+    )?;
     fs::rename(lease, &tmp).map_err(|e| format!("bail orphelin non libéré : {e}"))?;
     if slots::read_lease(&tmp).is_some_and(|l| slots::lease_held(&l, now)) {
         let back = fs::hard_link(&tmp, lease);
@@ -321,26 +387,46 @@ struct Run<'a> {
     roots: Vec<PathBuf>,
     /// Tailles mesurées par le tableau, dans l'ordre de `SLOTS`.
     sizes: Vec<u64>,
+    /// Dépôt attendu (I2) : `prune` et dossiers orphelins permis.
+    expected: bool,
     errors: Vec<String>,
 }
 
 impl Run<'_> {
+    /// `dir` existe et est une racine retenue ; un dossier absent est sauté sans erreur, un lien ou
+    /// un chemin hors racine est une erreur, et rien n'y est touché.
+    fn retained(&mut self, dir: &Path) -> bool {
+        if fs::symlink_metadata(dir).is_err() {
+            println!("  absent");
+            return false;
+        }
+        let ok = fs::canonicalize(dir).is_ok_and(|c| self.roots.contains(&c))
+            && fs::symlink_metadata(dir).is_ok_and(|md| !is_link(&md));
+        if !ok {
+            self.errors.push(format!(
+                "{} n'est pas une racine retenue (lien ?) : rien n'y est touché",
+                slots::show(dir)
+            ));
+        }
+        ok
+    }
+
     fn rel(&self, p: &Path) -> String {
         let s = p
             .strip_prefix(&self.site.cache)
             .or_else(|_| p.strip_prefix(&self.site.worktrees_root));
-        s.map_or_else(|_| p.display().to_string(), |r| r.display().to_string())
+        slots::show(s.unwrap_or(p))
     }
 
     /// Supprime `path` sous les racines permises, sans suivre de lien ; ou l'annonce seulement.
     fn remove(&mut self, path: &Path, keep: Vec<PathBuf>, lease: Option<&Taken>) {
         let rel = self.rel(path);
-        if !self.o.clean {
-            println!("    supprimerait {rel}");
-            return;
-        }
         match within(path, &self.roots) {
-            Err(e) => self.errors.push(e),
+            Err(e) => {
+                println!("    refusé : {rel}");
+                self.errors.push(e);
+            }
+            Ok(_) if !self.o.clean => println!("    supprimerait {rel}"),
             Ok(canon) => {
                 let mut rm = Remover {
                     keep,
@@ -376,16 +462,19 @@ impl Run<'_> {
     }
 
     fn orphan_leases(&mut self) {
-        println!("\nBaux orphelins :");
         for name in SLOTS {
-            let lease = self.site.cache.join("target").join(format!("{name}.lease"));
+            let lease = self.site.slot(&format!("{name}.lease"));
             match slots::read_lease(&lease) {
                 Some(l) if !slots::lease_held(&l, self.o.now) => {
+                    if let Err(e) = within(&lease, &self.roots) {
+                        self.errors.push(e);
+                        continue;
+                    }
                     if !self.o.clean {
                         println!("  {name} : libérerait le bail de {}", l.owner);
                         continue;
                     }
-                    match release_orphan(&lease, self.o.now) {
+                    match release_orphan(&lease, self.o.now, &self.roots) {
                         Ok(true) => println!("  {name} : bail de {} libéré", l.owner),
                         Ok(false) => println!("  {name} : bail redevenu tenu, rendu"),
                         Err(e) => self.errors.push(format!("{name}.lease : {e}")),
@@ -455,13 +544,18 @@ impl Run<'_> {
                 .for_each(|t| self.remove(t, Vec::new(), None));
             return;
         }
-        let lease_path = self.site.cache.join("target").join(format!("{name}.lease"));
+        let checked = within(&self.site.slot(&format!("{name}.lease")), &self.roots)
+            .and_then(|lease| within(&path, &self.roots).map(|slot| (lease, slot)));
+        let (lease_path, slot_canon) = match checked {
+            Ok(pair) => pair,
+            Err(e) => return self.errors.push(e),
+        };
         let lease = match Taken::take(&lease_path) {
             Ok(Some(l)) => l,
             Ok(None) => return println!("    bail pris entre-temps : jamais touché"),
             Err(e) => return self.errors.push(format!("{name} : {e}")),
         };
-        match cargo_locks(&path) {
+        match cargo_locks(&slot_canon) {
             Err(e) => println!("    {e} : jamais touché"),
             Ok(locks) => {
                 let keep: Vec<PathBuf> = locks
@@ -485,6 +579,9 @@ impl Run<'_> {
             "\nartifacts\\runs, plus de {} jours :",
             RUNS_MAX_AGE.as_secs() / 86_400
         );
+        if !self.retained(&dir) {
+            return;
+        }
         for run in self.children(&dir) {
             let Ok(md) = fs::symlink_metadata(&run) else {
                 continue;
@@ -501,6 +598,14 @@ impl Run<'_> {
     fn orphan_worktrees(&mut self) {
         println!("\nDossiers laissés dans .claude\\worktrees :");
         let site = self.site;
+        if !self.expected {
+            return println!(
+                "  sauté : dépôt hors de TS_CACHE\\tmp avec un TS_CACHE hors convention"
+            );
+        }
+        if !self.retained(&site.worktrees_root) {
+            return;
+        }
         for dir in self.children(&site.worktrees_root) {
             let Ok(md) = fs::symlink_metadata(&dir) else {
                 continue;
@@ -564,6 +669,33 @@ fn cargo_home() -> Option<PathBuf> {
 
 /// Rend les erreurs rencontrées ; vide si tout s'est bien passé.
 pub fn run(site: &mut Site, o: Opts) -> Vec<String> {
+    let cache = match check_cache(&site.cache) {
+        Ok(c) => Some(c),
+        Err(e) if o.clean => {
+            println!("ÉCHEC : {e}");
+            return vec![e];
+        }
+        Err(e) => {
+            println!("AVERTISSEMENT : --clean serait refusé. {e}\n");
+            None
+        }
+    };
+    // Racines calculées avant de toucher au moindre bail (B1).
+    let roots: Vec<PathBuf> = if cache.is_some() {
+        [
+            (site.cache.as_path(), &["target"][..]),
+            (site.cache.as_path(), &["artifacts", "runs"][..]),
+            (site.main_root.as_path(), &[".claude", "worktrees"][..]),
+        ]
+        .into_iter()
+        .filter_map(|(base, rel)| root(base, rel))
+        .collect()
+    } else {
+        Vec::new()
+    };
+    let expected = cache
+        .as_deref()
+        .is_some_and(|c| repo_expected(c, &site.main_root));
     let slot_sizes = slots::print_table(site, o.now);
     println!("\nTailles :");
     let sizes = [
@@ -584,6 +716,10 @@ pub fn run(site: &mut Site, o: Opts) -> Vec<String> {
         .iter()
         .for_each(|w| println!("  {}", slots::show(w)));
     slots::print_free(site);
+    if cache.is_none() {
+        println!("\nTS_CACHE refusé : bilan seulement, aucune action annoncée.");
+        return Vec::new();
+    }
 
     let mut errors = Vec::new();
     println!("\ngit worktree prune :");
@@ -592,34 +728,35 @@ pub fn run(site: &mut Site, o: Opts) -> Vec<String> {
     } else {
         &["worktree", "prune", "-n", "-v"]
     };
-    match sys::run_live(&site.repo, "git", prune) {
-        Ok(true) => {}
-        Ok(false) => errors.push("git worktree prune a échoué".to_owned()),
-        Err(e) => errors.push(e),
+    if !expected {
+        println!("  sauté : dépôt hors de TS_CACHE\\tmp avec un TS_CACHE hors convention");
+    } else {
+        match sys::run_live(&site.repo, "git", prune) {
+            Ok(true) => {}
+            Ok(false) => errors.push("git worktree prune a échoué".to_owned()),
+            Err(e) => errors.push(e),
+        }
     }
     if let Err(e) = site.reload_worktrees() {
         errors.push(e);
         return errors; // sans liste fiable des worktrees, rien n'est supprimé
     }
-    let roots: Vec<PathBuf> = [
-        (site.cache.as_path(), &["target"][..]),
-        (site.cache.as_path(), &["artifacts", "runs"][..]),
-        (site.main_root.as_path(), &[".claude", "worktrees"][..]),
-    ]
-    .into_iter()
-    .filter_map(|(base, rel)| root(base, rel))
-    .collect();
     let mut r = Run {
         site,
         o,
         roots,
         sizes: slot_sizes,
+        expected,
         errors,
     };
-    r.orphan_leases();
-    println!("\nEmplacements (jamais un emplacement tenu) :");
-    for name in ["w1", "w2", "w3", "main"] {
-        r.slot(name);
+    // Aucun bail ni aucun emplacement si `TS_CACHE\target` n'est pas une racine retenue (B1).
+    let target = r.site.cache.join("target");
+    println!("\nBaux et emplacements (jamais un emplacement tenu) :");
+    if r.retained(&target) {
+        r.orphan_leases();
+        for name in ["w1", "w2", "w3", "main"] {
+            r.slot(name);
+        }
     }
     r.runs();
     r.orphan_worktrees();
@@ -806,10 +943,16 @@ mod tests {
         // Bail orphelin libéré ; bail redevenu tenu rendu tel quel.
         put(&lease, b"C:/nulle/part");
         let later = now() + Duration::from_secs(3600);
-        assert!(release_orphan(&lease, later).unwrap());
+        let roots = vec![root(&dir, &[]).unwrap()];
+        // Hors des racines : refusé, le bail reste.
+        fs::create_dir_all(dir.join("elsewhere")).unwrap();
+        let elsewhere = vec![root(&dir, &["elsewhere"]).unwrap()];
+        assert!(release_orphan(&lease, later, &elsewhere).is_err());
+        assert!(exists(&lease));
+        assert!(release_orphan(&lease, later, &roots).unwrap());
         assert!(!exists(&lease));
         put(&lease, b"C:/nulle/part");
-        assert!(!release_orphan(&lease, now()).unwrap());
+        assert!(!release_orphan(&lease, now(), &roots).unwrap());
         assert_eq!(slots::read_lease(&lease).unwrap().owner, "C:/nulle/part");
 
         let slot = dir.join("slot");
@@ -828,7 +971,9 @@ mod tests {
     fn clean_in_throwaway_cache() {
         let dir = scratch("flow");
         let cache = dir.join("cache");
-        let repo = dir.join("repo");
+        put(&cache.join(MARKER), b"");
+        // Dépôt jetable sous TS_CACHE\tmp : seul dépôt que `prune` et les orphelins visent (I2).
+        let repo = cache.join("tmp").join("repo");
         fs::create_dir_all(&repo).unwrap();
         assert!(sys::run_captured(&repo, "git", &["init", "-q"]).unwrap().0);
         let target = cache.join("target");
@@ -916,6 +1061,101 @@ mod tests {
         o.now = now() + Duration::from_secs(31 * 24 * 3600);
         assert!(run(&mut site, o).is_empty());
         assert!(exists(&target.join("main").join("big")));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// B1 : `TS_CACHE\target` remplacé par une jonction vers l'extérieur, avec un bail orphelin et
+    /// un emplacement au-delà des seuils derrière : rien ne bouge hors de `TS_CACHE`.
+    #[test]
+    fn junction_in_place_of_target_moves_nothing() {
+        let dir = scratch("b1");
+        let cache = dir.join("cache");
+        put(&cache.join(MARKER), b"");
+        let outside = dir.join("outside");
+        put(&outside.join("w1.lease"), b"C:/nulle/part");
+        file(&outside.join("w3").join("debug").join("big"), 2000);
+        junction(&cache.join("target"), &outside);
+        let repo = cache.join("tmp").join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        assert!(sys::run_captured(&repo, "git", &["init", "-q"]).unwrap().0);
+        let mut site = Site::load(cache.clone(), &repo).unwrap();
+        let limits = Limits {
+            incremental: 10,
+            empty: 1000,
+        };
+        let mut o = Opts {
+            clean: false,
+            now: now() + Duration::from_secs(3600),
+            free: limits,
+            main: limits,
+        };
+        let before = measure(&outside);
+        assert!(
+            !run(&mut site, o).is_empty(),
+            "racine écartée : erreur attendue"
+        );
+        o.clean = true;
+        assert!(
+            !run(&mut site, o).is_empty(),
+            "racine écartée : erreur attendue"
+        );
+        assert_eq!(
+            slots::read_lease(&outside.join("w1.lease")).unwrap().owner,
+            "C:/nulle/part"
+        );
+        assert!(exists(&outside.join("w3").join("debug").join("big")));
+        assert!(
+            !exists(&outside.join("w3.lease")),
+            "bail créé au travers de la jonction"
+        );
+        let after = measure(&outside);
+        assert_eq!((before.bytes, before.newest), (after.bytes, after.newest));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// I1 : `TS_CACHE` validé avant toute action ; I2 : dépôt attendu.
+    #[test]
+    fn cache_and_repo_are_validated() {
+        // Hors de la convention : le dossier temporaire du système.
+        let dir = std::env::temp_dir().join(format!("xtask-disk-cache-{}", std::process::id()));
+        if exists(&dir) {
+            fs::remove_dir_all(&dir).unwrap();
+        }
+        let cache = dir.join("cache");
+        fs::create_dir_all(&cache).unwrap();
+        assert!(check_cache(&cache).is_err(), "dossier quelconque accepté");
+        put(&cache.join(MARKER), b"");
+        let canon = check_cache(&cache).unwrap();
+        // TS_CACHE lien vers un dossier marqué : refusé.
+        junction(&dir.join("link"), &cache);
+        assert!(check_cache(&dir.join("link")).is_err());
+        // Racine de disque et dossier absent : refusés.
+        assert!(check_cache(Path::new("/")).is_err());
+        assert!(check_cache(&dir.join("absent")).is_err());
+        // Dépôt hors de TS_CACHE\tmp : ni prune ni orphelins ; dépôt jetable dessous : permis.
+        let other = dir.join("repo");
+        fs::create_dir_all(&other).unwrap();
+        assert!(!repo_expected(&canon, &other));
+        let throwaway = cache.join("tmp").join("repo");
+        fs::create_dir_all(&throwaway).unwrap();
+        assert!(repo_expected(&canon, &throwaway));
+        // `--clean` sur un TS_CACHE refusé : échec, avant toute action.
+        let refused = dir.join("refused");
+        put(&refused.join("target").join("w1.lease"), b"C:/nulle/part");
+        assert!(
+            sys::run_captured(&throwaway, "git", &["init", "-q"])
+                .unwrap()
+                .0
+        );
+        let mut site = Site::load(refused.clone(), &throwaway).unwrap();
+        let o = Opts {
+            clean: true,
+            now: now() + Duration::from_secs(3600),
+            free: FREE_SLOT,
+            main: MAIN_SLOT,
+        };
+        assert_eq!(run(&mut site, o).len(), 1);
+        assert!(exists(&refused.join("target").join("w1.lease")));
         fs::remove_dir_all(&dir).unwrap();
     }
 }
