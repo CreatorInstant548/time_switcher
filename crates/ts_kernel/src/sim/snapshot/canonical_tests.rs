@@ -158,15 +158,15 @@ fn input_bound() {
     };
     let l = layout(&small());
     let both = h.len().max(s.len());
-    assert!(MemorySnapshot::from_canonical(&h, &s, &l, &at(both)).is_ok());
+    assert!(MemorySnapshot::from_canonical(&h, s.clone(), &l, &at(both)).is_ok());
     let too_large = |len: usize| CanonicalError::TooLarge {
         len: len as u64,
         max: (len - 1) as u64,
     };
-    let e = MemorySnapshot::from_canonical(&h, &s, &l, &at(h.len() - 1)).unwrap_err();
+    let e = MemorySnapshot::from_canonical(&h, s.clone(), &l, &at(h.len() - 1)).unwrap_err();
     assert_eq!(e, too_large(h.len()));
     let big_header = at(h.len().max(s.len() - 1));
-    let e = MemorySnapshot::from_canonical(&h, &s, &l, &big_header).unwrap_err();
+    let e = MemorySnapshot::from_canonical(&h, s.clone(), &l, &big_header).unwrap_err();
     assert_eq!(e, too_large(s.len()));
 }
 
@@ -328,7 +328,7 @@ fn non_canonical_forms() {
         CanonicalError::NotCanonical("stable entities")
     );
     // Another rule set: its layout has no `small` family, so those bytes are left over.
-    let other = MemorySnapshot::from_canonical(&h, &small_state(), &layout(&[]), &LIMITS);
+    let other = MemorySnapshot::from_canonical(&h, small_state(), &layout(&[]), &LIMITS);
     assert_eq!(
         other.unwrap_err(),
         CanonicalError::TrailingBytes {
@@ -415,4 +415,71 @@ fn single_value_bytes_match_the_snapshot() {
     };
     let at = EVENTS_COUNT + 8 + 16;
     assert_eq!(&s[at..at + 20], &crate::state_hash_bytes(&event)[..]);
+}
+
+/// A plugin with no content, named at will.
+struct Named(&'static str);
+
+impl Plugin for Named {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    fn build(&self, _: &mut SimBuilder) {}
+}
+
+/// The header lists the plugins sorted by name, whatever the rules order, and refuses any
+/// other order: one byte string per rule set.
+#[test]
+fn plugins_are_sorted_in_the_header() {
+    let rules: Vec<Box<dyn Plugin>> = vec![Box::new(Named("zz")), Box::new(Named("aa"))];
+    let snap: MemorySnapshot = build(&rules).snapshot(SnapshotScope::Full);
+    let sorted = [("aa", 1), ("zz", 1)];
+    assert_eq!(snap.header_bytes(), header(&sorted, &sorted, 50, 0));
+    let unsorted = header(&[("zz", 1), ("aa", 1)], &sorted, 50, 0);
+    let refused =
+        MemorySnapshot::from_canonical(&unsorted, snap.canonical_bytes(), &layout(&rules), &LIMITS);
+    assert_eq!(
+        refused.unwrap_err(),
+        CanonicalError::NotCanonical("plugin names")
+    );
+    let decoded = MemorySnapshot::from_canonical(
+        &snap.header_bytes(),
+        snap.canonical_bytes(),
+        &layout(&rules),
+        &LIMITS,
+    )
+    .unwrap();
+    restore(&decoded, &rules).unwrap();
+}
+
+/// Dates stay far from `i64` overflow: a forged date cannot make a later tick overflow.
+#[test]
+fn dates_are_bounded() {
+    let out = CanonicalError::Invalid("date out of range");
+    let far = (1_i64 << 62) + 1;
+    let mut s = small_state();
+    put(&mut s, 14, &far.to_le_bytes());
+    let h = header(&[("small", 1)], &[("small", 1)], 50, far);
+    assert_eq!(decode(&h, &s).unwrap_err(), out);
+    let h = header(&[("small", 1)], &[("small", 1)], 50, -far);
+    assert_eq!(decode(&h, &small_state()).unwrap_err(), out);
+    let mut s = small_state();
+    put(&mut s, EVENTS_COUNT + 8, &i64::MIN.to_le_bytes());
+    assert_eq!(decode(&small_header(), &s).unwrap_err(), out);
+    let mut s = small_state();
+    put(&mut s, 22, &((1_i64 << 35) + 1).to_le_bytes());
+    assert_eq!(
+        decode(&small_header(), &s).unwrap_err(),
+        CanonicalError::Invalid("day origin out of range")
+    );
+    // At the bound, the date is accepted and the world still ticks.
+    let edge = (1_i64 << 62) - (1_i64 << 62) % 50;
+    let mut s = small_state();
+    put(&mut s, 14, &edge.to_le_bytes());
+    let h = header(&[("small", 1)], &[("small", 1)], 50, edge);
+    let mut sim = restore(&decode(&h, &s).unwrap(), &small()).unwrap();
+    sim.step();
 }

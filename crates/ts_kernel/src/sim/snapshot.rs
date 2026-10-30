@@ -190,18 +190,20 @@ impl MemorySnapshot {
     /// `limits`, checked for canonical form, and the date of the header must equal the date
     /// of the state. Nothing else is trusted either: [`Snapshot::restore`] keeps all its
     /// checks (rules fingerprint, layout, tick length, counters, events) and is the only
-    /// path to a [`Sim`].
+    /// path to a [`Sim`]. The snapshot keeps `state` as its canonical bytes: an owned
+    /// buffer is taken without a copy.
     ///
     /// # Errors
     ///
     /// The first failure, as a typed [`CanonicalError`]; never a panic.
     pub fn from_canonical(
         header: &[u8],
-        state: &[u8],
+        state: impl Into<Vec<u8>>,
         layout: &StateLayout,
         limits: &CanonicalLimits,
     ) -> Result<Self, CanonicalError> {
-        let d = canonical::decode(header, state, &layout.entries, limits)?;
+        let state = state.into();
+        let d = canonical::decode(header, &state, &layout.entries, limits)?;
         Ok(Self {
             rules: d.header.rules,
             plugins: d.header.plugins,
@@ -215,7 +217,7 @@ impl MemorySnapshot {
             complete: d.kernel.complete,
             layout: layout_of(&layout.entries),
             captured: d.captured,
-            canonical: state.to_vec(),
+            canonical: state,
         })
     }
 }

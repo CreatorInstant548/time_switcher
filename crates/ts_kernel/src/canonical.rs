@@ -8,11 +8,15 @@
 //!   [`CanonicalLimits::max_len`], and each element of a sequence must consume at least one
 //!   byte, so a sequence never runs past the input;
 //! - the encoding must be canonical: tags are `0` or `1`, identifiers and events strictly
-//!   increasing, families and state indices exactly those of the rules.
+//!   increasing, plugin names strictly increasing, families and state indices exactly those
+//!   of the rules;
+//! - dates stay within ±2^62 ms and the day origin within ±2^35 days, so that a forged date
+//!   cannot make a later tick overflow.
 //!
 //! **Header** (part `kernel.meta` of a save), written by `MemorySnapshot::header_bytes`:
 //! rules fingerprint (32 raw bytes), tick length (`i64` ms), date (`i64` ms), then the
-//! active plugins: count, then for each its name ([`StateWriter::str`]) and version (`u32`).
+//! active plugins sorted by name: count, then for each its name ([`StateWriter::str`]) and
+//! version (`u32`).
 //!
 //! **State** (part `kernel.state`): the canonical encoding of the state hash, families
 //! sorted by name; see `write_family` and `write_kernel`.
@@ -29,7 +33,6 @@
 )]
 
 use core::fmt;
-use std::collections::BTreeSet;
 
 use crate::state::{Boxed, Captured, StateEntry, StateKind, StateWriter, encode_with, families};
 use crate::{
@@ -343,6 +346,10 @@ impl<'a> StateReader<'a> {
 // spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §10
 /// Decoding twin of [`crate::StateHash`]: reads exactly what `hash_state` writes, and
 /// refuses with a typed error anything else. Required by state components and resources.
+///
+/// A type whose encoding is empty (a unit struct) cannot be an element of a `Vec`: a
+/// sequence element must consume at least one byte (bounded decoding). Encode such a value
+/// as a `u8` or a `bool` instead.
 pub trait StateDecode: Sized {
     /// Reads a value.
     ///
@@ -474,12 +481,15 @@ pub(crate) fn write_header(
     now: SimTime,
     plugins: &[(String, u32)],
 ) -> Vec<u8> {
+    // Sorted by name, as the fingerprint is: one byte string per rule set.
+    let mut sorted: Vec<&(String, u32)> = plugins.iter().collect();
+    sorted.sort();
     encode_with(|w: &mut StateWriter<'_>| {
         w.raw(rules.as_bytes());
         w.i64(tick_ms);
         w.i64(now.as_millis());
-        w.count(plugins.len());
-        for (name, version) in plugins {
+        w.count(sorted.len());
+        for (name, version) in sorted {
             w.str(name);
             w.u32(*version);
         }
@@ -490,17 +500,21 @@ fn decode_header(bytes: &[u8], limits: &CanonicalLimits) -> Result<Header, Canon
     let mut r = StateReader::new(bytes, limits)?;
     let rules = RulesFingerprint::from_bytes(r.array()?);
     let tick_ms = r.i64()?;
-    let now = SimTime::decode_state(&mut r)?;
+    let now = date(SimTime::decode_state(&mut r)?)?;
     let plugins = r.seq(|r| Ok((r.str()?.to_owned(), r.u32()?)))?;
     r.finish()?;
-    let mut names = BTreeSet::new();
-    for (name, _) in &plugins {
-        // `RulesFingerprint::of` needs u32 lengths; a duplicate name is not a rule set.
-        if u32::try_from(name.len()).is_err() || !names.insert(name.as_str()) {
-            return Err(CanonicalError::NotCanonical("plugin names"));
-        }
+    // Strictly increasing names: no duplicate, and one byte string per rule set.
+    if plugins
+        .windows(2)
+        .any(|w| matches!(w, [(a, _), (b, _)] if a >= b))
+    {
+        return Err(CanonicalError::NotCanonical("plugin names"));
     }
-    if u32::try_from(plugins.len()).is_err() {
+    // `RulesFingerprint::of` panics beyond u32 lengths; reachable only with `max_len` above
+    // 4 GiB, refused here all the same.
+    if u32::try_from(plugins.len()).is_err()
+        || plugins.iter().any(|(n, _)| u32::try_from(n.len()).is_err())
+    {
         return Err(CanonicalError::NotCanonical("plugin count"));
     }
     let list: Vec<(&str, u32)> = plugins.iter().map(|(n, v)| (n.as_str(), *v)).collect();
@@ -526,13 +540,31 @@ pub(crate) struct KernelState {
     pub(crate) complete: Vec<StableId>,
 }
 
+/// Largest absolute date of a decoded snapshot, in milliseconds (about 146 million years):
+/// far from `i64` overflow, so that ticks, the scheduler and the time skip never overflow
+/// on a forged date.
+const MAX_ABS_MILLIS: u64 = 1 << 62;
+/// Largest absolute day origin, in days (about 94 million years, below `MAX_ABS_MILLIS`).
+const MAX_ABS_DAYS: u64 = 1 << 35;
+
+/// A date within [`MAX_ABS_MILLIS`].
+fn date(t: SimTime) -> Result<SimTime, CanonicalError> {
+    if t.as_millis().unsigned_abs() > MAX_ABS_MILLIS {
+        return Err(CanonicalError::Invalid("date out of range"));
+    }
+    Ok(t)
+}
+
 fn decode_kernel(r: &mut StateReader<'_>) -> Result<KernelState, CanonicalError> {
-    let now = SimTime::decode_state(r)?;
+    let now = date(SimTime::decode_state(r)?)?;
     let day_origin = DayOrigin::decode_state(r)?;
+    if day_origin.days().unsigned_abs() > MAX_ABS_DAYS {
+        return Err(CanonicalError::Invalid("day origin out of range"));
+    }
     let next_stable_id = r.u64()?;
     let next_seq = r.u64()?;
     let events = r.seq(|r| {
-        let at = SimTime::decode_state(r)?;
+        let at = date(SimTime::decode_state(r)?)?;
         let seq = r.u64()?;
         let event = TimedEvent {
             kind: r.u32()?,

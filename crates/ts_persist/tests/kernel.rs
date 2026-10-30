@@ -321,6 +321,8 @@ fn seeds_decode() {
     let seeds = fuzzing::seeds(&[first, later]);
     assert_eq!(seeds.len(), 10);
     let layout = StateLayout::of(&SimConfig::default(), &rules).unwrap();
+    // The fuzz body reaches the kernel decoder only if its layout builds.
+    assert!(fuzzing::kernel_layout().is_some());
     let limits = Limits::fuzzing();
     for s in &seeds[..8] {
         fuzzing::decode(s).unwrap();

@@ -64,7 +64,7 @@ pub(crate) fn snapshot_from_parts(
     layout: &StateLayout,
 ) -> Result<MemorySnapshot, DecodeError> {
     let [meta, state] = parts.into_exact([META_PART, STATE_PART])?;
-    MemorySnapshot::from_canonical(&meta, &state, layout, &canonical_limits(limits))
+    MemorySnapshot::from_canonical(&meta, state, layout, &canonical_limits(limits))
         .map_err(DecodeError::Kernel)
 }
 

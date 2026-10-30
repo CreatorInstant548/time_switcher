@@ -113,8 +113,9 @@ pub fn rules() -> Vec<Box<dyn Plugin>> {
     vec![Box::new(FuzzRules)]
 }
 
-/// Layout of [`rules`], built once.
-fn layout() -> Option<&'static StateLayout> {
+/// Layout of [`rules`], built once. `None` would make [`decode`] skip the kernel decoder:
+/// the tests check that it is built.
+pub fn kernel_layout() -> Option<&'static StateLayout> {
     static LAYOUT: OnceLock<Option<StateLayout>> = OnceLock::new();
     LAYOUT
         .get_or_init(|| StateLayout::of(&SimConfig::default(), &rules()).ok())
@@ -142,7 +143,7 @@ fn split_direct(data: &[u8]) -> Option<(&[u8], &[u8])> {
 /// The error of the parts decoder, if any.
 pub fn decode(data: &[u8]) -> Result<Parts, DecodeError> {
     let limits = Limits::fuzzing();
-    let layout = layout();
+    let layout = kernel_layout();
     if let (Some(layout), Some((header, state))) = (layout, split_direct(data)) {
         let _ = MemorySnapshot::from_canonical(header, state, layout, &canonical_limits(&limits));
     }
