@@ -70,16 +70,22 @@ impl Ctx {
             .collect())
     }
 
-    /// Fichiers suivis, plus les non suivis et non ignorés (F2).
+    /// Fichiers ordinaires présents sur le disque : suivis, plus non suivis et non ignorés (F2).
+    /// Ni lien, ni fichier supprimé mais encore indexé.
     fn files(&self) -> Result<&[String], String> {
         let init = || {
-            self.git_lines(&[
+            let args = [
                 "-c",
                 "core.quotepath=off",
                 "ls-files",
                 "-co",
                 "--exclude-standard",
-            ])
+            ];
+            let mut files = self.git_lines(&args)?;
+            files.retain(|f| {
+                std::fs::symlink_metadata(self.root.join(f)).is_ok_and(|m| m.file_type().is_file())
+            });
+            Ok(files)
         };
         self.files
             .get_or_init(init)
@@ -91,9 +97,24 @@ impl Ctx {
     /// Fichiers modifiés depuis `origin/main`, commités ou non (F7).
     fn changed(&self) -> Result<&[String], String> {
         let init = || {
-            let mut all = self.git_lines(&["diff", "--name-only", "origin/main...HEAD"])?;
-            all.extend(self.git_lines(&["diff", "--name-only", "HEAD"])?);
-            all.extend(self.git_lines(&["ls-files", "-o", "--exclude-standard"])?);
+            // Sans renommage, un déplacement compte ses deux chemins ; noms non ASCII lisibles.
+            let diff = [
+                "-c",
+                "core.quotepath=off",
+                "diff",
+                "--name-only",
+                "--no-renames",
+            ];
+            let mut all = self.git_lines(&[&diff[..], &["origin/main...HEAD"]].concat())?;
+            all.extend(self.git_lines(&[&diff[..], &["HEAD"]].concat())?);
+            let others = [
+                "-c",
+                "core.quotepath=off",
+                "ls-files",
+                "-o",
+                "--exclude-standard",
+            ];
+            all.extend(self.git_lines(&others)?);
             Ok(all)
         };
         self.changed
@@ -217,9 +238,14 @@ fn pinned_dir(cx: &Ctx) -> Result<PathBuf, String> {
             .replace('\\', "/")
             .eq_ignore_ascii_case(&hooks.to_string_lossy().replace('\\', "/"))
     });
-    if !same_parent || name.len() != 64 || !name.bytes().all(|b| b.is_ascii_hexdigit()) {
+    // Empreinte du jeu installé, écrite par install-hooks.ps1 ; -Verify recalcule le contenu.
+    let current = sys::read_text(&hooks.join("current.sha256")).unwrap_or_default();
+    let hex = name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit());
+    if !same_parent || !hex || !current.trim().eq_ignore_ascii_case(&name) {
         return Err(
-            "core.hooksPath ne désigne pas une copie épinglée TS_CACHE/hooks/<sha256>".to_owned(),
+            "core.hooksPath ne désigne pas la copie épinglée TS_CACHE/hooks/<current.sha256> : \
+             réinstaller les crochets (tools/dev/install-hooks.ps1)"
+                .to_owned(),
         );
     }
     Ok(dir)
@@ -240,9 +266,11 @@ fn pinned_lock(cx: &Ctx) -> Result<(PathBuf, String), String> {
     Ok((dir, lock))
 }
 
-/// Version installée d'un outil cargo, comparée à `tools.lock` (F9).
+/// Version installée d'un outil cargo, comparée au `tools.lock` du dépôt (F9). Une version n'est
+/// pas une empreinte : elle se lit dans le dépôt, donc aussi en CI, sans crochets installés.
 fn tool_version(cx: &Ctx, tool: &str) -> Result<(), String> {
-    let expected = lock_value(&pinned_lock(cx)?.1, &format!("cargo-{tool}.version"))?;
+    let lock = sys::read_text(&cx.root.join("tools/dev/tools.lock"))?;
+    let expected = lock_value(&lock, &format!("cargo-{tool}.version"))?;
     let out = stdout_of(&cx.root, &cargo(), &[tool, "--version"])?;
     let actual = out.split_whitespace().last().unwrap_or_default();
     match actual == expected {
@@ -373,9 +401,6 @@ fn extract(cx: &Ctx, scan: &Path) -> Result<(), String> {
     std::fs::create_dir(scan).map_err(|e| format!("{} : {e}", scan.display()))?;
     for rel in cx.files()?.iter().filter(|f| !f.starts_with("target/")) {
         let src = cx.root.join(rel);
-        if !std::fs::symlink_metadata(&src).is_ok_and(|m| m.file_type().is_file()) {
-            continue;
-        }
         let mut dst = scan.join(rel);
         if dst.file_name().is_some_and(|n| n == ".gitleaksignore") {
             dst.set_file_name(".gitleaksignore.lu");
@@ -397,6 +422,21 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
             sys::read_text(Path::new(src)).and_then(|t| manifests::check_unsafe_root(name, &t))
         {
             errors.push(format!("{name} ({src}) : {e}"));
+        }
+    }
+    // ts_py : chaque allow ou expect de unsafe_code, dans tout fichier, suit un // SAFETY:.
+    if let Some(py) = meta.package("ts_py") {
+        let dir = format!("{}/", meta.rel_dir(py));
+        for rel in tri!(cx.files())
+            .iter()
+            .filter(|f| f.starts_with(&dir) && f.ends_with(".rs"))
+        {
+            let text = String::from_utf8_lossy(&tri!(cx.read(rel))).into_owned();
+            if let Some(line) = manifests::unsafe_allow_without_safety(&text) {
+                errors.push(format!(
+                    "{rel}:{line} : exemption de unsafe_code sans // SAFETY:"
+                ));
+            }
         }
     }
     for p in &meta.packages {
@@ -510,7 +550,8 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
 }
 
 pub fn local_paths(cx: &Ctx) -> Outcome {
-    let names: Vec<String> = ["USERNAME", "USER", "COMPUTERNAME", "HOSTNAME"]
+    // Variables de Windows nommées par F6 ; absentes en CI Linux, où les motifs fixes restent.
+    let names: Vec<String> = ["USERNAME", "COMPUTERNAME"]
         .iter()
         .filter_map(|v| sys::env(v))
         .map(|v| v.to_ascii_lowercase())
@@ -518,10 +559,6 @@ pub fn local_paths(cx: &Ctx) -> Outcome {
         .collect();
     let mut errors = Vec::new();
     for rel in tri!(cx.files()) {
-        let path = cx.root.join(rel);
-        if !path.is_file() {
-            continue;
-        }
         let exempt = scan::LOCAL_PATH_EXEMPT.contains(&rel.as_str());
         let lines = scan::local_paths(&tri!(cx.read(rel)), &names, exempt);
         errors.extend(

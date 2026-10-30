@@ -44,30 +44,31 @@ pub fn crate_roots(meta: &Metadata) -> Vec<(&str, &str)> {
     roots
 }
 
-/// `#![forbid(unsafe_code)]` partout ; `ts_py` en `deny`, chaque `allow` précédé de `// SAFETY:`.
+/// `#![forbid(unsafe_code)]` partout ; `ts_py` en `deny` (SEC0-19).
 pub fn check_unsafe_root(crate_name: &str, source: &str) -> Result<(), String> {
-    let lines: Vec<&str> = source.lines().map(str::trim).collect();
-    if crate_name != "ts_py" {
-        return match lines.contains(&"#![forbid(unsafe_code)]") {
-            true => Ok(()),
-            false => Err("#![forbid(unsafe_code)] absent".to_owned()),
-        };
+    let expected = match crate_name {
+        "ts_py" => "#![deny(unsafe_code)]",
+        _ => "#![forbid(unsafe_code)]",
+    };
+    match source.lines().any(|l| l.trim() == expected) {
+        true => Ok(()),
+        false => Err(format!("{expected} absent")),
     }
-    if !lines.contains(&"#![deny(unsafe_code)]") {
-        return Err("#![deny(unsafe_code)] absent (exception de ts_py)".to_owned());
-    }
-    for (i, line) in lines.iter().enumerate() {
+}
+
+/// Première ligne d'un `allow` ou `expect` qui nomme `unsafe_code` sans `// SAFETY:` juste avant
+/// (exception de `ts_py`). Les blancs sont ignorés.
+pub fn unsafe_allow_without_safety(source: &str) -> Option<usize> {
+    let lines: Vec<String> = source
+        .lines()
+        .map(|l| l.split_whitespace().collect())
+        .collect();
+    lines.iter().enumerate().find_map(|(i, line)| {
+        let exempts = ["allow(", "expect("].iter().any(|w| line.contains(w));
         let commented = lines[..i].iter().rev().find(|l| !l.is_empty());
-        if line.contains("allow(unsafe_code)")
-            && !commented.is_some_and(|l| l.starts_with("// SAFETY:"))
-        {
-            return Err(format!(
-                "ligne {} : allow(unsafe_code) sans // SAFETY: avant",
-                i + 1
-            ));
-        }
-    }
-    Ok(())
+        let safety = commented.is_some_and(|l| l.starts_with("//SAFETY:"));
+        (exempts && line.contains("unsafe_code") && !safety).then_some(i + 1)
+    })
 }
 
 /// Chaque membre hérite des lints de l'espace de travail, sans `[lints.*]` local (F3).
@@ -187,9 +188,17 @@ mod tests {
         assert!(check_unsafe_root("ts_kernel", "// #![forbid(unsafe_code)] plus tard\n").is_err());
         let py = "#![deny(unsafe_code)]\n// SAFETY: macro pyo3\n#[allow(unsafe_code)]\nfn a() {}\n";
         assert!(check_unsafe_root("ts_py", py).is_ok());
-        assert!(
-            check_unsafe_root("ts_py", "#![deny(unsafe_code)]\n#[allow(unsafe_code)]\n").is_err()
-        );
+        assert!(check_unsafe_root("ts_py", "#![forbid(unsafe_code)]\n").is_err());
+        assert_eq!(unsafe_allow_without_safety(py), None);
+        let bad = [
+            "#[allow(unsafe_code)]",
+            "#[allow(dead_code, unsafe_code)]",
+            "#[expect( unsafe_code )]",
+        ];
+        for line in bad {
+            let text = format!("fn a() {{}}\n{line}\n");
+            assert_eq!(unsafe_allow_without_safety(&text), Some(2), "{line}");
+        }
         assert_eq!(crate_roots(&sample()).len(), 1);
     }
 

@@ -8,8 +8,26 @@ const ALLOWED_ACTIONS: [&str; 4] = [
     "swatinem/rust-cache",
     "actions/upload-artifact",
 ];
-/// Interpolations interdites dans un `run:` (SEC0-31).
-const TAINTED: [&str; 4] = ["github.event", "github.head_ref", "inputs.", "github["];
+/// Seuls contextes permis dans une interpolation `${{ }}` d'un `run:` (SEC0-31) : tout le reste
+/// (`github`, `inputs`, `env`, `steps`, `needs`, fonctions) passe par `env:` et une variable citée.
+const RUN_SAFE_CONTEXTS: [&str; 2] = ["matrix.", "runner."];
+
+/// Vrai si une ligne contient une interpolation hors des contextes permis.
+fn tainted(line: &str) -> bool {
+    line.split("${{").skip(1).any(|expr| {
+        let expr: String = expr
+            .split("}}")
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect();
+        let expr = expr.to_ascii_lowercase();
+        let plain = expr
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b));
+        !(plain && RUN_SAFE_CONTEXTS.iter().any(|c| expr.starts_with(c)))
+    })
+}
 
 fn indent(line: &str) -> usize {
     line.len() - line.trim_start_matches(' ').len()
@@ -25,6 +43,7 @@ fn key_of(line: &str) -> Option<(usize, &str, &str)> {
         rest = item_rest;
     }
     let (key, value) = rest.split_once(':')?;
+    let key = key.trim_matches(['"', '\'']); // clé citée : même traitement
     let valid = !key.is_empty()
         && key
             .chars()
@@ -78,18 +97,9 @@ pub fn check_workflow(text: &str) -> Vec<String> {
         }
         let key = key_of(line);
         let in_run = run_until.is_some_and(|c| line.trim().is_empty() || indent(line) > c);
-        let tainted = line.split("${{").skip(1).any(|expr| {
-            let expr: String = expr
-                .split("}}")
-                .next()
-                .unwrap_or_default()
-                .split_whitespace()
-                .collect();
-            TAINTED.iter().any(|t| expr.contains(t))
-        });
-        if tainted && (in_run || key.is_some_and(|k| k.1 == "run")) {
+        if tainted(line) && (in_run || key.is_some_and(|k| k.1 == "run")) {
             errors.push(format!(
-                "ligne {n} : donnée de la PR interpolée dans un run: (SEC0-31)"
+                "ligne {n} : interpolation hors de matrix. et runner. dans un run: (SEC0-31)"
             ));
         }
         if in_run {
@@ -97,8 +107,13 @@ pub fn check_workflow(text: &str) -> Vec<String> {
         }
         run_until = None;
         let Some((col, k, value)) = key else {
-            if compact.contains("uses:") {
-                errors.push(format!("ligne {n} : forme de uses: non reconnue"));
+            let hidden = ["uses", "run"].iter().any(|k| {
+                ["", "\"", "'"]
+                    .iter()
+                    .any(|q| compact.contains(&format!("{k}{q}:")))
+            });
+            if hidden {
+                errors.push(format!("ligne {n} : forme de uses: ou run: non reconnue"));
             }
             continue;
         };
@@ -184,6 +199,20 @@ mod tests {
                 "      - {uses: actions/cache@x}\n      - name: t",
             ),
             ("TITLE: ${{", "TITLE: *alias\n          X: ${{"),
+            (
+                "echo \"$TITLE\"",
+                "echo \"${{ GITHUB.EVENT.issue.title }}\"",
+            ),
+            ("echo \"$TITLE\"", "echo '${{ toJSON(github) }}'"),
+            ("echo \"$TITLE\"", "echo ${{ env.TITLE }}"),
+            (
+                "      - name: t",
+                "      - \"uses\": evil/a@main\n      - name: t",
+            ),
+            (
+                "        run: |",
+                "        'run': echo ${{ github.head_ref }} |",
+            ),
         ];
         for (from, to) in cases {
             let text = good().replacen(from, to, 1);
@@ -193,5 +222,7 @@ mod tests {
         let inline = good().replace("run: |", "run: echo ${{ github.event.issue.title }}");
         assert!(!check_workflow(&inline).is_empty());
         assert!(!check_workflow(&good().replace("permissions: {}\n", "")).is_empty());
+        let matrix = good().replace("echo \"$TITLE\"", "echo ${{ matrix.os }} ${{runner.temp}}");
+        assert_eq!(check_workflow(&matrix), Vec::<String>::new());
     }
 }

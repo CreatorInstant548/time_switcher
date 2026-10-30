@@ -80,7 +80,13 @@ pub fn local_paths(bytes: &[u8], names: &[String], exempt: bool) -> Vec<usize> {
             && ["users", "home"]
                 .iter()
                 .any(|w| lower[i..].starts_with(w.as_bytes()) && is_sep(lower.get(i + w.len())));
-        let name = names.iter().any(|n| lower[i..].starts_with(n.as_bytes()));
+        // Nom entier seulement : `runner` ne doit pas trouver `ts_runner`.
+        let word = |b: Option<&u8>| b.is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
+        let name = names.iter().any(|n| {
+            lower[i..].starts_with(n.as_bytes())
+                && !(i > 0 && word(lower.get(i - 1)))
+                && !word(lower.get(i + n.len()))
+        });
         if (home || name) && lines.last() != Some(&line) {
             lines.push(line);
         }
@@ -128,5 +134,8 @@ mod tests {
         assert!(local_paths(text, &[], true).is_empty());
         let names = ["pc-42".to_owned()];
         assert_eq!(local_paths(b"ok\nmachine PC-42\n", &names, true), [2]);
+        let user = ["runner".to_owned()];
+        assert!(local_paths(b"ts_runner runners", &user, false).is_empty());
+        assert_eq!(local_paths(b"x\n/c/runner/", &user, true), [2]);
     }
 }
