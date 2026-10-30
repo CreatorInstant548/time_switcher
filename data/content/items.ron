@@ -1,0 +1,6 @@
+// spec: revues/architecture.md §5.2
+// Example cards for the loader of ts_data (T7b). No game rule, no game value.
+[
+    Item(id: "item.bread", name: "Pain"),
+    Item(id: "item.knife", name: "Couteau"),
+]
