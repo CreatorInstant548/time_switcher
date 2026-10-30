@@ -92,8 +92,8 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | (conception) | `#22` (A12, documentation) | **Fusionnée** par `merge-pr.ps1`, `ci-ok` vert | — | relue | sans objet | 60aedbe |
 | T5a | `claude/ts-kernel-1`, [#20](https://github.com/CreatorInstant548/time_switcher/pull/20), tête bbe2c76 | **Fusionnée** par `merge-pr.ps1` | **`ci-ok` vert** ; `check --all` (13 étapes) | `/security-review` et relecture interne par l'auteur | `review-ok` et `archsec-ok` sur bbe2c76 ; fusionnée avant T3a (accord d'archi-sécu) | **43b3509** |
 | T5b | `claude/ts-kernel-rng`, [#24](https://github.com/CreatorInstant548/time_switcher/pull/24), tête e5af3b3 | **Fusionnée** par `merge-pr.ps1` | **`ci-ok` vert** ; `check --all` (50 renvois) ; R5 ≈ 320 ns/bloc en dev | — | **1er `review-ok` sur 0d9a227** (vecteurs recalculés par une implémentation indépendante) ; corrections faites (e5af3b3) ; deux `review-ok` et `archsec-ok` sur e5af3b3 ; K10 tranché par AS-24 | **ef0f2a4** |
-| T3a | `claude/xtask-merge`, [#23](https://github.com/CreatorInstant548/time_switcher/pull/23), tête c41e984 (`merge`, `hooks`) | En relecture | **`ci-ok` vert** ; test-guards 475/475, test-hooks 58/58 | `/code-review` par l'auteur | 1er relecteur : **changements demandés** (B1 casse sous Windows contre G8 ; B2 à B4, AS-23 non faite ; I1 J2 contourné par `Start-Process` et `CARGO_ALIAS_*` ; I2 `rust-toolchain` ; I3 approbation hors de la 1re ligne) ; lot de corrections en cours | — |
-| T3a (suite) | [#25](https://github.com/CreatorInstant548/time_switcher/pull/25), tête 2b73b7d (`verify-main`) | Attend #23 | **`ci-ok` vert** ; `verify-main --dry-run` : aucune anomalie | — | après #23 | — |
+| T3a | `claude/xtask-merge`, [#23](https://github.com/CreatorInstant548/time_switcher/pull/23), tête **ac7a4e1** (`merge`, `hooks`) | En relecture | **`ci-ok` vert** ; test-guards 475/475, test-hooks 58/58 | `/code-review` par l'auteur | 1er relecteur : **changements demandés** (B1 casse sous Windows contre G8 ; B2 à B4, AS-23 non faite ; I1 J2 contourné par `Start-Process` et `CARGO_ALIAS_*` ; I2 `rust-toolchain` ; I3 approbation hors de la 1re ligne) ; lot corrigé (a9ee496, plus la fusion de `main`, `ci-ok` vert) ; relecteur 1 sur le delta et relecteur 2 neuf **en parallèle** | — |
+| T3a (suite) | [#25](https://github.com/CreatorInstant548/time_switcher/pull/25), tête 0887e96 (`verify-main`) | Attend #23 | **`ci-ok` vert** ; `verify-main --dry-run` : aucune anomalie | — | après #23 | — |
 
 ## Sessions et agents actifs
 
@@ -212,3 +212,12 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   2. tâche sensible : deux tours au plus, puis issues (règle de convergence de l'orchestrateur, généralisée) ;
   3. consignes de T7a, T7b, T8, T9w et T9 écrites maintenant et envoyées en un seul lot à archi-sécu, pendant que T6 tourne ;
   4. dès la fusion de T6a : T7a, T8 et T9w en parallèle (3 emplacements).
+- 30/10 : PR #23 corrigée (ac7a4e1) :
+  - B1 : casse ;
+  - B2 : `build.rs` qui inscrit l'empreinte des entrées de construction ;
+  - B3 : `[patch]` et sources rendues sensibles, E7 refusé ;
+  - B4 : `--dry-run` sans effet, prouvé par un test ;
+  - I1 à I3, m1, m3, m4 ;
+  - faux refus `2>&1`.
+
+  510 cas de `test-guards`, 66 tests. Relectures en parallèle : delta par le relecteur 1, relecture complète par le relecteur 2 sous l'angle « agent qui se trompe ou victime d'une injection ». La #25 est mise à jour (0887e96).
