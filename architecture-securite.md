@@ -53,7 +53,7 @@ Chaque case est cochée par moi, sur preuve (sortie de commande notée dans le c
   - `dependabot.yml` pour `cargo` et `github-actions`, puis `uv`, `pnpm` et `nuget` à l'arrivée de ces écosystèmes ; mises à jour hebdomadaires et regroupées.
 
   Une PR Dependabot suit le même chemin qu'une autre : `ci-ok`, `/code-review`, fusion par `xtask merge`. Une PR Dependabot qui touche `.github/` (mise à jour d'action) est un chemin sensible : elle demande mon avis, et l'épinglage par empreinte doit rester en place.
-- [ ] **SEC0-05** — Toute nouvelle dépendance directe est justifiée dans la demande de fusion : besoin, alternative écartée, licence, présence d'un `build.rs` ou d'une macro procédurale. *Pourquoi : ces deux mécanismes exécutent du code sur le poste à la compilation.* Liste **pré-approuvée** pour la phase 0 : `bevy_ecs` (sans `bevy_app`), `serde`, `ron`, `blake3`, `thiserror`, `smallvec`, `arrayvec`, `chrono`, `chrono-tz`, `arrow`, `parquet`, `pyo3`, `numpy`, `rerun` (`default-features = false`), `proptest`, `arbitrary`, `libfuzzer-sys`, `clap`, `xshell` ou équivalent pour `xtask`, et `chacha20` (RustCrypto, pour l'aléa à clé, AS-12). Une dépendance de **cryptographie, de décodage de format externe ou de réseau** hors de cette liste demande mon avis **avant** la fusion.
+- [ ] **SEC0-05** — Toute nouvelle dépendance directe est justifiée dans la demande de fusion : besoin, alternative écartée, licence, présence d'un `build.rs` ou d'une macro procédurale. *Pourquoi : ces deux mécanismes exécutent du code sur le poste à la compilation.* Liste **pré-approuvée** pour la phase 0 : `bevy_ecs` (sans `bevy_app`), `serde`, `ron`, `blake3`, `thiserror`, `smallvec`, `arrayvec`, `chrono`, `chrono-tz`, `arrow`, `parquet`, `pyo3`, `numpy`, `rerun` (`default-features = false`), `proptest`, `arbitrary`, `libfuzzer-sys`, `clap`, `xshell` ou équivalent pour `xtask`, et `chacha20` (RustCrypto, pour l'aléa à clé, AS-12). Ajout du 30/10 (AS-17) : `serde_json`, pour les **crates d'outil seulement** (`xtask`, puis `ts_runner`), et jamais pour le cœur ni le protocole. Une dépendance de **cryptographie, de décodage de format externe ou de réseau** hors de cette liste demande mon avis **avant** la fusion.
 - [ ] **SEC0-06** — Outils tiers épinglés : `cargo install --locked --version <v>` pour `cargo-deny`, `cargo-audit`, `cargo-fuzz` et `maturin` ; `gitleaks` en binaire officiel, avec son SHA-256 consigné dans le dépôt (`tools/dev/tools.lock` ou équivalent) et vérifié avant usage.
 - [ ] **SEC0-07** — Chaîne Rust épinglée par `rust-toolchain.toml` (1.99.1, A14).
 
@@ -420,6 +420,71 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | PR #5 (T1) : décisions I4 et I2 du responsable développement | Message du responsable développement ; PR non encore soumise | **Favorable avec conditions** (§9.3) ; mon avis sur le SHA de tête reste à donner |
 | 30/10 | Consigne T2a (espace de travail Cargo, V et S) | `side-session-notes/…/consigne-T2a.md` | **Validé avec corrections E1 à E9** (§9.4) ; lancement permis après la fusion de la PR #5 |
 | 30/10 | **PR #5 (T1), fusion** | SHA de tête `92ecc11915c3ba6ae49a589621a87467ed89f843` ; `review-ok` de la troisième relecture neuve | **`archsec-ok: 92ecc11915c3ba6ae49a589621a87467ed89f843`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/5#issuecomment-6514007221)) : aucun défaut bloquant au sens d'AS-16 ; conditions du §9.3 remplies ; non bloquant : m7 à m15 et [#6](https://github.com/CreatorInstant548/time_switcher/issues/6) (T3), bloquants pour la fin de la phase 0 ; R-ARCH-05 |
+| 30/10 | Consigne T2b (`xtask check`, `slots`, `disk` ; V et S) | `side-session-notes/…/consigne-T2b.md` | **Validé avec corrections F1 à F10** (§9.5) ; `serde_json` accepté pour les outils (AS-17) ; à découper en deux PR ; lancement après la fusion de la PR #10 |
+
+### 9.5 Consigne T2b : `xtask check`, `slots` et `disk` (30/10)
+
+**Question posée : `serde_json` ou `cargo_metadata` ?** Ce sera **`serde_json`**, avec `serde` en dérivation (AS-17, décidé).
+- *Pourquoi :*
+  - `cargo_metadata` ajoute `semver`, `camino` et `cargo-platform` pour des champs dont `xtask` n'a pas besoin ;
+  - il suit l'évolution du format de Cargo plus lentement que des structures locales réduites aux champs lus (`packages[].name`, `manifest_path`, `features`, `dependencies[].{name, kind, features, uses_default_features}`, `targets[].{kind, src_path}`).
+- `serde_json` est du même auteur que `serde`, sous MIT ou Apache-2.0, et très répandu. Son `build.rs` ne fait que détecter des `cfg`.
+- Les structures ignorent les champs inconnus, et l'option `--format-version 1` est fixée.
+- La justification de SEC0-05 reste à écrire dans la PR.
+
+Ma réponse : **validé avec corrections F1 à F10**, toutes décidées.
+
+- **F1. Passe clippy avec `public`.** Elle porte sur le **graphe livré** seulement, sans `--all-targets` et sans `--workspace` : `cargo clippy -p <crates livrées> --locked --features ts_kernel/public -- -D warnings`. La liste des crates livrées est tenue dans `xtask` : `ts_kernel` aujourd'hui, puis `ts_host`, `ts_server`, `ts_client_native` et leurs dépendances. *Pourquoi :* SEC0-20 permet les fonctionnalités de développement dans les dépendances de développement et les crates d'outil. Avec `--workspace --all-targets`, elles s'unifient avec `public`, et le `compile_error!` ferait échouer la passe à tort.
+- **F2. Étape gitleaks.**
+  - **Binaire :** son SHA-256 est vérifié contre `tools.lock` avant usage.
+  - **Configuration et options :**
+    - la configuration est lue dans la copie épinglée désignée par `core.hooksPath`, et non dans la copie de travail ;
+    - un `.gitleaksignore` à la racine est refusé ;
+    - **`--redact` est obligatoire**. *Pourquoi : la sortie de `xtask check --all` est collée dans le corps des PR et lue par les sessions ; un secret trouvé ne doit jamais y apparaître en clair.*
+  - **L'arbre :** ce sont les fichiers suivis, plus les fichiers non suivis et non ignorés (`git ls-files -co --exclude-standard`). Ils sont extraits comme dans le `pre-commit`, ce qui neutralise les attributs. Jamais `target/`, qui est une jonction, ni `TS_CACHE`.
+  - **Les commits :** plage `origin/main..HEAD`, avec `--text --no-ext-diff --no-textconv`.
+- **F3. `forbid(unsafe_code)`.** Les racines viennent de `cargo metadata` : chaque cible `lib`, `bin`, `proc-macro` et `custom-build` de chaque membre, y compris `tools/xtask`. Ce n'est pas une liste de chemins écrite à la main. En plus, chaque `Cargo.toml` membre doit contenir `[lints] workspace = true`, sans `[lints.rust]` local qui relâcherait `unsafe_code`. Exception de `ts_py`, conforme à SEC0-19 : `deny` au niveau de la crate, et chaque `allow` local précédé de `// SAFETY:`.
+- **F4. Fonctionnalités : c'est la résolution de Cargo qui fait foi.**
+  - **Hôtes :** pour chaque crate d'hôte, `cargo tree -p <hôte> --edges normal,features --locked -f '{p} {f}'`. L'étape échoue si une fonctionnalité de développement de `ts_kernel` y apparaît.
+  - **Manifestes :** l'analyse par `cargo metadata` les complète. Elle refuse toute mention de `public` hors de sa déclaration dans `ts_kernel` : dans `features`, y compris les formes `ts_kernel/public` et `ts_kernel?/public`, et dans les `features` d'une dépendance. Elle vérifie aussi que `default` de `ts_kernel` est vide.
+  - **`ts_toy` :** la règle D-DEV-02 est vérifiée par la même analyse.
+  - *Pourquoi : réimplémenter l'unification de Cargo laisserait passer un cas, par exemple une fonctionnalité `default` d'une crate intermédiaire qui en active une autre.*
+- **F5. Exemptions de clippy : la liste des formes refusées est élargie** dans `ts_kernel`, `ts_model`, `ts_data` et les crates de règles.
+  - **Attributs refusés :** `allow` ou `expect` portant sur :
+    - `clippy::disallowed_methods` et `clippy::disallowed_types` ;
+    - **`clippy::style`**, le groupe qui contient ces deux lints ;
+    - **`clippy::all`** ;
+    - **`warnings`** ;
+  - **Formes couvertes :** `#[...]`, `#![...]` et **`cfg_attr(…, allow(…))`**.
+  - **Fichier :** tout `clippy.toml` ou `.clippy.toml` autre que celui de la racine est refusé. Un tel fichier, placé dans le dossier d'une crate, **remplacerait** la configuration de la racine.
+
+  *Pourquoi :* chacune de ces formes rouvre l'horloge ou l'aléa dans le cœur, aussi sûrement qu'un `allow` nommé.
+- **F6. Chemins locaux.**
+  - **Motifs :** sans tenir compte de la casse, avec les deux séparateurs (`C:\Users\` et `C:/Users/`, `/home/`, `/Users/`), plus les valeurs de `USERNAME` et de `COMPUTERNAME` lues dans l'environnement.
+  - **Exemptions :** les fichiers de test de `xtask` qui contiennent ces motifs, dans une liste fermée.
+  - **Affichage :** les fichiers fautifs sont donnés par leur chemin et leur numéro de ligne, sans recopier la valeur trouvée.
+- **F7. Crates touchées.**
+  - Les **dépendants inverses** de chaque crate touchée sont testés aussi : une modification de `ts_kernel` teste tout ce qui en dépend.
+  - Une modification de `Cargo.toml` racine, `Cargo.lock`, `clippy.toml`, `deny.toml`, `rustfmt.toml`, `rust-toolchain.toml` ou `.cargo/` vaut `--all`.
+  - Les étapes 4, 6, 7 et 9 à 12 sont des contrôles de sécurité peu coûteux. Elles portent **toujours sur tout le dépôt**, quel que soit le périmètre.
+- **F8. `disk --clean`.**
+  - **Jonctions :** il ne suit jamais une jonction ni un lien symbolique. Le code teste explicitement les points de réanalyse avant de descendre dans un dossier ; `remove_dir_all` seul ne suffit pas.
+  - **Périmètre :** il ne supprime que sous `TS_CACHE` et sous `.claude/worktrees/` de la copie principale, après mise sous forme canonique du chemin et vérification de son préfixe.
+  - **Dossiers laissés par `git worktree remove` :** seulement ceux qui sont absents de `git worktree list`, sans fichier `.git`, et sans modification depuis 24 h.
+  - **Emplacements :** avant de vider un emplacement, il prend le bail par le même mécanisme atomique que `session-start.ps1`, et il le rend ensuite.
+- **F9. Versions des outils.** Avant usage, `cargo deny --version` et `cargo audit --version` sont comparées à `tools.lock`. Un écart fait échouer l'étape (SEC0-06).
+- **F10. Workflows : l'étape 12 applique SEC0-29 à 31 en entier.**
+  - **Actions :** épinglées par SHA de 40 caractères et prises dans la **liste fermée** de SEC0-30.
+  - **Permissions :** `permissions: {}` au niveau du workflow.
+  - **Interdits :**
+    - `pull_request_target`, `workflow_run` et `secrets: inherit` ;
+    - `actions/checkout` sans `persist-credentials: false`.
+  - **Interpolations :** aucune de `github.event.*`, `github.head_ref` ni `inputs.*` dans un `run:`.
+  - **Méthode :** une analyse par lignes et par indentation, sans nouvelle dépendance YAML, qui **refuse en cas de doute**.
+
+**Découpage : deux PR d'emblée.** La première, `claude/xtask-check`, porte `check`. C'est un chemin sensible, avec revue complète. La seconde, `claude/xtask-disk`, porte `slots` et `disk`. *Pourquoi :* les 13 étapes, avec F1 à F10, dépassent à elles seules les 400 lignes. Et `disk --clean` supprime des fichiers : il mérite sa propre revue.
+
+**Revue :** `tools/xtask/` est un chemin sensible. Les deux PR passent donc par `/security-review`, un relecteur neuf, puis mon `archsec-ok`. Pour la première, les critères bloquants sont SEC0-03, 06, 08, 19, 20, 26, 30 et 31, plus F1 à F7, F9 et F10. Pour la seconde, c'est F8.
 
 ### 9.4 Consigne T2a : espace de travail Cargo (30/10)
 
@@ -604,6 +669,7 @@ Il est confronté à la grille du §6 (V0-01 à V0-14) et aux exigences du §3. 
 | 30/10 | AS-13 | Fin du mode local : fusion côté GitHub, approbations en commentaires de PR liés au SHA, aucun commit local sur `main` | Lier les approbations au contenu exact et les tracer hors du poste |
 | 30/10 | AS-14 | Exigences de CI SEC0-29 à 34 ; pas de `CODEOWNERS` | Offre gratuite sans protection de branche : il serait sans effet |
 | 30/10 | AS-16 | Avis final sur la PR #5 (T1), après la troisième relecture, la dernière. Un défaut n'est bloquant que s'il permet d'**écrire sur `main` hors fusion**, s'il **fait fuir un secret**, ou s'il produit un **faux refus** sur le travail courant (commit, push, worktree, `gh pr`, `gh issue`). Le reste part en *issues* `role:dev` avec mention de l'exigence SEC0 touchée. Ces *issues* restent **bloquantes pour la fin de la phase 0** (audit SEC0-28), pas pour la fusion de T1 | Décision de pilotage de l'orchestrateur : ces gardes sont une défense en profondeur ; les barrières principales sont la fusion réservée, mon avis et le contrôle de l'origine |
+| 30/10 | AS-17 | `serde_json` (avec `serde`) ajouté à la liste pré-approuvée de SEC0-05, **pour les crates d'outil seulement** ; `cargo_metadata` écarté | Moins de crates dans le graphe ; des structures locales réduites aux champs lus ; aucun décodage JSON dans le cœur ni dans le protocole |
 | 30/10 | AS-15 | Le crochet Claude Code passe au `.claude/settings.json` du projet, avec la parade SEC0-35 ; écart assumé à la clôture C4, à reporter à la consolidation | Les réglages utilisateur appartiennent à l'utilisateur (décision de l'orchestrateur) |
 
 | N° | Risque | Parade |
