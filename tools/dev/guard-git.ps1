@@ -74,6 +74,8 @@ function Test-Abbrev([string]$Tok, [string]$Full, [int]$Min) {   # abréviation 
   return $t.Length -ge $Min -and $Full.StartsWith($t, [StringComparison]::OrdinalIgnoreCase)
 }
 function Test-MainRef([string]$Ref) { return ($Ref -replace '/{2,}', '/') -match '^(?i)(refs/)?(heads/)?main$' }
+# main exactement, casse comprise : seule forme que garde le ruleset main de GitHub (AS-31).
+function Test-MainRefExact([string]$Ref) { return ($Ref -replace '/{2,}', '/') -cmatch '^(refs/)?(heads/)?main$' }
 function Test-OriginMain([string]$Ref) { return $Ref -match '^(?i)(refs/remotes/)?origin/main$' }
 function Test-Exe([string]$Tok, [string]$Name) { return $Tok -match "(?i)(^|[\\/])$Name(\.exe)?$" }
 function Get-Head([string[]]$S) { $h = @($S | Where-Object { $_ -notmatch '^\w+=' })[0]; return (("$h" -replace '(?i)\.exe$', '') -split '[\\/]')[-1].ToLowerInvariant() }
@@ -164,30 +166,36 @@ function Get-GitVerdict([string[]]$T, [int]$At, [string]$Dir) {
       # AS-31, T3e-1 : la poussée directe et la poussée forcée vers main ne sont plus refusées ici,
       # le ruleset main (26213563) de GitHub les refuse sans contournement. Seulement vers le distant
       # origin, nommé : le ruleset ne garde que lui. La poussée forcée reste refusée vers toute autre
-      # destination, et vers une destination implicite (sans refspec, HEAD).
-      $refs = @(); $skip = $false; $force = $false; $repoOpt = $false
-      $delete = [bool]($a | Where-Object { (Test-Abbrev $_ '--delete' 4) -or $_ -cmatch '^-[a-zA-Z]*d' })
+      # destination, et vers une destination implicite (sans refspec, HEAD) ; main s'écrit en
+      # minuscules, seule forme que garde le ruleset (Main, MAIN : poussée forcée refusée).
+      $refs = @(); $skip = $false; $force = $false; $repoOpt = $false; $delete = $false; $tags = $false
       foreach ($x in $a) {
         if ($skip) { $skip = $false; continue }
         if ($x -in '--repo', '-o', '--push-option', '--receive-pack', '--exec') { $repoOpt = $repoOpt -or $x -eq '--repo'; $skip = $true; continue }
+        if ((Test-Abbrev $x '--delete' 4) -or $x -cmatch '^-[a-zA-Z]*d') { $delete = $true }
+        if ((Test-Abbrev $x '--tags' 4) -or (Test-Abbrev $x '--follow-tags' 4)) { $tags = $true }
         if ((Test-Abbrev $x '--force' 4) -or (Test-Abbrev $x '--force-with-lease' 4) -or (Test-Abbrev $x '--force-if-includes' 4) -or
             ($x -cmatch '^-[a-zA-Z]*f')) { $force = $true; continue }
-        if ((Test-Abbrev $x '--mirror' 4) -or (Test-Abbrev $x '--all' 4)) { return 'git push --all/--mirror interdit : poussez une seule branche' }
+        if ((Test-Abbrev $x '--mirror' 4) -or (Test-Abbrev $x '--all' 4) -or (Test-Abbrev $x '--branches' 4)) {
+          return 'git push --all/--branches/--mirror interdit : poussez une seule branche'
+        }
         if ($x -like '--repo=*' -or $x -like '--receive-pack=*' -or $x -like '--exec=*') { return "git push $x interdit" }
         if (-not $x.StartsWith('-')) { $refs += $x }
       }
       if ($refs.Count -ge 1 -and $refs[0] -eq '.') { return 'git push vers le dépôt local (.) interdit' }
       if ($force -and $refs.Count -le 1) { return 'poussée forcée sans destination explicite interdite (SEC0-14) : seule main, nommée, peut être visée' }
+      if ($force -and $tags) { return 'poussée forcée avec --tags ou --follow-tags interdite (SEC0-14) : les étiquettes seraient forcées aussi' }
       $viaOrigin = $refs.Count -ge 1 -and $refs[0] -ceq 'origin' -and -not $repoOpt
       $mainHint = 'poussée vers main permise seulement vers le distant origin, nommé, que garde le ruleset de GitHub (SEC0-13, AS-31)'
       if ($refs.Count -le 1 -and -not $viaOrigin -and (& $onMain)) { return $mainHint }
       foreach ($r in ($refs | Select-Object -Skip 1)) {
         $plus = $r.StartsWith('+'); $spec = if ($plus) { $r.Substring(1) } else { $r }
+        if ($spec -eq ':' -or $spec.Contains('*')) { return 'refspec de correspondance (:) ou à motif (*) interdite : poussez une seule branche' }
         $dst = ($spec -split ':')[-1]
         $toMain = Test-MainRef $dst
         if ($toMain -and ($spec.StartsWith(':') -or $delete)) { return 'suppression de la branche main interdite (SEC0-13)' }
-        if (($toMain -or ($r -ieq 'HEAD' -and (& $onMain))) -and -not $viaOrigin) { return $mainHint }
-        if (($plus -or $force) -and -not $toMain) { return 'poussée forcée interdite hors de main (SEC0-14)' }
+        if (($toMain -or ($dst -in 'HEAD', '@' -and (& $onMain))) -and -not $viaOrigin) { return $mainHint }
+        if (($plus -or $force) -and -not (Test-MainRefExact $dst)) { return 'poussée forcée interdite hors de main (SEC0-14)' }
         if ($dst -match '(?i)^refs/remotes/') { return 'poussée vers refs/remotes/ interdite' }
         if ($dst -match '^(?i)(refs/)?(heads/)?pilotage$' -and ($spec.StartsWith(':') -or $delete)) {
           return 'suppression de la branche pilotage interdite'

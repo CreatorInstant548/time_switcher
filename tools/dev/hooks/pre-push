@@ -4,7 +4,7 @@
 # La poussée directe et la poussée forcée vers main du distant origin ne sont plus refusées ici :
 # le ruleset main (26213563) de GitHub les refuse pour tout le monde, sans contournement (AS-31,
 # T3e-1). Vers le main de tout autre distant (nom ou URL), la poussée reste refusée.
-# spec: carnet architecture-securite.md SEC0-08, SEC0-13, AS-31
+# spec: carnet architecture-securite.md SEC0-08, SEC0-13
 . "$(dirname "$0")/common.sh"
 remote=$1
 ZERO=0000000000000000000000000000000000000000
@@ -19,21 +19,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     [ "$dest" = "refs/heads/pilotage" ] && fail "suppression de la branche pilotage interdite."
     continue   # suppression d'une branche de tâche
   fi
-  if [ "$remote_sha" = "$ZERO" ]; then
-    range="$local_sha --not --remotes=$remote"   # branche nouvelle : commits absents du distant
-  elif [ "$dest" = "refs/heads/main" ]; then
-    # main : GitHub juge l'avance rapide ; gitleaks lit tout ce qui n'est pas déjà sur le distant.
-    if git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-      range="$remote_sha..$local_sha"
-    else
-      range="$local_sha --not --remotes=$remote"
-    fi
-  else
-    git cat-file -e "$remote_sha^{commit}" 2>/dev/null ||
-      fail "$remote_ref a bougé sur $remote ($remote_sha inconnu ici) : git fetch, puis intégrez sans forcer."
-    git merge-base --is-ancestor "$remote_sha" "$local_sha" ||
+  # main du distant origin, en minuscules : seule forme que garde le ruleset, qui y juge l'avance rapide.
+  main=; [ "$remote" = "origin" ] && [ "$remote_ref" = "refs/heads/main" ] && main=1
+  if [ "$remote_sha" != "$ZERO" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    [ -n "$main" ] || git merge-base --is-ancestor "$remote_sha" "$local_sha" ||
       fail "poussée forcée vers $remote_ref interdite (SEC0-13) : l'historique distant serait réécrit."
     range="$remote_sha..$local_sha"
+  else
+    [ "$remote_sha" = "$ZERO" ] || [ -n "$main" ] ||
+      fail "$remote_ref a bougé sur $remote ($remote_sha inconnu ici) : git fetch, puis intégrez sans forcer."
+    range="$local_sha --not --remotes=$remote"   # branche nouvelle, ou main inconnue ici : commits absents du distant
   fi
   # --text : un attribut -diff ou binary ne masque pas le contenu ; ni diff externe ni textconv (I3 bis).
   gitleaks_run git --log-opts="--text --no-ext-diff --no-textconv $range" ||
