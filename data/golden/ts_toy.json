@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "manifest": {
+    "about": "Golden results of the toy world (crates/ts_toy), checked by cargo xtask determinism: the short version in cargo xtask check, the year every week in CI (Y5). A change of these values is reported in the PR.",
+    "floats": "none in the toy state: the values do not depend on the platform",
+    "plugin": "toy_world v1, a test plugin, never a rule (D-DEV-02)",
+    "processes": "one_thread (1 thread) and four_threads (4 threads), each a separate process (L6), each running twice",
+    "seed": "public test seed 1 (ts_toy::public_test_key)",
+    "short": "14 simulated days, snapshot on day 7",
+    "snapshot": "taken at 12:00:10 on a stroll day (3 residents in full simulation), encoded and decoded by ts_persist (zstd), restored, then run to the end",
+    "town": "32 x 32 parcels, 1000 residents (ts_toy::town::TownSpec::PHASE0)",
+    "year": "365 simulated days, snapshot on day 182"
+  },
+  "results": {
+    "generator": "d6906127ba3f4bbf78505f01da375aad2ad6b79caeb7251f6f7eb5f9f5b96385",
+    "short.rules": "1d52dc6c3825aa4c3f09cf6ed8d4342bde396c2c533aa1082d3f80b947652cb2",
+    "short.skipped": "24184019",
+    "short.ticks": "7981",
+    "short.world": "b47cd9a9942b710e3f3ee1d0274f4848e6009793c1d769fcdc2038ae9ad43d1a",
+    "year.rules": "1d52dc6c3825aa4c3f09cf6ed8d4342bde396c2c533aa1082d3f80b947652cb2",
+    "year.skipped": "630512006",
+    "year.ticks": "207994",
+    "year.world": "c5217b31157265f2fd5493bc7de22d4ac7452319fd82c7862ad5ae17db2e4ef7"
+  }
+}
