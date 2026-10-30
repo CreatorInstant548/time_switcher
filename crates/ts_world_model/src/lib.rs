@@ -1,7 +1,7 @@
 // spec: revues/generation.md §12 ; revues/architecture.md §5.2
 //! Map model of time_switcher: integer-centimetre geometry and the three map parts.
 //!
-//! Phase 0 (T9w): geometry types, `quantize`, canonical encoding, and the `public`,
+//! Phase 0 (T9w): geometry types, `quantize`, the kernel `StateHash` encoding, and the `public`,
 //! `candidates` and `server` parts, separated from day one (P12). Depends on `ts_kernel` only;
 //! the link to `ts_model` waits for T7a. No generator, map, street graph, collision or file
 //! format yet.
@@ -17,7 +17,6 @@ pub mod candidates;
 pub mod public;
 pub mod server;
 
-pub use canonical::{Canonical, CanonicalWriter, canonical_bytes};
 pub use cm::{Cm, GeometryError, MAX_ABS_CM, quantize};
 pub use level::{HeightRange, Level, LevelKind};
 pub use public::ClientShippable;

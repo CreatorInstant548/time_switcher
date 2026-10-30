@@ -1,4 +1,9 @@
-use ts_kernel::StableId;
+use bevy_ecs::prelude::Resource;
+use ts_kernel::rng::WorldKey;
+use ts_kernel::{
+    MemorySnapshot, Plugin, Sim, SimBuilder, SimConfig, Snapshot, SnapshotScope, StableId,
+    StateHash,
+};
 
 use crate::candidates::{CandidateKind, CandidateSpot};
 use crate::public::{PublicMap, PublicPlace};
@@ -19,6 +24,61 @@ fn square() -> Polygon2 {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// --- Bytes of a `StateHash` value -----------------------------------------------------------
+//
+// The kernel offers no way (yet) to get the bytes of a lone value: a `StateWriter` cannot be
+// built outside it. The value is therefore declared as a state resource of a minimal `Sim`, and
+// its bytes are read from the canonical snapshot. A `Sim` without the resource gives the same
+// bytes up to the "present" flag, which isolates the encoding of the value.
+
+#[derive(Resource, Clone)]
+struct Probe<T: Send + Sync + 'static>(T);
+
+impl<T: StateHash + Send + Sync + 'static> StateHash for Probe<T> {
+    fn hash_state(&self, w: &mut ts_kernel::StateWriter<'_>) {
+        self.0.hash_state(w);
+    }
+}
+
+struct ProbePlugin<T>(Option<T>);
+
+impl<T: StateHash + Clone + Send + Sync + 'static> Plugin for ProbePlugin<T> {
+    fn name(&self) -> &'static str {
+        "probe"
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn build(&self, b: &mut SimBuilder) {
+        b.state_resource::<Probe<T>>("wm");
+        if let Some(v) = &self.0 {
+            b.insert_resource(Probe(v.clone()));
+        }
+    }
+}
+
+fn snapshot_bytes<T: StateHash + Clone + Send + Sync + 'static>(value: Option<T>) -> Vec<u8> {
+    let rules: Vec<Box<dyn Plugin>> = vec![Box::new(ProbePlugin(value))];
+    let sim = Sim::build(SimConfig::default(), &rules, &WorldKey::from_bytes([7; 16])).unwrap();
+    MemorySnapshot::snapshot(&sim, SnapshotScope::Full)
+        .canonical_bytes()
+        .to_vec()
+}
+
+/// The `StateHash` bytes of `value`, and nothing else.
+fn state_bytes<T: StateHash + Clone + Send + Sync + 'static>(value: &T) -> Vec<u8> {
+    let absent = snapshot_bytes::<T>(None);
+    let present = snapshot_bytes(Some(value.clone()));
+    // Layout: <same prefix>, then a flag (0 absent, 1 present), then the value.
+    let (flag, prefix) = absent.split_last().unwrap();
+    assert_eq!(*flag, 0);
+    assert!(present.starts_with(prefix));
+    assert_eq!(present[prefix.len()], 1);
+    present[prefix.len() + 1..].to_vec()
 }
 
 // --- Cm and quantize ---------------------------------------------------------------------
@@ -240,7 +300,7 @@ fn polygon_needs_three_distinct_vertices_with_area() {
 
 #[test]
 fn polygon_has_one_canonical_form() {
-    let expected = canonical_bytes(&square());
+    let expected = state_bytes(&square());
     let inputs = [
         vec![pt(0, 0), pt(100, 0), pt(100, 100), pt(0, 100)],
         vec![pt(100, 0), pt(100, 100), pt(0, 100), pt(0, 0)],
@@ -255,7 +315,7 @@ fn polygon_has_one_canonical_form() {
     for input in inputs {
         let poly = Polygon2::new(input.clone()).unwrap();
         assert_eq!(poly, square(), "{input:?}");
-        assert_eq!(canonical_bytes(&poly), expected, "{input:?}");
+        assert_eq!(state_bytes(&poly), expected, "{input:?}");
     }
     // The smallest vertex is the one with the smallest x, then the smallest y.
     let tri = Polygon2::new(vec![pt(5, 9), pt(5, 1), pt(7, 4)]).unwrap();
@@ -388,34 +448,32 @@ fn public_types_are_client_shippable() {
     ship::<CandidateSpot>();
 }
 
-// --- Canonical encoding: reference vectors ------------------------------------------------------
+// --- StateHash encoding: reference vectors ---------------------------------------------------
 //
 // These strings freeze the encoding. A change here changes every map fingerprint: update them
 // only on purpose, in a PR that says so.
 
 #[test]
 fn canonical_vectors_for_scalars_and_shapes() {
-    assert_eq!(hex(&canonical_bytes(&cm(100))), "0164000000");
-    assert_eq!(hex(&canonical_bytes(&cm(-1))), "01ffffffff");
-    assert_eq!(hex(&canonical_bytes(&pt(1, -1))), "0201000000ffffffff");
+    assert_eq!(hex(&state_bytes(&cm(100))), "0164000000");
+    assert_eq!(hex(&state_bytes(&cm(-1))), "01ffffffff");
+    assert_eq!(hex(&state_bytes(&pt(1, -1))), "0201000000ffffffff");
     assert_eq!(
-        hex(&canonical_bytes(&Vec2::new(cm(2), cm(3)))),
+        hex(&state_bytes(&Vec2::new(cm(2), cm(3)))),
         "030200000003000000"
     );
     assert_eq!(
-        hex(&canonical_bytes(&Aabb2::new(pt(0, 0), pt(10, 20)).unwrap())),
+        hex(&state_bytes(&Aabb2::new(pt(0, 0), pt(10, 20)).unwrap())),
         concat!("04", "0000000000000000", "0a00000014000000")
     );
     assert_eq!(
-        hex(&canonical_bytes(
-            &Segment2::new(pt(0, 0), pt(0, 5)).unwrap()
-        )),
+        hex(&state_bytes(&Segment2::new(pt(0, 0), pt(0, 5)).unwrap())),
         concat!("05", "0000000000000000", "0000000005000000")
     );
-    assert_eq!(hex(&canonical_bytes(&Level::floor(2).unwrap())), "070102");
-    assert_eq!(hex(&canonical_bytes(&Level::roof())), "070300");
+    assert_eq!(hex(&state_bytes(&Level::floor(2).unwrap())), "070102");
+    assert_eq!(hex(&state_bytes(&Level::roof())), "070300");
     assert_eq!(
-        hex(&canonical_bytes(&HeightRange::new(cm(0), cm(300)).unwrap())),
+        hex(&state_bytes(&HeightRange::new(cm(0), cm(300)).unwrap())),
         "08000000002c010000"
     );
 }
@@ -423,10 +481,10 @@ fn canonical_vectors_for_scalars_and_shapes() {
 #[test]
 fn canonical_vector_for_a_polygon() {
     assert_eq!(
-        hex(&canonical_bytes(&square())),
+        hex(&state_bytes(&square())),
         concat!(
             "06",
-            "04000000",
+            "0400000000000000",
             "0000000000000000",
             "6400000000000000",
             "6400000064000000",
@@ -442,7 +500,7 @@ fn canonical_vectors_for_parts() {
         "0500000000000080", // id: bit 63 + index 5
         "070000",           // ground
         "06",
-        "04000000",
+        "0400000000000000",
         "0000000000000000",
         "6400000000000000",
         "6400000064000000",
@@ -451,18 +509,18 @@ fn canonical_vectors_for_parts() {
         "00000000",
         "2c010000",
     );
-    assert_eq!(hex(&canonical_bytes(&place(5))), expected_place);
+    assert_eq!(hex(&state_bytes(&place(5))), expected_place);
 
     let map = PublicMap::new(vec![place(5)]).unwrap();
     assert_eq!(
-        hex(&canonical_bytes(&map)),
-        format!("1101000000{expected_place}")
+        hex(&state_bytes(&map)),
+        format!("110100000000000000{expected_place}")
     );
 
     let spot =
         CandidateSpot::new(1, CandidateKind::Cache, Level::cellar(1).unwrap(), pt(2, 3)).unwrap();
     assert_eq!(
-        hex(&canonical_bytes(&spot)),
+        hex(&state_bytes(&spot)),
         concat!("20", "0100000000000080", "02", "070201", "0200000003000000")
     );
 }
@@ -470,11 +528,11 @@ fn canonical_vectors_for_parts() {
 #[test]
 fn canonical_encoding_separates_types_and_orders() {
     assert_ne!(
-        canonical_bytes(&Vec2::new(cm(1), cm(2))),
-        canonical_bytes(&pt(1, 2))
+        state_bytes(&Vec2::new(cm(1), cm(2))),
+        state_bytes(&pt(1, 2))
     );
-    assert_ne!(canonical_bytes(&pt(1, 2)), canonical_bytes(&pt(2, 1)));
+    assert_ne!(state_bytes(&pt(1, 2)), state_bytes(&pt(2, 1)));
     let a = PublicMap::new(vec![place(1), place(2)]).unwrap();
     let b = PublicMap::new(vec![place(2), place(1)]).unwrap();
-    assert_eq!(canonical_bytes(&a), canonical_bytes(&b));
+    assert_eq!(state_bytes(&a), state_bytes(&b));
 }
