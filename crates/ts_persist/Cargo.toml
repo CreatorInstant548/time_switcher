@@ -1,0 +1,24 @@
+[package]
+name = "ts_persist"
+version = "0.0.0"
+description = "Codec borné des instantanés et format de parts adressées de time_switcher."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# Chemin sensible (SEC0-23). Toute dépendance nouvelle est justifiée dans la PR (SEC0-05) ;
+# `ruzstd` est en pur Rust, sans compilateur C (K10, carnet architecture-securite.md §9.13 Q1).
+[dependencies]
+blake3.workspace = true
+postcard.workspace = true
+ruzstd.workspace = true
+serde.workspace = true
+ts_kernel = { path = "../ts_kernel" }
+
+# Les dérivations de `bevy_ecs` dans les tests demandent la crate par son nom.
+[dev-dependencies]
+bevy_ecs.workspace = true
+
+[lints]
+workspace = true

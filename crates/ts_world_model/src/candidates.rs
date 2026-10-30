@@ -2,7 +2,7 @@
 //!
 //! Candidates exist everywhere and reveal nothing by themselves; what is really placed is
 //! drawn per world in the `server` part. They are [`ClientShippable`](crate::ClientShippable)
-//! (design arbitration A13 on issue #34, architecture and security AS-32): the client package
+//! (generation arbitration A13 (#34), architecture and security AS-32): the client package
 //! carries them, and the solo host needs them to draw the server part. The module stays
 //! separate from `public`; the marker is implemented in `public.rs`, the only place that can
 //! name the seal.
@@ -12,9 +12,9 @@
 //! receives no `WorldKey`, no `StreamKeys` and no datum from the per-world draw (W2), and its
 //! signature must say so. A candidate that depended on W2 would reveal the real placement.
 
-use ts_kernel::StableId;
+use ts_kernel::{StableId, StateHash, StateWriter};
 
-use crate::canonical::{Canonical, CanonicalWriter, tag};
+use crate::canonical::{tag, write_point};
 use crate::{GeometryError, Level, Point2, map_id};
 
 // spec: revues/generation.md P12, V12
@@ -78,17 +78,17 @@ impl CandidateSpot {
     }
 }
 
-impl Canonical for CandidateSpot {
-    fn write_canonical(&self, w: &mut CanonicalWriter) {
+impl StateHash for CandidateSpot {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.u8(tag::CANDIDATE_SPOT);
-        w.u64(self.id.to_snapshot_raw());
+        self.id.hash_state(w);
         w.u8(match self.kind {
             CandidateKind::Camera => 0,
             CandidateKind::Vault => 1,
             CandidateKind::Cache => 2,
             CandidateKind::Alarm => 3,
         });
-        self.level.write_canonical(w);
-        w.point(self.position);
+        self.level.hash_state(w);
+        write_point(self.position, w);
     }
 }

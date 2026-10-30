@@ -7,9 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-# Seule dépendance : le noyau (pour `StableId`). Le lien vers `ts_model` attend T7a.
+# Seule dépendance : le noyau (pour `StableId` et `StateHash`). Le lien vers `ts_model` attend T7a.
 [dependencies]
 ts_kernel = { path = "../ts_kernel" }
+
+# Tests only: `#[derive(Resource)]` needs `bevy_ecs` by name. The kernel offers no way yet to get
+# the bytes of a lone `StateHash` value, so the tests read them from a one-resource `Sim`.
+[dev-dependencies]
+bevy_ecs.workspace = true
 
 [lints]
 workspace = true
