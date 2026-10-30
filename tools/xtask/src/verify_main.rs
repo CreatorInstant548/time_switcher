@@ -1,11 +1,14 @@
-//! `cargo xtask verify-main [--dry-run] [--no-cache]` : origine de chaque commit de `origin/main`
-//! (SEC0-17). Les faits lus sur GitHub sont gardés dans un cache local (`verify_cache`, V1 à V3).
-//! Chaque commit postérieur à la base est le squash d'une PR fusionnée, reliée par l'API (J3), avec
-//! `ci-ok` vert sur sa tête (G3) et, pour un chemin sensible, `review-ok` et `archsec-ok` sur cette
-//! tête, recoupés avec le §9 du carnet d'archi-sécu (J4). Une anomalie ouvre une *issue* et suspend
-//! les fusions tant qu'elle n'est pas inscrite dans [`ACKNOWLEDGED`] (J5). En mode CI, pas de
-//! `git fetch` : les références viennent du checkout (`refresh`). Un commit sensible ne lit ni
-//! n'écrit jamais le cache (V5, AS-39, `check_commit`).
+//! `cargo xtask verify-main [--dry-run] [--no-cache]`: approvals of the sensitive commits of
+//! `origin/main` (SEC0-17, AS-31 E3). Every commit after the base must be a single-parent commit,
+//! so that its sensitivity can be computed. Since T3e-2, a non-sensitive commit needs nothing else:
+//! the GitHub ruleset of `main` (26213563) enforces the PR, `ci-ok` and linear history server side,
+//! and `repo-settings.ps1 -Check` watches that ruleset. A commit that touches a sensitive path is
+//! still the squash of a merged PR (J3), with `ci-ok` green on its head (G3), `review-ok` and
+//! `archsec-ok` on that head or carried over (AS-40), cross-checked with §9 of the architecture
+//! lead's log (J4), all read from GitHub on every run (V5, AS-39). There is no local cache any
+//! more: it only served non-sensitive commits, and `--no-cache` is accepted for the nightly job.
+//! An anomaly opens an issue and suspends merges until it is listed in [`ACKNOWLEDGED`] (J5). In
+//! CI mode, no `git fetch`: the refs come from the checkout (`refresh`).
 //! spec: carnet architecture-securite.md SEC0-17 ; §9.6 G3 ; §9.8 J3, J4, J5
 //! Voir aussi l'issue #6, point 2.
 
@@ -15,7 +18,6 @@ use serde_json::Value;
 
 use crate::carry::{Carry, Pr};
 use crate::github::{Repo, approved, is_sha};
-use crate::verify_cache::{Cache, Facts};
 use crate::{sensitive, sys};
 
 /// Commits d'avant l'outillage, sans PR : la base, liste fermée.
@@ -89,31 +91,28 @@ fn pull_of(repo: &Repo, sha: &str) -> Result<Result<Value, String>, String> {
     })
 }
 
-/// Anomalies d'un commit (vide si conforme), avec une note pour l'affichage et les faits lus sur
-/// GitHub à mettre en cache. Les faits de `cached` remplacent leur lecture ; tout le reste est
-/// recalculé (V1).
+/// Anomalies d'un commit (vide si conforme), avec une note pour l'affichage.
 ///
-/// V5 (AS-39): a commit that touches a sensitive path never reads the cache, not even part of its
-/// facts: the PR (`pulls/<n>`: head, `merged`, `merge_commit_sha`), G3, the approvals and then J4
-/// use facts read from GitHub on this run, so a forged entry cannot tie it to another approved
-/// head. Its facts are not written either (`None`): sensitivity depends only on the commit and on
-/// the rules of `origin/main`, whose `sensitive-paths.txt` is part of the cache key, so such an
-/// entry could never be read.
+/// T3e-2 (AS-31 E3): a non-sensitive commit makes no GitHub read; its PR and `ci-ok` are enforced
+/// by the ruleset of `main`. It must still have exactly one parent: sensitivity is computed against
+/// that parent, so a commit with none or several could not be classified (and `required_linear_history`
+/// forbids it anyway).
+///
+/// V5 (AS-39): for a commit that touches a sensitive path, the PR (`pulls/<n>`: head, `merged`,
+/// `merge_commit_sha`), G3, the approvals and then J4 use facts read from GitHub on this run.
 fn check_commit(
     repo: &Repo,
     rules: &sensitive::Rules,
     section: &str,
     sha: &str,
-    cached: Option<&Facts>,
-) -> Result<(Vec<String>, String, Option<Facts>), String> {
+) -> Result<(Vec<String>, String), String> {
     let parents = repo.git(&["rev-list", "--parents", "-n", "1", sha])?;
     let parent = match parents.split_whitespace().collect::<Vec<_>>()[..] {
         [_, p] => p.to_owned(),
         _ => {
             return Ok((
-                vec!["commit de fusion ou sans parent : pas un squash".to_owned()],
+                vec!["commit de fusion ou sans parent : sensibilité incalculable".to_owned()],
                 String::new(),
-                None,
             ));
         }
     };
@@ -124,95 +123,75 @@ fn check_commit(
         .map(str::to_owned)
         .collect();
     let hits = sensitive::hits(repo, rules, &parent, sha, &files)?;
-    let sensitive = !hits.is_empty();
-    let cached = cached.filter(|_| !sensitive);
-    // Entries were validated when the cache was loaded (`verify_cache::load`).
-    let mut facts = match cached {
-        Some(f) => f.clone(),
-        None => match pull_of(repo, sha)? {
-            Ok(pr) => Facts {
-                pr: pr["number"].as_u64().unwrap_or_default(),
-                merge_commit_sha: sha.to_owned(),
-                head: pr["head"]["sha"].as_str().unwrap_or_default().to_owned(),
-                ..Facts::default()
-            },
-            Err(why) => return Ok((vec![why], String::new(), None)),
-        },
+    if hits.is_empty() {
+        return Ok((
+            Vec::new(),
+            "non sensible, PR et ci-ok imposés par le ruleset".to_owned(),
+        ));
+    }
+    let pr = match pull_of(repo, sha)? {
+        Ok(pr) => pr,
+        Err(why) => return Ok((vec![why], String::new())),
     };
-    let (n, head) = (facts.pr, facts.head.clone());
+    let n = pr["number"].as_u64().unwrap_or_default();
+    let head = pr["head"]["sha"].as_str().unwrap_or_default().to_owned();
     let mut bad = Vec::new();
     let mut note = format!("#{n}, tête {}", &head[..7]);
-    if cached.is_some() {
-        note.push_str(", faits GitHub en cache");
-    }
     if PRE_CI.contains(&(n, sha)) {
         note.push_str(", avant la CI");
-    } else if facts.ci_ok {
-        note.push_str(", ci-ok vert");
     } else if let Some(why) = repo.ci_ok(&head)? {
         bad.push(why);
     } else {
-        facts.ci_ok = true;
         note.push_str(", ci-ok vert");
     }
-    if sensitive {
-        note.push_str(&format!(
-            ", sensible ({}), faits GitHub relus (V5)",
-            hits.len()
-        ));
-        let bodies = repo.comments(n)?;
-        facts.review_ok = approved(&bodies, "review-ok", &head);
-        facts.archsec_ok = approved(&bodies, "archsec-ok", &head);
-        // AS-40: the same function as merge (W6), on facts read from GitHub on this run; a
-        // sensitive commit writes no cache entry (V5).
-        let mut carry = Carry::new(
-            repo,
-            Pr {
-                number: n,
-                head: &head,
-                main: &parent,
-                diff: (&parent, sha, &files),
-                local_objects: false,
-            },
-        );
-        let mut j4 = head.clone();
-        for (tag, present) in [
-            ("review-ok", facts.review_ok),
-            ("archsec-ok", facts.archsec_ok),
-        ] {
-            if present {
-                continue;
-            }
-            // J4: an archsec-ok SHA recorded in §9 is tried first.
-            let in_section = |s: &str| tag != "archsec-ok" || carnet_approves(section, s);
-            match carry.resolve(tag, &bodies, &in_section)? {
-                Ok(from) => {
-                    note.push_str(&format!(", {tag} carried over from {}", &from[..7]));
-                    if tag == "archsec-ok" {
-                        j4 = from;
-                    }
-                }
-                Err(why) => bad.push(format!("sensitive path, PR #{n}: {why}")),
-            }
+    note.push_str(&format!(
+        ", sensible ({}), faits GitHub relus (V5)",
+        hits.len()
+    ));
+    let bodies = repo.comments(n)?;
+    // AS-40: the same function as merge (W6), on facts read from GitHub on this run (V5).
+    let mut carry = Carry::new(
+        repo,
+        Pr {
+            number: n,
+            head: &head,
+            main: &parent,
+            diff: (&parent, sha, &files),
+            local_objects: false,
+        },
+    );
+    let mut j4 = head.clone();
+    for tag in ["review-ok", "archsec-ok"] {
+        if approved(&bodies, tag, &head) {
+            continue;
         }
-        // J4 is never cached: §9 is read again on every run (V1), against a fresh head (V5), or
-        // the SHA the archsec-ok was carried over from (W6).
-        if !carnet_approves(section, &j4) {
-            bad.push(format!(
-                "chemin sensible : « archsec-ok: {j4} » absent du §9 de {CARNET} (J4)"
-            ));
+        // J4: an archsec-ok SHA recorded in §9 is tried first.
+        let in_section = |s: &str| tag != "archsec-ok" || carnet_approves(section, s);
+        match carry.resolve(tag, &bodies, &in_section)? {
+            Ok(from) => {
+                note.push_str(&format!(", {tag} carried over from {}", &from[..7]));
+                if tag == "archsec-ok" {
+                    j4 = from;
+                }
+            }
+            Err(why) => bad.push(format!("sensitive path, PR #{n}: {why}")),
         }
     }
-    Ok((bad, note, (!sensitive).then_some(facts)))
+    // J4: §9 is read again on every run (V1), against a fresh head (V5), or the SHA the
+    // archsec-ok was carried over from (W6).
+    if !carnet_approves(section, &j4) {
+        bad.push(format!(
+            "chemin sensible : « archsec-ok: {j4} » absent du §9 de {CARNET} (J4)"
+        ));
+    }
+    Ok((bad, note))
 }
 
 /// Anomalies non levées : (commit, motifs).
 pub type Anomalies = Vec<(String, Vec<String>)>;
 
 /// Anomalies non levées de l'historique : (commit, motifs). `Err` si un contrôle n'a pas pu se faire.
-/// Les faits GitHub des commits conformes vont au cache, même si un commit suivant échoue : une
-/// erreur passagère ne fait pas tout relire au prochain essai.
-pub fn check(repo: &Repo, use_cache: bool) -> Result<Anomalies, String> {
+pub fn check(repo: &Repo) -> Result<Anomalies, String> {
     let carnet = repo
         .blob(&repo.main, "origin/pilotage", CARNET)
         .map_err(|e| format!("origin/pilotage illisible ({e}) : J4 impossible"))?
@@ -227,30 +206,14 @@ pub fn check(repo: &Repo, use_cache: bool) -> Result<Anomalies, String> {
             "commit de base {b} absent d'origin/main : historique réécrit"
         ));
     }
-    let mut cache = Cache::open(repo, use_cache)?;
-    let result = walk(repo, &rules, &section, &history, &mut cache);
-    cache.save();
-    result
-}
-
-fn walk(
-    repo: &Repo,
-    rules: &sensitive::Rules,
-    section: &str,
-    history: &[&str],
-    cache: &mut Cache,
-) -> Result<Anomalies, String> {
     let mut anomalies = Vec::new();
-    for &sha in history {
+    for sha in history {
         if BASE.contains(&sha) {
             println!("  {} base", &sha[..7]);
             continue;
         }
-        let (bad, note, facts) = check_commit(repo, rules, section, sha, cache.get(sha))?;
+        let (bad, note) = check_commit(repo, &rules, &section, sha)?;
         if bad.is_empty() {
-            if let Some(facts) = facts {
-                cache.put(sha, facts);
-            }
             println!("  {} conforme ({note})", &sha[..7]);
         } else if let Some((_, why, issue)) = ACKNOWLEDGED.iter().find(|a| a.0 == sha) {
             println!("  {} anomalie levée : {why} (issue #{issue})", &sha[..7]);
@@ -320,12 +283,13 @@ pub fn settings_or_report(repo: &Repo) -> Result<bool, String> {
 /// `verify-main`, avec une *issue* par anomalie ; vrai si l'historique et les réglages GitHub sont
 /// conformes. L'historique passe d'abord : un `-Check` qui échoue ne le cache pas. En `--dry-run`,
 /// un `-Check` qui n'a pas pu conclure compte comme un écart.
-pub fn verify_or_report(repo: &Repo, use_cache: bool) -> Result<bool, String> {
-    let anomalies = check(repo, use_cache)?;
+pub fn verify_or_report(repo: &Repo) -> Result<bool, String> {
+    let anomalies = check(repo)?;
     for (sha, bad) in &anomalies {
         let body = format!(
-            "`cargo xtask verify-main` : le commit `{sha}` de `main` n'a pas l'origine attendue, et les \
-             fusions sont suspendues.\n\n- {}\n\nPour lever l'anomalie : l'inscrire dans `ACKNOWLEDGED` \
+            "`cargo xtask verify-main` : le commit `{sha}` de `main` est en anomalie \
+             (chemin sensible sans ses approbations, ou commit non classable), et les fusions sont \
+             suspendues.\n\n- {}\n\nPour lever l'anomalie : l'inscrire dans `ACKNOWLEDGED` \
              (`tools/xtask/src/verify_main.rs`) par une PR de chemin sensible, avec `archsec-ok` (J5).",
             bad.join("\n- ")
         );
@@ -374,7 +338,7 @@ fn refresh(repo: &Repo) -> Result<(), String> {
 
 pub fn main(args: &[String]) -> ExitCode {
     let dry_run = args.iter().any(|a| a == "--dry-run");
-    // --no-cache: full check of every commit (nightly job, V3); the cache is rewritten.
+    // --no-cache: kept for the nightly job (V3); since T3e-2 there is no cache, every run is full.
     let no_cache = args.iter().any(|a| a == "--no-cache");
     if args.iter().any(|a| a != "--dry-run" && a != "--no-cache") {
         eprintln!("usage : cargo xtask verify-main [--dry-run] [--no-cache]");
@@ -382,7 +346,10 @@ pub fn main(args: &[String]) -> ExitCode {
     }
     let result = Repo::open(dry_run, true).and_then(|repo| {
         refresh(&repo)?;
-        verify_or_report(&repo, !no_cache)
+        if no_cache {
+            println!("  --no-cache: full check (no cache since T3e-2)");
+        }
+        verify_or_report(&repo)
     });
     exit_code(result)
 }
@@ -580,40 +547,41 @@ mod tests {
         }
     }
 
-    /// Head of another sensitive PR, approved in §9 on every run.
-    const OTHER: &str = "0123456789abcdef0123456789abcdef01234567";
-
     /// `check` on a history of the two base commits plus [`COMMIT`], the squash of PR #7 whose
-    /// head is [`HEAD`], changing `file`; §9 approves [`OTHER`], and `HEAD` if `j4`. Returns the
-    /// result and calls.
+    /// head is [`HEAD`], changing `file`; §9 approves `HEAD` if `j4`. `over` replaces recorded
+    /// answers. Returns the result and calls.
     fn history_check(
-        cache: &Path,
         file: &str,
         j4: bool,
-        use_cache: bool,
+        over: &[(String, String)],
     ) -> (Result<Anomalies, String>, Vec<String>) {
-        let (repo, calls) = fake_repo(cache, file, j4, false);
-        let result = check(&repo, use_cache);
+        let (repo, calls) = fake_repo(file, j4, false, over);
+        let result = check(&repo);
         let calls = calls.borrow().clone();
         (result, calls)
     }
 
     /// The fake repository of [`history_check`], in CI mode if `ci`.
-    fn fake_repo(cache: &Path, file: &str, j4: bool, ci: bool) -> (Repo, Rc<RefCell<Vec<String>>>) {
+    fn fake_repo(
+        file: &str,
+        j4: bool,
+        ci: bool,
+        over: &[(String, String)],
+    ) -> (Repo, Rc<RefCell<Vec<String>>>) {
         let s = "gh api --paginate repos/o/r";
         let runs = json!({"check_runs": [{"name": "ci-ok", "status": "completed",
             "conclusion": "success", "head_sha": HEAD, "check_suite": {"id": 5}}]});
         let wfr = json!({"workflow_runs": [{"path": ".github/workflows/ci.yml", "workflow_id": 9,
             "head_sha": HEAD, "check_suite_id": 5, "repository": {"full_name": "o/r"}}]});
         let carnet = format!(
-            "## 9. Avis\narchsec-ok: {OTHER}\n{}\n",
+            "## 9. Avis\n{}\n",
             if j4 {
                 format!("archsec-ok: {HEAD}")
             } else {
                 String::new()
             }
         );
-        let answers = [
+        let mut answers = vec![
             ("git cat-file -e".to_owned(), String::new()),
             ("git cat-file blob origin/pilotage:architecture-securite.md".to_owned(), carnet),
             (
@@ -646,6 +614,8 @@ mod tests {
             ),
             ("gh issue list".to_owned(), "[]".to_owned()),
         ];
+        // The longest prefix wins, the last one among equals: `over` replaces an answer.
+        answers.extend_from_slice(over);
         let calls = Rc::new(RefCell::new(Vec::new()));
         let repo = Repo {
             main: PathBuf::from("main"),
@@ -653,80 +623,116 @@ mod tests {
             slug: "o/r".to_owned(),
             dry_run: true,
             ci,
-            cache: cache.to_path_buf(),
+            cache: std::env::temp_dir(),
             home: None,
-            runner: Box::new(Fake(answers.into_iter().collect(), Rc::clone(&calls))),
+            runner: Box::new(Fake(answers, Rc::clone(&calls))),
         };
         (repo, calls)
     }
 
-    /// Replaces the cache entry of [`COMMIT`] by a forged one: head [`OTHER`], every fact true.
-    fn forge(cache: &Path) {
-        let file = cache.join("verify-main").join("cache.json");
-        let mut v: Value = serde_json::from_str(&sys::read_text(&file).unwrap()).unwrap();
-        v["commits"][COMMIT] = json!({"pr": 7, "merge_commit_sha": COMMIT, "head": OTHER,
-            "ci_ok": true, "review_ok": true, "archsec_ok": true});
-        sys::write(&file, v.to_string().as_bytes()).unwrap();
+    /// PR #7 not found for [`COMMIT`], and no `ci-ok` on its head.
+    fn no_pr_no_ci() -> Vec<(String, String)> {
+        let s = "gh api --paginate repos/o/r";
+        vec![
+            (format!("{s}/commits/{COMMIT}/pulls"), "[]".to_owned()),
+            (
+                format!("{s}/commits/{HEAD}/check-runs"),
+                json!({"check_runs": []}).to_string(),
+            ),
+        ]
     }
 
-    /// V5 (AS-39): a sensitive commit ignores a cache entry that contradicts GitHub (another head,
-    /// approved in §9): PR, G3, approvals and J4 come from fresh reads, and it writes no entry.
+    /// Only these first-line approvals on PR #7.
+    fn comments(bodies: &[String]) -> Vec<(String, String)> {
+        let list: Vec<_> = bodies.iter().map(|b| json!({"body": b})).collect();
+        vec![(
+            "gh api --paginate repos/o/r/issues/7/comments".to_owned(),
+            json!(list).to_string(),
+        )]
+    }
+
+    fn reasons(r: &Result<Anomalies, String>) -> String {
+        format!("{r:?}")
+    }
+
+    /// T3e-2 (AS-31 E3): the ruleset of `main` enforces the PR and `ci-ok`, so a non-sensitive
+    /// commit without either is no anomaly, and makes no GitHub read. A sensitive one still is (J3,
+    /// then G3).
     #[test]
-    fn sensitive_commit_ignores_forged_cache() {
-        let cache = std::env::temp_dir().join(format!("xtask-vm-v5-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&cache); // leftover of this test only
-        let (r, _) = history_check(&cache, "docs/a.md", false, true);
+    fn non_sensitive_commit_needs_no_pr_nor_ci_ok() {
+        let (r, calls) = history_check("docs/a.md", false, &no_pr_no_ci());
+        assert_eq!(r, Ok(vec![]), "{calls:#?}");
+        assert_eq!(gh_calls(&calls), 0, "{calls:#?}");
+        // Local checks still run.
+        assert!(calls.iter().any(|c| c.starts_with("git diff --name-only")));
+        let (r, _) = history_check("tools/xtask/src/x.rs", true, &no_pr_no_ci());
+        assert!(r.as_ref().is_ok_and(|a| a.len() == 1), "{r:?}");
+        assert!(reasons(&r).contains("(J3)"), "{r:?}");
+        let ci = &no_pr_no_ci()[1..];
+        let (r, _) = history_check("tools/xtask/src/x.rs", true, ci);
+        assert!(reasons(&r).contains("ci-ok absent"), "{r:?}");
+    }
+
+    /// The sensitivity of a commit is computed against its single parent: a merge commit, or one
+    /// without a parent, stays an anomaly even when its files are not sensitive.
+    #[test]
+    fn unclassifiable_commit_is_an_anomaly() {
+        let over = [(
+            "git rev-list --parents".to_owned(),
+            format!("{COMMIT} {PARENT} {HEAD}"),
+        )];
+        let (r, calls) = history_check("docs/a.md", false, &over);
+        assert!(r.as_ref().is_ok_and(|a| a.len() == 1), "{r:?}");
+        assert!(reasons(&r).contains("sensibilité incalculable"), "{r:?}");
+        assert_eq!(gh_calls(&calls), 0, "{calls:#?}");
+    }
+
+    /// AS-31 E3: a sensitive commit without `review-ok`, without `archsec-ok`, or without its
+    /// `archsec-ok` in §9 (J4) stays an anomaly.
+    #[test]
+    fn sensitive_commit_needs_both_approvals_and_j4() {
+        let f = "tools/xtask/src/x.rs";
+        let (r, _) = history_check(f, true, &[]);
         assert_eq!(r, Ok(vec![]));
-        forge(&cache);
-        // §9 approves OTHER only: with the forged head J4 would pass; the fresh head fails it.
-        let (r, calls) = history_check(&cache, "tools/xtask/src/x.rs", false, true);
-        let r = r.unwrap();
-        assert_eq!(r.len(), 1, "{r:?}");
+        for (tag, other) in [("review-ok", "archsec-ok"), ("archsec-ok", "review-ok")] {
+            let (r, _) = history_check(f, true, &comments(&[format!("{other}: {HEAD}")]));
+            assert!(r.as_ref().is_ok_and(|a| a.len() == 1), "{r:?}");
+            assert!(
+                reasons(&r).contains(&format!("« {tag}: {HEAD} » absent")),
+                "{r:?}"
+            );
+        }
+        let (r, _) = history_check(f, false, &[]);
+        assert!(r.as_ref().is_ok_and(|a| a.len() == 1), "{r:?}");
         assert!(
-            r[0].1
-                .iter()
-                .any(|b| b.contains(HEAD) && b.contains("(J4)")),
+            reasons(&r).contains(&format!("archsec-ok: {HEAD} » absent du §9")),
             "{r:?}"
         );
-        for read in [
-            "gh api repos/o/r/pulls/7",
-            "/check-runs",
-            "/issues/7/comments",
-        ] {
-            assert!(calls.iter().any(|c| c.contains(read)), "{read}: {calls:#?}");
-        }
-        // Approved on GitHub and in §9: conforming, and the forged entry is left untouched.
-        let (r, calls) = history_check(&cache, "tools/xtask/src/x.rs", true, true);
-        assert_eq!(r, Ok(vec![]));
-        assert!(gh_calls(&calls) >= 5, "{calls:#?}");
-        let text = sys::read_text(&cache.join("verify-main").join("cache.json")).unwrap();
-        let v: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["commits"][COMMIT]["head"], OTHER, "{text}");
-        let _ = std::fs::remove_dir_all(&cache); // temporary files of this test only
     }
 
-    /// V5: a non-sensitive commit still uses its cache entry, without any GitHub read.
+    /// V5 (AS-39): a sensitive commit reads the PR, G3 and the approvals on GitHub on every run;
+    /// nothing is kept between runs.
     #[test]
-    fn non_sensitive_commit_uses_cache() {
-        let cache = std::env::temp_dir().join(format!("xtask-vm-v5n-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&cache); // leftover of this test only
-        let (r, _) = history_check(&cache, "docs/a.md", false, true);
-        assert_eq!(r, Ok(vec![]));
-        forge(&cache);
-        let (r, calls) = history_check(&cache, "docs/a.md", false, true);
-        assert_eq!(r, Ok(vec![]));
-        assert_eq!(gh_calls(&calls), 0, "{calls:#?}");
-        let _ = std::fs::remove_dir_all(&cache); // temporary files of this test only
+    fn sensitive_commit_reads_github_every_run() {
+        for _ in 0..2 {
+            let (r, calls) = history_check("tools/xtask/src/x.rs", true, &[]);
+            assert_eq!(r, Ok(vec![]));
+            for read in [
+                "gh api repos/o/r/pulls/7",
+                "/check-runs",
+                "/issues/7/comments",
+            ] {
+                assert!(calls.iter().any(|c| c.contains(read)), "{read}: {calls:#?}");
+            }
+        }
     }
 
     /// The nightly job runs `--dry-run --no-cache` in CI mode: an anomaly still makes the run
     /// fail (non-zero exit), without opening an issue, so `report` opens `nightly-failure`.
     #[test]
     fn anomaly_fails_the_nightly_run() {
-        let cache = std::env::temp_dir().join(format!("xtask-vm-night-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&cache); // leftover of this test only
-        let (repo, calls) = fake_repo(&cache, "tools/xtask/src/x.rs", false, true);
-        let r = verify_or_report(&repo, false);
+        let (repo, calls) = fake_repo("tools/xtask/src/x.rs", false, true, &[]);
+        let r = verify_or_report(&repo);
         assert_eq!(r, Ok(false));
         let calls = calls.borrow().clone();
         assert!(
@@ -735,71 +741,15 @@ mod tests {
         );
         assert!(!calls.iter().any(|c| c.starts_with("pwsh")), "{calls:#?}");
         assert_ne!(exit_code(r), ExitCode::SUCCESS);
-        let (repo, _) = fake_repo(&cache, "tools/xtask/src/x.rs", true, true);
-        let r = verify_or_report(&repo, false);
+        let (repo, _) = fake_repo("tools/xtask/src/x.rs", true, true, &[]);
+        let r = verify_or_report(&repo);
         assert_eq!(r, Ok(true));
         assert_eq!(exit_code(r), ExitCode::SUCCESS);
         assert_ne!(exit_code(Err("x".to_owned())), ExitCode::SUCCESS);
-        let _ = std::fs::remove_dir_all(&cache); // temporary files of this test only
     }
 
     fn gh_calls(calls: &[String]) -> usize {
         calls.iter().filter(|c| c.starts_with("gh ")).count()
-    }
-
-    /// Issue #8, V1: a new commit is checked on GitHub and its facts cached; on the next run the
-    /// cached commit makes no GitHub call. `--no-cache` reads everything again.
-    #[test]
-    fn cached_commit_is_skipped_new_commit_checked() {
-        let cache = std::env::temp_dir().join(format!("xtask-vm-skip-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&cache); // leftover of this test only
-        let (r, calls) = history_check(&cache, "docs/a.md", false, true);
-        assert_eq!(r, Ok(vec![]), "{calls:#?}");
-        assert!(gh_calls(&calls) >= 4, "{calls:#?}");
-        let (r, calls) = history_check(&cache, "docs/a.md", false, true);
-        assert_eq!(r, Ok(vec![]));
-        assert_eq!(gh_calls(&calls), 0, "{calls:#?}");
-        // Local checks still run on a cache hit.
-        assert!(calls.iter().any(|c| c.starts_with("git diff --name-only")));
-        let (r, calls) = history_check(&cache, "docs/a.md", false, false);
-        assert_eq!(r, Ok(vec![]));
-        assert!(gh_calls(&calls) >= 4, "{calls:#?}");
-        // V5: a sensitive commit reads GitHub on every run, cache or not.
-        for _ in 0..2 {
-            let (r, calls) = history_check(&cache, "tools/xtask/src/x.rs", true, true);
-            assert_eq!(r, Ok(vec![]));
-            assert!(gh_calls(&calls) >= 5, "{calls:#?}");
-        }
-        // V1: J4 is recomputed on every run, cache or not.
-        let (r, _) = history_check(&cache, "tools/xtask/src/x.rs", false, true);
-        let r = r.unwrap();
-        assert_eq!(r.len(), 1);
-        assert!(r[0].1.iter().any(|b| b.contains("(J4)")), "{r:?}");
-        let _ = std::fs::remove_dir_all(&cache); // temporary files of this test only
-    }
-
-    /// A corrupted cache, or one keyed on another `sensitive-paths.txt`, leads to a full check.
-    #[test]
-    fn unusable_cache_means_full_check() {
-        let cache = std::env::temp_dir().join(format!("xtask-vm-bad-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&cache); // leftover of this test only
-        let (r, _) = history_check(&cache, "docs/a.md", false, true);
-        assert_eq!(r, Ok(vec![]));
-        let file = cache.join("verify-main").join("cache.json");
-        let text = sys::read_text(&file).unwrap();
-        for bad in [
-            "{".to_owned(),
-            text.replace(
-                &crate::sha256::hex(include_bytes!("../../ci/sensitive-paths.txt")),
-                &"0".repeat(64),
-            ),
-        ] {
-            sys::write(&file, bad.as_bytes()).unwrap();
-            let (r, calls) = history_check(&cache, "docs/a.md", false, true);
-            assert_eq!(r, Ok(vec![]));
-            assert!(gh_calls(&calls) >= 4, "{calls:#?}");
-        }
-        let _ = std::fs::remove_dir_all(&cache); // temporary files of this test only
     }
 
     /// `check_commit` on a lab history: `x` squashes the PR whose head `h` merged `main` after
@@ -850,9 +800,7 @@ mod tests {
         let rules = sensitive::Rules::parse("tools/xtask/\n").unwrap();
         let j4 = if j4_on_a { &c.a } else { &c.h };
         let section = format!("## 9. Avis\narchsec-ok: {j4}\n");
-        let (bad, note, facts) = check_commit(&repo, &rules, &section, &x, None).unwrap();
-        // A sensitive commit, approvals carried over or not, writes no cache entry (V5).
-        assert!(facts.is_none(), "{facts:?}");
+        let (bad, note) = check_commit(&repo, &rules, &section, &x).unwrap();
         if bad.is_empty() {
             let a = &c.a[..7];
             assert!(

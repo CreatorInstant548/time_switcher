@@ -358,7 +358,7 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
         "2",
         "verify-main (SEC0-17, réglages GitHub AS-30 R5) et hooks verify (SEC0-35)",
     );
-    let history = verify_main::verify_or_report(repo, true)?;
+    let history = verify_main::verify_or_report(repo)?;
     let hooks_ok = hooks::verify_or_report(repo)?;
     let suspended = (!history || !hooks_ok).then(|| {
         refuse(
