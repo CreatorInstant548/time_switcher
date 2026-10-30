@@ -81,7 +81,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | (orchestrateur) | `claude/fin-mode-local`, #1 | Fusionnée | sans objet (documentation) | relue | sans objet | f60e5bc |
 | (conception) | `claude/da-declaration-ia`, #4 | Fusionnée | sans objet (documentation, pas encore de CI) | relue | sans objet | de84d92 |
 | (orchestrateur) | `claude/sous-agents`, #3 | Fusionnée | sans objet (documentation) | relue | sans objet | 4991209 |
-| T1 | `claude/outillage-agents`, [#5](https://github.com/CreatorInstant548/time_switcher/pull/5), tête 41e0a7d | En relecture | sans objet (pas encore de xtask) ; tests du sous-agent : guards 131/131, hooks 16/16, slots 16/16 | **9 constats** (1 bloquant : emplacement pris par toute session de worktree) | relecture neuve en cours ; archsec-ok à demander | — |
+| T1 | `claude/outillage-agents`, [#5](https://github.com/CreatorInstant548/time_switcher/pull/5), tête 41e0a7d | En relecture | sans objet (pas encore de xtask) ; tests du sous-agent : guards 131/131, hooks 16/16, slots 16/16 | **9 constats** (1 bloquant : emplacement pris par toute session de worktree) | relecture neuve : **refusée** (B1 alias `--no-verify` ; I1 outils hors matcher ; I2 `main` déplacé sans commit ; I3 gitleaks désactivable ; I4 `gh pr merge`/`gh api`) ; lot de 13 corrections renvoyé à l'auteur | — |
 
 ## Sessions et agents actifs
 
@@ -118,3 +118,4 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 - 30/10 : PR #4 (direction artistique v0.4.2, documentation) fusionnée, de84d92. Orchestrateur : `guard-git.ps1` dans le `.claude/settings.json` **du projet**, pas dans les réglages utilisateur (décision de l'orchestrateur) ; consigne de T1 modifiée ; archi-sécu informé. **Contrainte** : une session peut modifier le `settings.json` de son worktree ; restent `pre-push`/`pre-commit` épinglés, `ci-ok`, `xtask merge`.
 - 30/10 : PR #3 (organisation, repli par sous-agents, règle de commit sur `pilotage`) fusionnée, 4991209. Archi-sécu : SEC0-35 ajoutée à T1 (consigne envoyée au sous-agent) et à T3.
 - 30/10 : T1 livrée (PR #5). `/code-review` élevé : 9 constats. Relecture de sécurité par un sous-agent neuf lancée. Corrections à envoyer en un lot.
+- 30/10 : relecture de sécurité de la PR #5 : refusée (1 bloquant, 4 importants, 6 mineurs ; commentaire sur la PR). Lot de 13 corrections envoyé au sous-agent T1. Décisions : `tools/dev/merge-pr.ps1` seul chemin de fusion jusqu'à T3 ; crochet `reference-transaction` sur `main` ; emplacements pris à la demande (`session-start.ps1 -Acquire`), plus au démarrage ; coût de `pwsh` reporté à T3 ; taille de la PR acceptée (exception notée). Archi-sécu informé.
