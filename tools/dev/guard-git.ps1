@@ -6,6 +6,8 @@
 # - cargo xtask merge <PR> et cargo xtask hooks install : seulement depuis la racine de la copie principale ;
 #   merge --dry-run partout ; toute autre forme (cargo run -p xtask … merge, binaire xtask, Start-Process,
 #   chaîne) refusée, ainsi que toute variable de cargo ou rustc modifiée à côté (J2, I1, m4) ;
+# - pwsh [-NoProfile -File] tools/dev/repo-settings.ps1 -Check|-Apply : forme exacte, seule, depuis la racine
+#   de la copie principale (AS-30 R5, §9.12 S4) ;
 # - réglages de Claude Code et configuration de Git : pure lecture seulement (SEC0-35) ;
 # - substitution ou évaluation avec un mot d'écriture Git : refus par prudence.
 # Les corps de heredoc cités (<<'EOF') et de here-string @'...'@ sont des données ; bash -c, pwsh -Command
@@ -288,12 +290,46 @@ function Get-XtaskVerdict([string[]]$S, [string]$Dir, [bool]$XtaskInCommand) {
     return 'seules les formes « cargo xtask merge <PR> [--dry-run] » et « cargo xtask hooks install » lancent la fusion ou l''installation des crochets (J2)'
   }
   if ($merge -and $S.Count -eq 5) { return $null }
+  $main = Get-MainCopyRootAt $Dir
+  if (-not $main) { return "cargo xtask $($S[2]) se lance seulement depuis la racine de la copie principale, pas depuis $Dir (J2)" }
+  return $null
+}
+
+# Racine de la copie principale (parent du dossier Git commun) si $Dir est cette racine, sinon ''.
+function Get-MainCopyRootAt([string]$Dir) {
   $common = "$(& git -C $Dir rev-parse --path-format=absolute --git-common-dir 2>$null)".Trim()
   $main = if ($LASTEXITCODE -eq 0 -and $common) { Split-Path ([IO.Path]::GetFullPath($common)) -Parent } else { '' }
   $here = ConvertTo-FullPath $Dir $Dir
-  if (-not $main -or -not $here -or -not $here.Equals($main, [StringComparison]::OrdinalIgnoreCase)) {
-    return "cargo xtask $($S[2]) se lance seulement depuis la racine de la copie principale ($main), pas depuis $Dir (J2)"
+  if ($main -and $here -and $here.Equals($main, [StringComparison]::OrdinalIgnoreCase)) { return $main }
+  return ''
+}
+
+# AS-30 R5, §9.12 S4 : tools/dev/repo-settings.ps1 (seul à écrire les réglages GitHub par gh api) ne se
+# lance que sous une forme exacte, seule dans la commande, depuis la racine de la copie principale.
+# Un segment de lecture ou de données (cat, grep, git, gh, echo…) peut le citer ; tout autre segment
+# qui le cite (autre argument, autre chemin, Start-Process, &, bash -c, pwsh -Command, motif) : refus.
+$RepoSettingsForms = 'pwsh tools/dev/repo-settings.ps1 -Check', 'pwsh tools/dev/repo-settings.ps1 -Apply',
+                     'pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check', 'pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply'
+# Mot qui désigne le script : son nom ; son nom court 8.3 (REPO-S~1.PS1) ; un motif dans tools/dev/ ; un
+# motif dans tools/ qui contient repo-s, sett ou ~<chiffre> (tools/d?v/repo-setting?.ps1).
+function Test-RepoSettingsMention([string]$Tok) {
+  return $Tok -match '(?i)(^|[\\/\*\?\]])repo-settings(?!\.json$)|repo-s[^\\/\s]*~\d|[\\/]dev[\\/]+[^\\/\s]*[\*\?\[\{]' -or
+         $Tok -match '(?i)^(?=.*tools[\\/])(?=.*[\*\?\[])(?=.*(repo-s|sett|~\d))'
+}
+function Get-RepoSettingsVerdict($Segments, [string]$Dir, [string]$Text) {
+  # Nom fabriqué par concaténation ('repo-'+'settings.ps1', ("re"+"po-settings.ps1")) : refus.
+  $flat = $Text -replace '[''"`+\s()]', ''
+  $named = $Segments | ForEach-Object { $_ } | Where-Object { $_ -match '(?i)(?<![\w-])repo-settings' }
+  if ($Text -match '(?i)repo-[''"]|[''"]settings\.ps1' -or ($flat -match '(?i)(?<![\w-])repo-settings(?!\.json)' -and -not $named)) {
+    return 'nom de repo-settings.ps1 fabriqué par morceaux : refus (AS-30 R5, S4)'
   }
+  $data = $readCmds + $cdCmds + 'echo', 'printf', 'write-host', 'write-output', 'git', 'gh'
+  $calls = @($Segments | Where-Object { (Get-Head $_) -notin $data -and (Get-ActiveWords $_ | Where-Object { Test-RepoSettingsMention $_ }) })
+  if (-not $calls) { return $null }
+  if ($Segments.Count -ne 1 -or ($Segments[0] -join ' ') -cnotin $RepoSettingsForms) {
+    return 'repo-settings.ps1 ne se lance que seul, sous la forme exacte « pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check » (ou -Apply) (AS-30 R5, S4)'
+  }
+  if (-not (Get-MainCopyRootAt $Dir)) { return "repo-settings.ps1 se lance seulement depuis la racine de la copie principale, pas depuis $Dir (S4)" }
   return $null
 }
 
@@ -412,6 +448,8 @@ function Get-CommandVerdict([string]$Command, [string]$Tool, [string]$Cwd, [int]
   }
   $segments = Split-Command $text $Tool
   $xtaskInCommand = [bool]($segments | ForEach-Object { Get-ActiveWords $_ } | Where-Object { $_ -match '(?i)xtask' })
+  $v = Get-RepoSettingsVerdict $segments $Cwd $text
+  if ($v) { return $v }
   $dir = $Cwd
   foreach ($s in $segments) {
     $head = Get-Head $s
