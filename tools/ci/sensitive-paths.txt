@@ -18,9 +18,11 @@ crates/ts_admin/
 crates/ts_protocol/
 crates/ts_view/
 
-# ts_kernel : déclaration des fonctionnalités et du profil (compile_error! de SEC0-20), dans la
-# racine de la crate jusqu'à ce que T5 fixe ses modules d'aléa et de profil (à remplacer alors).
+# ts_kernel : profil de construction (compile_error! de SEC0-20) et aléa à clé (SEC0-22). La
+# racine de la crate reste sensible : elle déclare ces modules.
+crates/ts_kernel/src/build_profile.rs
 crates/ts_kernel/src/lib.rs
+crates/ts_kernel/src/rng/
 
 # Configuration et outillage
 .github/
