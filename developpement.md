@@ -367,3 +367,8 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - La voie AS-38 est inutilisable (le correctif touche `repo-settings.ps1`). **Correctif en préparation**, avec un test sur le chemin complet du script. Il faudra une **fusion unique depuis l'interface web par le titulaire du compte** (voie 1, comme la #51) ; archi-sécu et l'orchestrateur sont prévenus.
   - **T3j** (contrôle nocturne de l'origine des commits) lancée. Issue #71 (suites de `ts-sim`).
   - **Leçon** : un changement de la barrière doit être testé en exécutant le script entier sur une API simulée conforme, et pas seulement ses fonctions.
+- 30/10, soir : **GitHub Actions de nouveau bloqué par la facturation** depuis 22:07 UTC. Orchestrateur prévenu ; seul le titulaire du compte peut régler.
+  - **#74** (correctif de la fausse dérive, AS-43) : `review-ok` et `archsec-ok` sur f4ec1d4, 235 tests, contre-épreuve probante. Il ne manque que `ci-ok`. Ensuite, **fusion unique depuis l'interface web par le titulaire** (Z4), puis `-Check` à 0 (Z5).
+  - **#73** (T3j) : `review-ok` sur f77f623. Lot AS-44 en cours : AA1 `head.sha != sha`, AA2 G3 sur la fenêtre `7d`, AA3 fermeture de la fenêtre.
+  - **#70** (T9b) : approuvée, elle attend le dégel.
+  - Issues #71, #8 (test d'intégration de `repo-settings -Check` en CI, à faire dans T3b).
