@@ -38,6 +38,9 @@ tools/xtask/
 tools/hooks/
 tools/dev/
 tools/ci/
+# Réglages GitHub (AS-30 R5) : nommés aussi un par un, pour rester sensibles si les dossiers changent.
+tools/ci/repo-settings.json
+tools/dev/repo-settings.ps1
 deny.toml
 .gitleaks.toml
 # Any Cargo.lock change: a version bump of serde, serde_json or syn changes the merge barrier's code.

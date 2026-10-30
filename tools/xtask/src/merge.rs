@@ -341,18 +341,31 @@ fn run(repo: &Repo, pr: u64) -> Result<bool, String> {
 }
 
 fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
+    // The CI mode skips repo-settings.ps1 -Check: never in a merge (AS-31 E4).
+    if repo.ci {
+        return Err(refuse(
+            "CI et GITHUB_ACTIONS valent true : mode CI, où les réglages GitHub ne sont pas contrôlés",
+            "lancer cargo xtask merge <PR> hors CI, sans ces variables",
+        ));
+    }
     step(
         "1",
         "copie principale propre, sur main, à jour ; binaire construit depuis main (J2)",
     );
     let j2 = main_copy(repo, j2_check)?;
-    step("2", "verify-main (SEC0-17) et hooks verify (SEC0-35)");
+    step(
+        "2",
+        "verify-main (SEC0-17, réglages GitHub AS-30 R5) et hooks verify (SEC0-35)",
+    );
     let history = verify_main::verify_or_report(repo)?;
     let hooks_ok = hooks::verify_or_report(repo)?;
     let suspended = (!history || !hooks_ok).then(|| {
         refuse(
-            "fusions suspendues : anomalie de l'historique ou des crochets",
-            "lever l'anomalie (issue role:architecture), puis cargo xtask verify-main et cargo xtask hooks verify",
+            "fusions suspendues : anomalie de l'historique, écart des réglages GitHub \
+             (issue repo-settings-drift) ou anomalie des crochets",
+            "lever l'anomalie (issue role:architecture) ; pour un écart des réglages, \
+             l'orchestrateur lance pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply \
+             depuis la copie principale ; puis cargo xtask verify-main et cargo xtask hooks verify",
         )
     });
     match &suspended {
@@ -626,6 +639,7 @@ mod tests {
             here: root,
             slug: String::new(),
             dry_run: true,
+            ci: false,
             cache: std::env::temp_dir(),
             home: None,
             runner: Box::new(crate::github::System),
@@ -760,6 +774,10 @@ mod tests {
             ),
             ("gh api repos/o/r/actions/runs", wfr.to_string()),
             (
+                "pwsh -NoProfile -NonInteractive -File",
+                "repo-settings -Check : conforme\n".to_owned(),
+            ),
+            (
                 "gh api --paginate repos/o/r/pulls/7/files",
                 json!([{"filename": "docs/a.md"}]).to_string(),
             ),
@@ -773,6 +791,7 @@ mod tests {
             here: main,
             slug: "o/r".to_owned(),
             dry_run,
+            ci: false,
             cache,
             home: Some(home),
             runner: Box::new(Fake {
@@ -805,13 +824,44 @@ mod tests {
                 !WRITES.iter().any(|w| c.starts_with(w)),
                 "write in --dry-run: {c}"
             );
-            assert!(c.starts_with("gh ") || c.starts_with("git "), "{c}");
+            // AS-30 R5: the only other command is the read-only `repo-settings.ps1 -Check`.
+            let settings = c.starts_with("pwsh ") && c.ends_with("repo-settings.ps1 -Check");
+            assert!(
+                c.starts_with("gh ") || c.starts_with("git ") || settings,
+                "{c}"
+            );
         }
+        assert_eq!(
+            calls.iter().filter(|c| c.starts_with("pwsh ")).count(),
+            1,
+            "{calls:#?}"
+        );
         assert!(
             calls
                 .iter()
                 .any(|c| c == "git fetch --quiet origin pull/7/head")
         );
+    }
+
+    /// AS-31 E4: in CI mode, where `repo-settings.ps1 -Check` is skipped, merge runs nothing.
+    #[test]
+    fn ci_mode_never_merges() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let repo = Repo {
+            main: std::path::PathBuf::from("main"),
+            here: std::path::PathBuf::from("main"),
+            slug: "o/r".to_owned(),
+            dry_run: false,
+            ci: true,
+            cache: std::env::temp_dir(),
+            home: None,
+            runner: Box::new(Fake {
+                calls: Rc::clone(&calls),
+                answers: Vec::new(),
+            }),
+        };
+        assert!(run_with(&repo, 7, |_| Ok(())).is_err());
+        assert!(calls.borrow().is_empty());
     }
 
     /// Witness: the same scenario without `--dry-run` (J2 replaced) merges the checked head.
