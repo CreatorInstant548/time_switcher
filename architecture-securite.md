@@ -431,6 +431,11 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
   1. le crochet refuse aussi la **suppression** de `refs/heads/main`, ainsi que toute mise à jour quand `refs/remotes/origin/main` est absente ;
   2. les cas sont ajoutés à `test-guards.ps1` et à SEC0-18.
 - **Emplacements de compilation pris à la demande** (`session-start.ps1 -Acquire`) : sans enjeu de sécurité. C'est un écart à A9 de la revue du développement par agents, à reporter à la consolidation de fin de phase 0.
+- **Après la deuxième relecture neuve** (30/10) :
+  - `guard-git` en **liste blanche** des sous-commandes et options de `git` et de `gh`, avec refus par défaut : favorable. C'est plus robuste qu'une liste noire contre les variantes de syntaxe.
+  - Lecture texte forcée pour gitleaks (contre `-diff`) et liste complète des fichiers dans `merge-pr.ps1` : favorable.
+  - `reference-transaction` comparé à `ls-remote origin` : favorable, à condition qu'il **refuse si `ls-remote` échoue** (réseau absent), car un contrôle de sécurité doit échouer en position fermée.
+  - **SEC0-09 révisée** : le motif `id_*` est restreint à `id_rsa*`, `id_dsa*`, `id_ecdsa*` et `id_ed25519*`. *Pourquoi : `id_*` ignorait en silence des sources légitimes comme `id_ranges.ron` ; `gitleaks` couvre de toute façon le contenu des clés.* À reporter à la consolidation.
 
 ### 9.2 Découpage v2 : écarts restants (30/10)
 
