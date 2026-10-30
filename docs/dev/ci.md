@@ -114,6 +114,6 @@ Offre gratuite : **2 000 min par mois** (M36). Un travail est compté à la minu
 
 Tâche périodique : `advisories` ≈ 2 min par nuit (≈ 60 par mois) ; le dimanche, si `main` a changé, Windows 2 × (8 à 15), gitleaks 1 à 2, fuzzing 61 à 62 (une fois `fuzz/` créé) : ≈ 80 à 95 min par semaine.
 
-**Relevé de la PR T13** : voir le corps de la PR et le carnet du responsable développement.
+**Relevé de la PR T13** (30/10, exécution verte 41011335457, sans cache, 2 crates) : `changes` 7 s, `pr-title` 3 s, `security` 42 s, `rust-linux` 41 s, `rust-windows` 78 s (chemin sensible, donc complet), `ci-ok` 3 s ; durée totale 86 s. Facturé : 5 min Linux + 2 min Windows × 2 = **9 min**. Le premier passage, en échec, en a coûté environ 7 : **≈ 16 min** pour la PR. L'API `timing` ne rend plus les minutes facturées (valeurs nulles) : le relevé se fait à partir des durées des travaux, arrondies à la minute supérieure, ou sur la page de facturation. Les estimations ci-dessus seront revues à la hausse avec la taille du code.
 
 **Demandé à `xtask` (T2b, chemin sensible)** : permettre une interpolation dans `jobs.<id>.outputs.*` et dans `concurrency.group`, évaluées par GitHub et jamais par un shell. `changes` transmettrait alors ses zones par `needs`, `rust-windows` serait sauté sans démarrer (2 min par PR de moins) et `concurrency` annulerait les exécutions dépassées.
