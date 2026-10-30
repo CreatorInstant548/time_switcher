@@ -5,15 +5,22 @@
 // Outil en ligne de commande : il écrit sur la console.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod build_inputs;
 mod disk;
 mod exemptions;
+mod github;
+mod hooks;
 mod manifests;
+mod merge;
 mod metadata;
 mod scan;
+mod sensitive;
+mod sha256;
 mod slots;
 mod spec_map;
 mod steps;
 mod sys;
+mod verify_main;
 mod workflows;
 
 use std::path::PathBuf;
@@ -72,7 +79,7 @@ const STEPS: [Step; 13] = [
     ("spec-map", "spec-map check", steps::spec_map),
 ];
 
-const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask slots | cargo xtask disk [--clean]";
+const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] | cargo xtask hooks install|verify [--dry-run]";
 
 struct Options {
     all: bool,
@@ -123,6 +130,9 @@ fn main() -> ExitCode {
         Some("slots") => return slots::main(&args[1..]),
         Some("disk") => return disk::main(&args[1..]),
         Some("spec-map") => return spec_map::run(&args[1..]),
+        Some("merge") => return merge::main(&args[1..]),
+        Some("hooks") => return hooks::main(&args[1..]),
+        Some("verify-main") => return verify_main::main(&args[1..]),
         _ => {}
     }
     let opts = match parse(&args) {

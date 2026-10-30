@@ -17,6 +17,8 @@ publish = false
 
 # Une ligne triée par dépendance, justifiée dans la PR (SEC0-05).
 [workspace.dependencies]
+bevy_ecs = { version = "=0.20.0", default-features = false, features = ["multi_threaded", "std"] }
+bevy_tasks = { version = "=0.20.0", default-features = false, features = ["multi_threaded"] }
 blake3 = { version = "1.8.7", default-features = false, features = ["pure"] }
 chacha20 = { version = "0.10.2", default-features = false, features = ["xchacha"] }
 serde = { version = "1.0.228", features = ["derive"] }
