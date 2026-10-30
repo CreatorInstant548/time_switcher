@@ -162,6 +162,8 @@ pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check
 pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply
 ```
 
+La forme `-Check -SourceCommit <sha>` (AS-38, §6.2) n'en fait pas partie : elle est **réservée à `cargo xtask merge`**, qui la lance en processus enfant, et le garde la refuse aux sessions.
+
 Tout autre segment qui cite le script est refusé : autre argument, `;` ou `&&`, redirection, autre chemin (`./tools/…`, barres obliques inverses, chemin absolu), motif (`repo-set*`, ou un motif dans `tools/` avec `repo-s`, `sett` ou `~<chiffre>` comme `tools/d?v/repo-setting?.ps1`), nom court 8.3 (`REPO-S~1.PS1`), nom fabriqué par concaténation (`'repo-'+'settings.ps1'`, ou tout nom du script qui n'apparaît en clair qu'une fois les guillemets et les `+` retirés), `pwsh -Command`, `bash -c`, `&`, `Start-Process`, argument tiré d'une variable. Un segment de lecture ou de données peut le citer : `cat`, `grep`, `git diff`, `git add`, titre de PR. Le fichier `tools/ci/repo-settings.json` contient `settings.json` dans son nom : la règle SEC0-35 refuse donc de le nommer dans une commande d'écriture (`git add tools/ci/repo-settings.json`). On passe par son dossier : `git add tools/ci/`.
 
 **`gh pr merge` est refusé : la fusion passe par `pwsh tools/dev/merge-pr.ps1 <PR>`**, depuis la copie principale (§3.3). Le message de refus le dit.
@@ -198,6 +200,13 @@ En cas d'erreur interne, la commande est refusée.
 `cargo xtask merge` a remplacé `merge-pr.ps1` (T3) : c'est le **seul chemin de fusion**. C'est un chemin sensible, validé par archi-sécu. Le détail est dans [xtask](xtask.md) §6. Dans l'ordre, le premier contrôle qui échoue arrête tout. Les numéros sont ceux qu'affiche la commande (`[1]`, `[3-4]`, etc.) :
 - **[1] Copie principale** propre, sur `main`, mise à jour par `git pull --ff-only`. Le binaire doit être construit depuis `main` (J2). La commande est refusée en mode CI.
 - **[2] `verify-main`** (approbations de chaque commit de `main` qui touche un chemin sensible, réglages GitHub et attestation du *ruleset*) et **`hooks verify`** : une anomalie suspend les fusions. Depuis T3e-2 (AS-31 E3), un commit non sensible n'a plus à venir d'une PR avec `ci-ok` aux yeux de `verify-main` : le *ruleset* `main` l'impose (§6.4).
+  - **Exception de réparation (AS-38)** : un écart des réglages **seul** (historique et crochets conformes) laisse passer une **PR de réparation**, vérifiée à l'étape **[6a]**, juste après la liste des fichiers. Il faut que toutes ces conditions soient réunies :
+    - la PR ne modifie **que** `tools/ci/repo-settings.json`, selon la liste complète de l'étape [6] : les deux chemins d'un renommage, le diff local compris. La comparaison se fait octet par octet : une variante de casse ou un nom court 8.3 du fichier est un autre chemin (G8, B1) ;
+    - le fichier de la tête passe les **invariants S2** du script de la copie principale, égal à `origin/main` (S4), et jamais ceux de la PR. Ces invariants fixent la valeur sûre de chaque champ (AS-41, §6.2) : la voie de réparation ne peut donc pas entériner un affaiblissement fait à la main sur GitHub ;
+    - l'écart **recalculé avec le fichier de la tête** de la PR (`repo-settings.ps1 -Check -SourceCommit <tête>`) est vide ;
+    - tous les autres contrôles passent : `ci-ok` sur la tête, PR à jour, `review-ok` et `archsec-ok`, exigés même hors de la liste sensible.
+
+    Toute autre PR reste refusée tant que l'écart dure. Le message de refus cite l'exception. **Après la fusion d'une PR de réparation**, l'orchestrateur lance `-Apply`, puis `-Check`, depuis la copie principale ; `merge` le rappelle.
 - **[3-4] État de la PR** : ouverte, base `main`, hors brouillon, `MERGEABLE`, en retard de 0 commit sur `main`, titre conforme (A31).
 - **[5] `ci-ok`** vert sur le SHA de tête, venu de `ci.yml` (G3).
 - **[6] Liste complète des fichiers**, par l'API `pulls/<n>/files` paginée. Un renommage compte ses deux chemins (I10). Le nombre de fichiers doit égaler `changedFiles`. L'arbre de tête est refusé s'il contient des chemins égaux à la casse près, ou un chemin non ASCII sous un chemin sensible (B1).
@@ -282,13 +291,34 @@ C'est un chemin sensible. Il a quatre sections :
 
 ### 6.2 `tools/dev/repo-settings.ps1 -Check | -Apply`
 
-Deux modes exclusifs ; tout autre argument est refusé (code 2).
+Deux modes exclusifs, plus la forme réservée ci-dessous ; tout autre argument est refusé (code 2).
 
-- **Source** : le fichier est lu par `git show origin/main:tools/ci/repo-settings.json`, **jamais sur le disque**. Une modification d'un worktree ne peut donc pas être appliquée avant d'avoir été fusionnée. Ordre des préalables, chacun avec son message (code 2) : arguments, préalables S4 ci-dessous, `git fetch origin` et égalité avec `origin/main`, présence du fichier sur `origin/main` (sinon il le dit et s'arrête), et enfin distant `origin` sur `github.com`.
+**Forme réservée `-Check -SourceCommit <sha>` (AS-38)** : `-Check`, mais avec le fichier du commit `<sha>`, lu par `git show <sha>:tools/ci/repo-settings.json`, jamais sur le disque. Seul `cargo xtask merge` la lance, en processus enfant, pour la tête d'une PR de réparation (§3.3, étape [6a]). Le garde la refuse aux sessions (§3.2).
+- Le SHA doit compter exactement 40 caractères hexadécimaux minuscules, le commit doit être présent localement après `git fetch`, et le fichier doit exister dans ce commit. Sinon : code 2.
+- Le fichier passe d'abord les invariants S2 de ce script, celui de la copie principale (AS-41) : un fichier affaibli donne le code 1, sans appel à GitHub.
+- Les préalables S4 restent tous en place, et les workflows comparés restent ceux d'`origin/main`.
+- `-Apply` n'a pas de forme `-SourceCommit`.
+
+- **Source** : le fichier est lu par `git show origin/main:tools/ci/repo-settings.json` (ou `<sha>:…` pour la forme réservée), **jamais sur le disque**. Une modification d'un worktree ne peut donc pas être appliquée avant d'avoir été fusionnée.
+- **Ordre des préalables**, chacun avec son message (code 2, sauf l'étape 6, qui rend le code 1) :
+  1. arguments (et, pour la forme réservée, format du SHA) ;
+  2. préalables S4 ci-dessous ;
+  3. `git fetch origin` et égalité avec `origin/main` ;
+  4. présence du fichier sur `origin/main` (sinon il le dit et s'arrête) ;
+  5. pour la forme réservée : présence du commit `<sha>` après `git fetch`, puis présence du fichier dans ce commit ;
+  6. **invariants S2** du fichier lu : un fichier refusé s'arrête là, avec le code 1, avant tout appel à GitHub ;
+  7. enfin, distant `origin` sur `github.com`.
 - **Préalables** (S4) : lancé depuis la racine de la copie principale, script de cette copie (pas celui d'un worktree), copie propre, sur `main`, égale à `origin/main`. Sinon : code 2.
-- **Invariants codés dans le script** (S2). Le fichier est refusé s'il manque à `ruleset_main` l'une des règles `pull_request`, `required_status_checks` (`ci-ok`, `strict`, `integration_id` 15368), `required_linear_history`, `non_fast_forward`, `deletion` ; si un `bypass_actors` n'est pas vide ; si un *ruleset* vise une autre branche ; si `repo` contient une autre clé que ses six clés (visibilité, branche par défaut… ne passent jamais par `-Apply`), permet autre chose que le squash ou la fusion automatique ; si `allowed_actions` n'est pas `selected`, si `sha_pinning_required` manque, si un motif sort de la liste fermée, si le jeton passe en écriture, si les Actions peuvent approuver, ou si les workflows des *forks* sont permis. Il est refusé aussi si une action utilisée par les workflows d'`origin/main` n'est couverte par aucun motif (`-Apply` casserait la CI). Affaiblir une règle demande donc de modifier aussi le script.
+- **Invariants codés dans le script** (S2, élargis par AS-41). **Chaque champ du fichier a sa valeur sûre fixée dans le script**, et les clés sont fermées : un champ inconnu, absent, d'un autre type (`"false"` en texte) ou d'une autre valeur est refusé. Seuls les paramètres neutres d'AS-30 (`automatic_copilot_code_review_enabled: false`, `required_reviewers: []`) peuvent s'ajouter, et seulement avec leur valeur neutre. Les tables du script couvrent :
+  - les deux *rulesets* : `name`, `target: branch`, `enforcement: active`, `bypass_actors: []`, `conditions` qui visent la seule branche ; règles exactement `deletion`, `non_fast_forward`, `required_linear_history`, `pull_request`, `required_status_checks` pour `main`, et `deletion`, `non_fast_forward` pour `pilotage`, sans doublon, sans paramètres pour les trois premières ;
+  - `pull_request` : `allowed_merge_methods: ["squash"]`, `required_approving_review_count: 0`, `dismiss_stale_reviews_on_push`, `require_code_owner_review`, `require_last_push_approval`, `required_review_thread_resolution` et `require_extra_approval_for_unattributed_changes` à `false` ;
+  - `required_status_checks` : `strict_required_status_checks_policy: true`, `do_not_enforce_on_create: false`, et exactement `[{context: ci-ok, integration_id: 15368}]` ;
+  - `repo` : ses six clés (visibilité, branche par défaut… ne passent jamais par `-Apply`), squash seulement, sans fusion automatique, branche supprimée après fusion, titre `PR_TITLE` ;
+  - Actions : `enabled`, `allowed_actions: selected`, `sha_pinning_required`, ni actions de GitHub ni vérifiées, motifs dans la liste fermée, jeton en lecture, aucune approbation par les Actions, et les quatre clés des *forks* à `false`.
+
+  Le fichier est refusé aussi si une action utilisée par les workflows d'`origin/main` n'est couverte par aucun motif (`-Apply` casserait la CI). Affaiblir une règle, ou changer une valeur, demande donc de modifier aussi le script. Un test par champ le vérifie (`test-repo-settings.ps1`).
 - **`-Check`** (lecture seule, `GET` seulement) compare GitHub au fichier et affiche chaque écart, avec la valeur attendue et la valeur lue ; code 1 s'il y en a un. Il signale :
-  - un fichier refusé par les invariants ;
+  - un fichier refusé par les invariants S2, **avant tout appel à GitHub** (AS-41). La comparaison et l'attestation ci-dessous ne viennent qu'ensuite, avec le fichier accepté, aussi bien sous la forme `-SourceCommit` ;
   - un *ruleset* attendu absent, en double, ou différent (règles indexées par type, listes comparées sans tenir compte de l'ordre) ;
   - tout *ruleset* inconnu qui vise `main` ou `pilotage` (S3 ; motifs `~ALL`, `~DEFAULT_BRANCH` et jokers compris, de façon prudente) ;
   - toute **protection de branche classique** encore présente, sur n'importe quelle branche (S3). `branches?protected=true` compte aussi les branches visées par un *ruleset* : chaque branche listée est relue par `branches/<nom>/protection`. Seul le 404 dont le message est « Branch not protected » vaut « aucune » ; tout autre 404 arrête `-Check` (code 2) ;
@@ -305,7 +335,7 @@ Codes de sortie : 0 conforme, 1 écart ou écriture refusée, 2 usage, préalabl
 
 - **`-Apply`** : l'**orchestrateur**, après la fusion de la PR qui modifie `repo-settings.json` ou le script, depuis la copie principale à jour. Ordre de R6 : fusion, `-Apply`, `-Check` vert, puis essai de poussée directe vers `main`, qui doit être refusé par GitHub. Entre la fusion de T3d et le premier `-Apply`, `-Check` est en écart : les fusions sont suspendues jusqu'à `-Apply`.
 - **`-Check`** : `cargo xtask verify-main`, donc **à chaque `cargo xtask merge`** (étape 2) et chaque nuit (AS-31 E4). Le contrôle de nuit doit tourner **en local**, dans la copie principale, puisqu'il est sauté en CI. Cette tâche planifiée n'existe pas encore : elle relève de T3e, suivie par l'issue que le responsable développement ouvrira. `verify-main` lance `pwsh -NoProfile -NonInteractive -File <copie principale>\tools\dev\repo-settings.ps1 -Check` :
-  - code 1 (écart) : une *issue* `role:architecture` de clé `repo-settings-drift` est ouverte (ou réutilisée), et les fusions sont suspendues ;
+  - code 1 (écart) : une *issue* `role:architecture` de clé `repo-settings-drift` est ouverte (ou réutilisée), et les fusions sont suspendues, sauf pour une PR de réparation (AS-38, §3.3) ;
   - autre code (préalable, réseau) : `verify-main` échoue ; en `--dry-run`, c'est un avertissement et le résultat reste un refus ;
   - **en CI** (`CI=true` et `GITHUB_ACTIONS=true`), le contrôle est **sauté** avec un avertissement dans le résumé du travail : `GITHUB_TOKEN` n'a pas les droits d'administration. Pour que ce saut ne serve pas à contourner le contrôle, `cargo xtask merge` **refuse** de tourner en mode CI ;
   - l'historique est vérifié avant les réglages : un `-Check` qui échoue ne cache pas une anomalie de l'historique.

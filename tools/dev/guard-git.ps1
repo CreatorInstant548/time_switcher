@@ -7,7 +7,8 @@
 #   merge --dry-run partout ; toute autre forme (cargo run -p xtask … merge, binaire xtask, Start-Process,
 #   chaîne) refusée, ainsi que toute variable de cargo ou rustc modifiée à côté (J2, I1, m4) ;
 # - pwsh [-NoProfile -File] tools/dev/repo-settings.ps1 -Check|-Apply : forme exacte, seule, depuis la racine
-#   de la copie principale (AS-30 R5, §9.12 S4) ;
+#   de la copie principale (AS-30 R5, §9.12 S4) ; -Check -SourceCommit <sha> (AS-38), réservé à cargo xtask
+#   merge qui le lance en processus enfant, n'est pas une de ces formes : refusé aux sessions ;
 # - réglages de Claude Code et configuration de Git : pure lecture seulement (SEC0-35) ;
 # - substitution ou évaluation avec un mot d'écriture Git : refus par prudence.
 # Les corps de heredoc cités (<<'EOF') et de here-string @'...'@ sont des données ; bash -c, pwsh -Command
@@ -331,6 +332,7 @@ function Get-MainCopyRootAt([string]$Dir) {
 # lance que sous une forme exacte, seule dans la commande, depuis la racine de la copie principale.
 # Un segment de lecture ou de données (cat, grep, git, gh, echo…) peut le citer ; tout autre segment
 # qui le cite (autre argument, autre chemin, Start-Process, &, bash -c, pwsh -Command, motif) : refus.
+# -Check -SourceCommit <sha> (AS-38) est réservé à cargo xtask merge : jamais ajouté à ces formes.
 $RepoSettingsForms = 'pwsh tools/dev/repo-settings.ps1 -Check', 'pwsh tools/dev/repo-settings.ps1 -Apply',
                      'pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check', 'pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply'
 # Mot qui désigne le script : son nom ; son nom court 8.3 (REPO-S~1.PS1) ; un motif dans tools/dev/ ; un
