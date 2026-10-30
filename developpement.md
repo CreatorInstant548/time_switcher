@@ -341,3 +341,9 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - **#60** (T3i) : relecture du contenu sans constat bloquant. Lot de mineurs en cours : m1 base(H) égale au `main` de référence, m2 arbres lus en local dans `merge`.
   - **Décidé** : la #60 est fusionnée en premier, et les approbations de la #57 et de la #62 seront reportées automatiquement (W1 à W7).
   - Issues : #58 et #59 (suites de T8b), #61 (délai de `ci-ok`) ; #56, quatre cas d'artefacts périmés.
+- 30/10 : fusions **#60** (f7ef2f5, report des approbations AS-40), **#57** (db8ff13, T8b, aller-retour F4 prouvé ; premier report automatique ; issue #46 close) et **#62** (8a49c82, T3e-1, approbations reportées).
+  - Pour la #62, un premier report a été refusé à juste titre (W2, `outillage.md` modifié par la #60). Les avis ont été reposés, puis le report a fonctionné après une fusion pure.
+  - `cargo xtask hooks install` relancé : crochets en `14896326…`.
+  - L'orchestrateur est prévenu pour l'essai R6.4. T3e-2 viendra si GitHub refuse la poussée.
+  - **T9** validée avec Y1 à Y6 (§9.15). **T9a** lancée. T9b suivra : `parquet` sans `arrow` ni compression, clé dérivée d'une graine publique.
+  - Issue #63 (objets de remplacement).
