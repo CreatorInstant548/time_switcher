@@ -66,9 +66,17 @@ pub fn slot_action(bytes: u64, limits: Limits) -> SlotAction {
     }
 }
 
-/// Racine permise : forme canonique, et au moins deux composants sous la racine du disque.
-pub fn root(path: &Path) -> Option<PathBuf> {
-    let canon = fs::canonicalize(path).ok()?;
+/// Racine permise `base\rel…` : aucun des composants de `rel` n'est un lien (sinon le nettoyage
+/// irait dans sa cible), forme canonique, et au moins deux composants sous la racine du disque.
+pub fn root(base: &Path, rel: &[&str]) -> Option<PathBuf> {
+    let mut path = base.to_path_buf();
+    for part in rel {
+        path.push(part);
+        if is_link(&fs::symlink_metadata(&path).ok()?) {
+            return None;
+        }
+    }
+    let canon = fs::canonicalize(&path).ok()?;
     let depth = canon
         .components()
         .filter(|c| matches!(c, Component::Normal(_)))
@@ -594,12 +602,12 @@ pub fn run(site: &mut Site, o: Opts) -> Vec<String> {
         return errors; // sans liste fiable des worktrees, rien n'est supprimé
     }
     let roots: Vec<PathBuf> = [
-        site.cache.join("target"),
-        site.cache.join("artifacts").join("runs"),
-        site.worktrees_root.clone(),
+        (site.cache.as_path(), &["target"][..]),
+        (site.cache.as_path(), &["artifacts", "runs"][..]),
+        (site.main_root.as_path(), &[".claude", "worktrees"][..]),
     ]
-    .iter()
-    .filter_map(|p| root(p))
+    .into_iter()
+    .filter_map(|(base, rel)| root(base, rel))
     .collect();
     let mut r = Run {
         site,
@@ -767,7 +775,10 @@ mod tests {
         file(&root_dir.join("ok").join("f"), 1);
         file(&outside.join("victim"), 1);
         junction(&root_dir.join("door"), &outside);
-        let roots = vec![root(&root_dir).unwrap()];
+        let roots = vec![root(&dir, &["root"]).unwrap()];
+        // Une racine qui est elle-même un lien est refusée.
+        junction(&dir.join("fake-root"), &outside);
+        assert!(root(&dir, &["fake-root"]).is_none());
 
         assert!(within(&root_dir.join("ok"), &roots).is_ok());
         // Le lien lui-même est sous la racine : il peut être retiré, sans être suivi.
@@ -779,7 +790,7 @@ mod tests {
         assert!(within(&outside.join("victim"), &roots).is_err());
         assert!(within(&root_dir.join("..").join("outside"), &roots).is_err());
         // Une racine de disque n'est jamais une racine permise.
-        assert!(root(Path::new("/")).is_none());
+        assert!(root(Path::new("/"), &[]).is_none());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -901,6 +912,7 @@ mod tests {
         // Lancé depuis un autre worktree, `main` n'est jamais vidé, même au-delà des seuils.
         file(&target.join("main").join("big"), 2000);
         site.main_root = owner.clone();
+        site.worktrees_root = owner.join(".claude").join("worktrees");
         o.now = now() + Duration::from_secs(31 * 24 * 3600);
         assert!(run(&mut site, o).is_empty());
         assert!(exists(&target.join("main").join("big")));
