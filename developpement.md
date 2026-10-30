@@ -83,6 +83,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | (orchestrateur) | `claude/sous-agents`, #3 | Fusionnée | sans objet (documentation) | relue | sans objet | 4991209 |
 | T1 | `claude/outillage-agents`, [#5](https://github.com/CreatorInstant548/time_switcher/pull/5), tête 92ecc11 | **Fusionnée** | sans objet (pas encore de xtask) ; tests 451/451, 57/57, 12/12 ; `merge-pr.ps1 5 -DryRun` conforme | 9 constats, traités | 3 relectures neuves ; `review-ok` et `archsec-ok` sur 92ecc11 | **93fc98a** |
 | (orchestrateur) | #9 (`CLAUDE.md`, règles de l'outillage) | Fusionnée par `merge-pr.ps1` (premier usage) | sans objet (documentation, pas de CI) | relue | sans objet | 2362c64 |
+| T2a | `claude/espace-travail`, [#10](https://github.com/CreatorInstant548/time_switcher/pull/10), tête 6dff621 | En relecture | équivalents (fmt, clippy `-D warnings`, tests, `deny`, `audit`, 4 `compile_error!` E8) verts selon l'auteur | lu par le responsable : rien de bloquant | relecture neuve en cours ; `archsec-ok` à demander | — |
 
 ## Sessions et agents actifs
 
@@ -90,7 +91,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 |---|---|---|---|---|
 | sous-agent t0-machine | T0 | Sonnet | aucun (hors dépôt) | 30/10, **terminée** |
 | sous-agent t1-outillage | T1 | Opus | worktree isolé | 30/10, **terminée** (fusionnée) |
-| sous-agent t2a-espace | T2a | Opus | worktree isolé, `claude/espace-travail`, emplacement par `-Acquire` | 30/10 |
+| sous-agent t2a-espace | T2a | Opus | worktree isolé ; emplacement w1 libéré | 30/10, **livrée** (PR #10) |
 
 ## Demandes envoyées
 
@@ -130,3 +131,4 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 - 30/10 : `review-ok: 92ecc11…` posé sur la PR #5 (tests 451/451, 57/57, 12/12). `archsec-ok` demandé à archi-sécu. Constats non bloquants m7 à m15 à ouvrir en issues après la fusion.
 - 30/10 : **PR #5 fusionnée** (93fc98a), après `review-ok` et `archsec-ok` sur 92ecc11. Amorçage : `merge-pr.ps1` n'existait pas encore sur `main` ; ses contrôles ont tourné en `-DryRun` depuis la branche (conformes), puis `gh pr merge 5 --squash --delete-branch --match-head-commit 92ecc11…` (décidé : seule fois hors du script). `install-hooks.ps1 -Verify` conforme depuis la copie principale. Worktrees et branches des sous-agents retirés. Issues ouvertes : #7 (faux refus m7 à m10, m14, m15) et #8 (m11 à m13, coût de pwsh) ; l'issue #6 d'archi-sécu va dans T3. **T2a lancée.**
 - 30/10 : PR #9 (règles de l'outillage dans `CLAUDE.md`) fusionnée par `merge-pr.ps1`, premier usage réel, 2362c64.
+- 30/10 : T2a livrée, PR #10 (354 lignes hors `Cargo.lock`, écart accepté : listes de `deny.toml` et `clippy.toml` une entrée par ligne). Relecture neuve lancée.
