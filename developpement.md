@@ -87,6 +87,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | T2a | `claude/espace-travail`, [#10](https://github.com/CreatorInstant548/time_switcher/pull/10), tête f14fb96 | **Fusionnée** par `merge-pr.ps1` | équivalents (fmt, clippy `-D warnings`, tests, `deny`, `audit`, 4 `compile_error!` E8) verts selon l'auteur | lu par le responsable : rien de bloquant | `review-ok` et `archsec-ok` sur f14fb96 | **5209fd2** |
 | T2b | `claude/xtask-check`, [#11](https://github.com/CreatorInstant548/time_switcher/pull/11), tête 067a0cb | **Fusionnée** par `merge-pr.ps1` (`review-ok` et `archsec-ok` sur 067a0cb) → **69b4849** | `cargo xtask check --all` vert (11 OK, 2 ignorées : workflows, spec-map) ; 15 tests | `/code-review` et `/security-review` faits par l'auteur | relecture neuve : **changements demandés** (I1 clé YAML explicite, I2 `#[path]`/`cfg(not(clippy))`/macro, I3 fichiers écartés en silence) ; correction en cours ; mineurs → #12 | — |
 | T4 | `claude/xtask-spec-map`, [#15](https://github.com/CreatorInstant548/time_switcher/pull/15), tête **516ff46** | AS-19 (points numérotés, ambiguïté) et AS-20 (doublons signalés par `report`) faits ; relecture neuve en cours | `check --all` vert, `spec-map` active ; 36 tests | `/code-review` et `/security-review` par l'auteur | relecteur neuf puis `archsec-ok` | — |
+| T2c | `claude/xtask-disk`, [#16](https://github.com/CreatorInstant548/time_switcher/pull/16), tête 1be5a99 | En relecture | `check --all` vert ; 30 tests ; jonction réelle non suivie (test) | `/code-review` et `/security-review` par l'auteur | relecteur neuf (F8) en cours | — |
 
 ## Sessions et agents actifs
 
@@ -97,8 +98,8 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | sous-agent t2a-espace | T2a | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t2b-check | T2b | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t13-ci | T13 + A2 (mode CI de l'étape gitleaks) | Opus | worktree isolé, `claude/ci` | 30/10 |
-| sous-agent t2c-disk | T2c | Opus | worktree isolé, `claude/xtask-disk` | 30/10 |
-| sous-agent t4-spec-map | T4 | Sonnet | worktree isolé, `claude/xtask-spec-map` | 30/10 |
+| sous-agent t2c-disk | T2c | Opus | — | 30/10, **livrée** (PR #16) |
+| sous-agent t4-spec-map | T4 | Sonnet | — | 30/10, **livrée** (PR #15) |
 
 ## Demandes envoyées
 
@@ -153,3 +154,4 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 - 30/10 : consigne T4 **validée avec corrections H1 à H8** (archi-sécu §9.7, §7 révisé) ; `spec-map-spec.md` recopié depuis la nouvelle version. H3 : les renvois faux existants vont dans une liste fermée `known_bad.txt` qui ne fait que diminuer et sera vide en fin de phase 0. **T4 lancée** (Sonnet). T13 prévenue : la CI doit récupérer `origin/pilotage` pour `spec-map`. Trois sessions compilent (T13, T2c, T4), le plafond.
 - 30/10 : T4 livrée, PR #15 (~1 100 lignes hors tests, écart accepté : trois sorties et H1 à H8). **Décidé** : `spec-map` lit un point numéroté de premier niveau sous `§k` comme `§k.N` (usage courant de la conception, qui ne se renumérote jamais) ; `known_bad.txt` devient vide, l'issue #13 sera fermée. Question « identifiant défini deux fois (S8) » transmise à archi-sécu. Faux refus des gardes signalés (`ls-tree`, `pwsh` simple, commandes composées), à reprendre dans l'issue #7.
 - 30/10 : PR #15 corrigée (516ff46) ; `known_bad.txt` vide, issue #13 fermée ; relecture neuve lancée. Faux refus de T4 reportés dans l'issue #7. **Constat** : `pwsh … session-start.ps1` est refusé dans l'outil Bash par le système de permissions de l'application, pas par `guard-git` ; il passe dans l'outil PowerShell. **Décidé** : les consignes imposent l'outil PowerShell pour `session-start.ps1`.
+- 30/10 : T2c livrée, PR #16 (~1 100 lignes hors tests, écart accepté). Décisions de l'auteur : racines de suppression réduites à `TS_CACHE	arget`, `artifactsuns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seulement ; verrous de Cargo pris avant de vider. À faire ensuite : PR courte pour mettre `cargo_home()` en commun (`sys.rs`). Relecteur neuf lancé.
