@@ -291,3 +291,13 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - **T3d = PR #42** : un fichier `tools/ci/repo-settings.json`, `repo-settings.ps1 -Check|-Apply` et `-Check` dans `verify-main`. Mise à jour depuis `main` en cours, puis deux relecteurs neufs (Opus) et l'`archsec-ok`.
   - Après la fusion de la #42, `-Check` est en écart jusqu'au `-Apply` de l'orchestrateur, et les fusions restent suspendues jusque-là.
   - **T8** (`ts_persist`, `ruzstd`, Q1 à Q6) et **T7b** (`ts_data`, BLAKE3, T1 à T4) sont validées (§9.13) et lancées.
+- 30/10 : **#42 (T3d)** :
+  - relecteur B : `review-ok` ; relecteur A : un constat important (refus S4 jamais testés). Lot de corrections poussé en 18f8710 : tests S4 sur un dépôt local, paramètre en trop côté GitHub compté comme écart, 404 précis, garde fermé au 8.3, aux jokers et à la concaténation.
+  - Contre-relectures A et B, puis nouvel `archsec-ok`.
+- 30/10 : **#47 (T7b `ts_data`)** :
+  - `review-ok` d'un relecteur neuf. AS-35 : lecture du disque dans la crate d'outil `ts_runner`, non sensible ; course sur les liens symboliques acceptée (R-ARCH-08), avec contrôle `File::metadata()` après l'ouverture.
+  - Lot de corrections en cours (AS-35, m1 à m6). Issues #43 et #44 (bornes provisoires), #48 (durcissement, fuzzing).
+- 30/10 : **#49 (T8 `ts_persist`)** :
+  - `ruzstd`, taux 2,28 (budget du §12.3 : de 2,1 à 6,7). `postcard`, `cobs` ; `fuzz/` à part.
+  - Écart Q4 : le décodage s'arrête à une `SnapshotImage`, faute de décodeur dans le noyau (issue #46). Je propose de fusionner le codec, puis de faire une PR noyau #46 qui intègre la doc de `DevFeature::Commands` (#31). Proposition soumise à archi-sécu.
+  - Relecteur neuf (Opus) lancé. Issue #45 (bornes provisoires).
