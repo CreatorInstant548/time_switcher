@@ -3,7 +3,8 @@
 //! `ci-ok` vert sur sa tête (G3) et, pour un chemin sensible, `review-ok` et `archsec-ok` sur cette
 //! tête, recoupés avec le §9 du carnet d'archi-sécu (J4). Une anomalie ouvre une *issue* et suspend
 //! les fusions tant qu'elle n'est pas inscrite dans [`ACKNOWLEDGED`] (J5).
-//! spec: carnet architecture-securite.md SEC0-17 ; §9.6 G3 ; §9.8 J3, J4, J5 ; issue #6 §2
+//! spec: carnet architecture-securite.md SEC0-17 ; §9.6 G3 ; §9.8 J3, J4, J5
+//! Voir aussi l'issue #6, point 2.
 
 use std::process::ExitCode;
 
