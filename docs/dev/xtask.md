@@ -26,7 +26,7 @@ C'est la vérification à lancer avant toute PR ; elle remplace la liste du §1 
 | `fmt` | `cargo fmt --all --check` | |
 | `clippy` | `cargo clippy --workspace --all-targets --locked -- -D warnings`, puis la même passe sur le **graphe livré** seul avec `--features ts_kernel/public` : `ts_kernel`, les hôtes présents et leurs dépendances normales de l'espace de travail, sans `--workspace` ni `--all-targets`. Enfin, une passe `--all-targets` sur les crates de cœur par fonctionnalité de développement, l'une après l'autre (`--features ts_kernel/dev-commands`, puis les trois autres) : le code sous `#[cfg(feature = "dev-…")]` est vu aussi. Jamais `--all-features` | F1, I2 |
 | `test` | `cargo test --locked` sur les crates touchées **et leurs dépendants**, directs ou non. Une modification de `Cargo.toml` racine, `Cargo.lock`, `clippy.toml`, `deny.toml`, `rustfmt.toml`, `rust-toolchain.toml` ou `.cargo/` vaut `--all`. Ignorée si aucune crate n'est touchée | F7 |
-| `determinism` | version courte de `cargo xtask determinism` (§7), lancée avec `--all`, si `ts_toy` ou l'une de ses dépendances est touchée, si `data/golden/` ou `tools/xtask/src/determinism.rs` change, ou sur un fichier racine qui vaut `--all`. Ignorée sinon. Les tests de `ts_toy` tournent aussi dans `test` (accord interne, sans valeurs dorées) : la CI les voit tant que `determinism` n'est pas dans ses listes `--only` | V0-09, L6, Y5 |
+| `determinism` | version courte de `cargo xtask determinism` (§7), lancée avec `--all`, si `ts_toy` ou l'une de ses dépendances est touchée, si `data/golden/` ou `tools/xtask/src/determinism.rs` change, ou sur un fichier racine qui vaut `--all`. Ignorée sinon. Les tests de `ts_toy` tournent aussi dans `test` (accord interne, sans valeurs dorées). En CI, `determinism` est dans les listes `--only` de `rust-linux`, de `rust-windows` et du travail hebdomadaire `windows`, et l'an complet tourne chaque dimanche par `cargo xtask determinism --full` ([ci](ci.md) §2 et §4) | V0-09, L6, Y5 |
 | `deny` | version de `cargo-deny` comparée au `tools/dev/tools.lock` du dépôt (lisible en CI), puis `cargo deny --locked check`, à chaque exécution | SEC0-03, F9 |
 | `audit` | version de `cargo-audit` comparée à `tools.lock`, puis `cargo audit`. Lancé avec `--all`, si `Cargo.lock` change, ou si la base RustSec locale a plus de 7 jours ; ignoré sinon. Si la mise à jour de la base échoue, un second essai `--no-fetch` n'est permis qu'avec une base de moins de 7 jours | SEC0-03, F9 |
 | `gitleaks` | binaire et empreinte SHA-256 lus dans le `tools.lock` de la **copie épinglée** désignée par `core.hooksPath`, qui doit être `TS_CACHE/hooks/<current.sha256>` ; configuration de cette même copie, jamais celle de la copie de travail ; `.gitleaksignore` à la racine refusé ; `--redact`. Arbre : `git ls-files -co --exclude-standard`, extrait dans `TS_CACHE\tmp`, sans `target/` ni lien. Commits : `origin/main..HEAD`, avec `--text --no-ext-diff --no-textconv` | SEC0-06, SEC0-08, F2 |
@@ -160,8 +160,10 @@ Si une seule condition échoue, l'approbation doit être **reposée sur `H`**. C
 - Les bases de fusion viennent de `compare/<x>...<y>`.
 - Les bases sont des commits de `main`, lus dans l'historique local.
 - Au plus 5 SHA candidats sont examinés, du plus récent au plus ancien, après avoir écarté ceux qui ne sont pas dans la PR.
-- Tout est relu sur GitHub à chaque exécution. Un commit sensible n'utilise jamais le cache de `verify-main` (V5).
+- Tout est relu sur GitHub à chaque exécution (V5). `verify-main` n'a plus de cache local depuis T3e-2.
 - Une lecture qui échoue fait échouer le candidat, jamais l'inverse.
+
+**Portée de `verify-main` depuis T3e-2** (AS-31 E3). Chaque commit de `main` postérieur à la base doit avoir un seul parent, pour que sa sensibilité se calcule. Un commit **non sensible** ne demande rien d'autre et ne lit rien sur GitHub : le *ruleset* `main` impose la PR, `ci-ok` et l'historique linéaire, et `repo-settings.ps1 -Check` surveille ce *ruleset* à chaque `cargo xtask merge` (il est sauté en CI). Un commit **sensible** garde tout : squash d'une PR fusionnée (J3), `ci-ok` sur sa tête (G3), `review-ok` et `archsec-ok` sur la tête ou reportés (§6.1), puis J4. `--no-cache` reste accepté, sans effet, pour la tâche de nuit, jusqu'à la PR `.github/` qui le retirera.
 
 ## 7. `cargo xtask determinism [--full] [--bless]`
 
@@ -179,4 +181,3 @@ Preuve du critère de fin de la phase 0 (V0-09) sur le monde-jouet de `crates/ts
 4. Elle affiche la durée de chaque processus.
 
 `--bless` réécrit seulement l'objet `results` du fichier doré, et seulement si les processus sont d'accord. Le manifeste du même fichier ne contient aucun chemin local (SEC0-26).
-
