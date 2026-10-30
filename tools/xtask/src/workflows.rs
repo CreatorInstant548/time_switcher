@@ -8,9 +8,10 @@ const ALLOWED_ACTIONS: [&str; 4] = [
     "swatinem/rust-cache",
     "actions/upload-artifact",
 ];
-/// Seuls contextes permis dans une interpolation `${{ }}` d'un `run:` (SEC0-31) : tout le reste
-/// (`github`, `inputs`, `env`, `steps`, `needs`, fonctions) passe par `env:` et une variable citée.
-const RUN_SAFE_CONTEXTS: [&str; 2] = ["matrix.", "runner."];
+/// Seul contexte permis dans une interpolation `${{ }}` d'un `run:` (SEC0-31). Tout le reste
+/// passe par `env:` et une variable citée : `github`, `inputs`, `env`, `steps`, `needs`, les
+/// fonctions, et aussi `matrix`, qui peut recopier `github.event`.
+const RUN_SAFE_CONTEXTS: [&str; 1] = ["runner."];
 
 /// Vrai si une ligne contient une interpolation hors des contextes permis.
 fn tainted(line: &str) -> bool {
@@ -78,12 +79,21 @@ pub fn check_workflow(text: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
     let mut errors = Vec::new();
     let mut top_permissions = false;
-    let mut run_until: Option<usize> = None;
+    // (indentation de la clé run:, valeur en bloc littéral `|` ou `>`)
+    let mut run_until: Option<(usize, bool)> = None;
     for (i, &line) in lines.iter().enumerate() {
         let n = i + 1;
         let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        let in_run = run_until.is_some_and(|(c, _)| line.trim().is_empty() || indent(line) > c);
+        let in_block = in_run && run_until.is_some_and(|(_, block)| block);
         if line.contains('\t') {
             errors.push(format!("ligne {n} : tabulation refusée"));
+        }
+        // Hors d'un bloc littéral, YAML décode les échappements : `"u\x73es"` vaut `"uses"`.
+        if line.contains('\\') && !in_block {
+            errors.push(format!(
+                "ligne {n} : barre oblique inverse hors d'un bloc run: |"
+            ));
         }
         for bad in [
             "pull_request_target",
@@ -96,32 +106,37 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             }
         }
         let key = key_of(line);
-        let in_run = run_until.is_some_and(|c| line.trim().is_empty() || indent(line) > c);
         if tainted(line) && (in_run || key.is_some_and(|k| k.1 == "run")) {
             errors.push(format!(
-                "ligne {n} : interpolation hors de matrix. et runner. dans un run: (SEC0-31)"
+                "ligne {n} : interpolation hors de runner. dans un run: (SEC0-31)"
             ));
         }
         if in_run {
             continue; // contenu d'un script : seules les interpolations y comptent
         }
         run_until = None;
+        // uses: ou run: ailleurs qu'en clé de tête de ligne (collection en ligne, etc.).
+        let hidden = ["uses", "run"].iter().any(|k| {
+            ["", "\"", "'"]
+                .iter()
+                .any(|q| compact.contains(&format!("{k}{q}:")))
+        });
+        if hidden && !key.is_some_and(|k| k.1 == "uses" || k.1 == "run") {
+            errors.push(format!("ligne {n} : forme de uses: ou run: non reconnue"));
+        }
         let Some((col, k, value)) = key else {
-            let hidden = ["uses", "run"].iter().any(|k| {
-                ["", "\"", "'"]
-                    .iter()
-                    .any(|q| compact.contains(&format!("{k}{q}:")))
-            });
-            if hidden {
-                errors.push(format!("ligne {n} : forme de uses: ou run: non reconnue"));
-            }
             continue;
         };
         if value.starts_with(['&', '*']) {
             errors.push(format!("ligne {n} : ancre ou alias YAML refusé"));
         }
+        // Collection en ligne : seules `{}`, `[]` et une liste de mots (`[push, pull_request]`).
+        let v = strip_comment(value);
+        if v.starts_with(['{', '[']) && v != "{}" && v != "[]" && v[1..].contains([':', '{', '[']) {
+            errors.push(format!("ligne {n} : collection en ligne refusée"));
+        }
         if k == "run" {
-            run_until = Some(col);
+            run_until = Some((col, value.starts_with(['|', '>'])));
         }
         if k == "permissions" && col == 0 && !line.starts_with('-') {
             top_permissions = strip_comment(value) == "{}";
@@ -142,10 +157,16 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             let checkout = owner_repo
                 .join("/")
                 .eq_ignore_ascii_case("actions/checkout");
+            // persist-credentials: false sous le with: de l'étape, pas ailleurs (env:, etc.).
+            let mut under_with = false;
             let no_persist = !step_block(&lines, i, col).iter().any(|l| {
-                key_of(l).is_some_and(|(_, k, v)| {
-                    k == "persist-credentials" && strip_comment(v) == "false"
-                })
+                let Some((c, k, v)) = key_of(l) else {
+                    return false;
+                };
+                if c == col {
+                    under_with = k == "with";
+                }
+                c > col && under_with && k == "persist-credentials" && strip_comment(v) == "false"
             });
             if checkout && no_persist {
                 errors.push(format!(
@@ -213,6 +234,19 @@ mod tests {
                 "        run: |",
                 "        'run': echo ${{ github.head_ref }} |",
             ),
+            // Contournements relevés par la relecture de sécurité.
+            ("echo \"$TITLE\"", "echo ${{ matrix.t }}"),
+            ("    steps:", "    steps: [{uses: evil/x@main}]\n    other:"),
+            (
+                "    steps:",
+                "    steps: [{run: \"echo ${{ github.head_ref }}\"}]\n    other:",
+            ),
+            (
+                "      - name: t",
+                "      - \"u\\x73es\": evil/x@main\n      - name: t",
+            ),
+            ("  pull_request:", "  \"pull_request_t\\x61rget\":"),
+            ("        with:\n", "        env:\n"),
         ];
         for (from, to) in cases {
             let text = good().replacen(from, to, 1);
@@ -222,7 +256,15 @@ mod tests {
         let inline = good().replace("run: |", "run: echo ${{ github.event.issue.title }}");
         assert!(!check_workflow(&inline).is_empty());
         assert!(!check_workflow(&good().replace("permissions: {}\n", "")).is_empty());
-        let matrix = good().replace("echo \"$TITLE\"", "echo ${{ matrix.os }} ${{runner.temp}}");
-        assert_eq!(check_workflow(&matrix), Vec::<String>::new());
+        let runner = good().replace(
+            "echo \"$TITLE\"",
+            "echo ${{ runner.os }} ${{runner.temp}} \\",
+        );
+        assert_eq!(check_workflow(&runner), Vec::<String>::new());
+        let list = good().replace(
+            "  pull_request:",
+            "  push:\n    branches: [main, \"release\"]",
+        );
+        assert_eq!(check_workflow(&list), Vec::<String>::new());
     }
 }
