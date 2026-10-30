@@ -181,9 +181,12 @@ impl Segment2 {
 }
 
 // spec: revues/generation.md P13
-/// Simple-looking floor polygon: 3 to [`Polygon2::MAX_VERTICES`] distinct vertices, non-zero
-/// area, **counter-clockwise** (the constructor reverses a clockwise input, keeping the first
-/// vertex first). Self-intersection is not checked yet (validators come with the generator).
+/// Floor polygon with **one canonical form** per shape: 3 to [`Polygon2::MAX_VERTICES`]
+/// distinct vertices, non-zero area, no three consecutive collinear vertices (refused, not
+/// removed), **counter-clockwise** (a clockwise input is reversed), and starting at the
+/// smallest vertex in `(x, y)` lexicographic order. Two inputs of the same ring, from another
+/// start vertex or in the opposite direction, therefore give equal values and equal encodings.
+/// Self-intersection is not checked yet (the map validators will do it).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Polygon2 {
     vertices: Vec<Point2>,
@@ -206,12 +209,31 @@ impl Polygon2 {
         if sorted.windows(2).any(|w| w[0] == w[1]) {
             return Err(GeometryError::RepeatedVertex);
         }
+        let n = vertices.len();
+        for i in 0..n {
+            let (a, b, c) = (vertices[i], vertices[(i + 1) % n], vertices[(i + 2) % n]);
+            // Edge differences are at most 2×10^7: the cross product fits in `i64` (N1).
+            let cross = (b.x.wide() - a.x.wide()) * (c.y.wide() - b.y.wide())
+                - (b.y.wide() - a.y.wide()) * (c.x.wide() - b.x.wide());
+            if cross == 0 {
+                return Err(GeometryError::CollinearVertices);
+            }
+        }
         let twice = twice_signed_area(&vertices);
         if twice == 0 {
             return Err(GeometryError::ZeroArea);
         }
         if twice < 0 {
-            vertices[1..].reverse();
+            vertices.reverse();
+        }
+        // Vertices are distinct, so the minimum is unique.
+        if let Some(start) = vertices
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, p)| **p)
+            .map(|(i, _)| i)
+        {
+            vertices.rotate_left(start);
         }
         Ok(Self { vertices })
     }

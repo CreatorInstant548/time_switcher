@@ -47,8 +47,10 @@ impl CanonicalWriter {
         self.cm(p.y);
     }
 
-    /// Appends a sequence length. Every encoded sequence is bounded well below `u32::MAX` by
-    /// its constructor (for example [`Polygon2::MAX_VERTICES`]), so the saturation is unreachable.
+    /// Appends a sequence length. [`Polygon2`] is capped by [`Polygon2::MAX_VERTICES`]; other
+    /// sequences (such as the places of a `PublicMap`) have no cap yet and are bounded only by
+    /// memory, so the saturation to `u32::MAX` is unreachable in practice (it would take more
+    /// than 4 billion items) but not excluded by construction. A cap comes with the part format.
     pub fn seq_len(&mut self, n: usize) {
         self.u32(u32::try_from(n).unwrap_or(u32::MAX));
     }

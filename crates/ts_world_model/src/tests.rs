@@ -73,6 +73,19 @@ fn quantize_rounds_off_the_half_to_nearest() {
 }
 
 #[test]
+fn quantize_pins_halves_that_are_not_representable() {
+    // 1.005 is stored as 1.00499999999999989…, and 1.005 × 100.0 evaluates to
+    // 100.49999999999999 in IEEE 754: it is not a tie, it rounds down. People expect 101.
+    assert_eq!(1.005_f64 * 100.0, 100.49999999999999);
+    assert_eq!(quantize(1.005).unwrap().get(), 100);
+    // 0.005 is stored slightly above 0.005, but the product rounds to exactly 0.5, which is a
+    // tie and goes to the even neighbour, 0 (not 1).
+    assert_eq!(0.005_f64 * 100.0, 0.5);
+    assert_eq!(quantize(0.005).unwrap().get(), 0);
+    assert_eq!(quantize(-0.005).unwrap().get(), 0);
+}
+
+#[test]
 fn quantize_accepts_the_bounds_and_refuses_beyond() {
     assert_eq!(quantize(100_000.0), Ok(Cm::MAX));
     assert_eq!(quantize(-100_000.0), Ok(Cm::MIN));
@@ -194,8 +207,59 @@ fn polygon_needs_three_distinct_vertices_with_area() {
     );
     assert_eq!(
         Polygon2::new(vec![pt(0, 0), pt(5, 5), pt(10, 10)]),
+        Err(GeometryError::CollinearVertices)
+    );
+    // A collinear vertex in the middle of a side is refused, not removed.
+    assert_eq!(
+        Polygon2::new(vec![
+            pt(0, 0),
+            pt(50, 0),
+            pt(100, 0),
+            pt(100, 100),
+            pt(0, 100)
+        ]),
+        Err(GeometryError::CollinearVertices)
+    );
+    // A spike that doubles back is collinear too.
+    assert_eq!(
+        Polygon2::new(vec![
+            pt(0, 0),
+            pt(100, 0),
+            pt(50, 0),
+            pt(100, 100),
+            pt(0, 100)
+        ]),
+        Err(GeometryError::CollinearVertices)
+    );
+    // Bow-tie: no collinear triple, but the two lobes cancel (documented on `ZeroArea`).
+    assert_eq!(
+        Polygon2::new(vec![pt(0, 0), pt(2, 2), pt(2, 0), pt(0, 2)]),
         Err(GeometryError::ZeroArea)
     );
+}
+
+#[test]
+fn polygon_has_one_canonical_form() {
+    let expected = canonical_bytes(&square());
+    let inputs = [
+        vec![pt(0, 0), pt(100, 0), pt(100, 100), pt(0, 100)],
+        vec![pt(100, 0), pt(100, 100), pt(0, 100), pt(0, 0)],
+        vec![pt(100, 100), pt(0, 100), pt(0, 0), pt(100, 0)],
+        vec![pt(0, 100), pt(0, 0), pt(100, 0), pt(100, 100)],
+        // Clockwise, from every start vertex.
+        vec![pt(0, 0), pt(0, 100), pt(100, 100), pt(100, 0)],
+        vec![pt(0, 100), pt(100, 100), pt(100, 0), pt(0, 0)],
+        vec![pt(100, 100), pt(100, 0), pt(0, 0), pt(0, 100)],
+        vec![pt(100, 0), pt(0, 0), pt(0, 100), pt(100, 100)],
+    ];
+    for input in inputs {
+        let poly = Polygon2::new(input.clone()).unwrap();
+        assert_eq!(poly, square(), "{input:?}");
+        assert_eq!(canonical_bytes(&poly), expected, "{input:?}");
+    }
+    // The smallest vertex is the one with the smallest x, then the smallest y.
+    let tri = Polygon2::new(vec![pt(5, 9), pt(5, 1), pt(7, 4)]).unwrap();
+    assert_eq!(tri.vertices()[0], pt(5, 1));
 }
 
 #[test]

@@ -25,8 +25,31 @@ mod sealed {
 /// ship::<PublicMap>();
 /// ```
 ///
-/// The candidate and server parts cannot be shipped, and cannot be made shippable from
-/// outside:
+/// **The seal.** The two examples below differ only by the `ClientShippable` line. The first
+/// proves the setup compiles: a local type that satisfies every other bound (`Canonical`).
+/// The second adds the impl and must fail, and the only missing bound is the private
+/// `Sealed` supertrait. (rustdoc stable does not check the error code, which would be E0277;
+/// the passing control is what makes the failing example reliable.)
+///
+/// ```
+/// use ts_world_model::{Canonical, CanonicalWriter};
+/// struct Mine;
+/// impl Canonical for Mine { fn write_canonical(&self, _: &mut CanonicalWriter) {} }
+/// ```
+///
+/// ```compile_fail
+/// use ts_world_model::{Canonical, CanonicalWriter, ClientShippable};
+/// struct Mine;
+/// impl Canonical for Mine { fn write_canonical(&self, _: &mut CanonicalWriter) {} }
+/// impl ClientShippable for Mine {} // only `Sealed` is missing
+/// ```
+///
+/// Inside the crate, `candidates` and `server` cannot name `public::sealed` (module privacy),
+/// which a doctest cannot test.
+///
+/// The two examples below only show that the candidate and server types do **not** implement
+/// the marker today. They prove nothing about whether they could: the guarantee is the seal
+/// above.
 ///
 /// ```compile_fail
 /// use ts_world_model::{ClientShippable, candidates::CandidateSpot};
@@ -38,15 +61,6 @@ mod sealed {
 /// use ts_world_model::{ClientShippable, server::ServerPart};
 /// fn ship<T: ClientShippable>() {}
 /// ship::<ServerPart>();
-/// ```
-///
-/// ```compile_fail
-/// impl ts_world_model::ClientShippable for ts_world_model::server::ServerPart {}
-/// ```
-///
-/// ```compile_fail
-/// struct Mine;
-/// impl ts_world_model::ClientShippable for Mine {}
 /// ```
 pub trait ClientShippable: sealed::Sealed + Canonical {}
 

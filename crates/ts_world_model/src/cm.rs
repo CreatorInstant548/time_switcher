@@ -24,8 +24,13 @@ pub enum GeometryError {
     TooManyVertices,
     /// Polygon with two identical vertices.
     RepeatedVertex,
-    /// Polygon with zero area (collinear vertices).
+    /// Polygon whose signed area is zero: collinear vertices, but also a self-intersecting
+    /// ring whose lobes cancel (a bow-tie). The general self-intersection check is deferred to
+    /// the map validators; a figure-eight with a non-zero net area is accepted for now.
     ZeroArea,
+    /// Polygon with three consecutive collinear vertices (including a spike that doubles
+    /// back): the ring must be given without them, so that a shape has one encoding.
+    CollinearVertices,
     /// Segment whose two endpoints coincide.
     DegenerateSegment,
     /// Box or height range with inverted bounds (or equal bounds for a height range).
@@ -47,6 +52,7 @@ impl fmt::Display for GeometryError {
             Self::TooManyVertices => "polygon has too many vertices",
             Self::RepeatedVertex => "polygon repeats a vertex",
             Self::ZeroArea => "polygon has zero area",
+            Self::CollinearVertices => "polygon has three consecutive collinear vertices",
             Self::DegenerateSegment => "segment endpoints coincide",
             Self::InvalidBounds => "bounds are inverted",
             Self::InvalidLevel => "level index out of range",
