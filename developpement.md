@@ -221,3 +221,4 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - faux refus `2>&1`.
 
   510 cas de `test-guards`, 66 tests. Relectures en parallèle : delta par le relecteur 1, relecture complète par le relecteur 2 sous l'angle « agent qui se trompe ou victime d'une injection ». La #25 est mise à jour (0887e96).
+- 30/10 : PR #23, delta : code conforme (B1 à B3, I1 à I3, m1, m3, m4 réglés ; `build.rs` sans réseau ni écriture) ; **B4 bis**, le test `dry_run_never_merges`, s'arrête à `hooks verify` avant la branche `--dry-run` qu'il doit prouver ; mineur E7 : `patch = {…}` en table en ligne non vu. Les deux écarts de l'auteur sont acceptés. Lot unique envoyé à l'auteur après le verdict du relecteur 2.
