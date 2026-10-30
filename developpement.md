@@ -207,3 +207,8 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - L8 : découpage en T6a et T6b au-delà de 600 lignes.
 
   **T6 lancée.**
+- 30/10, 10 h 25 : point sur la durée (question de l'utilisateur). Environ 10 h depuis le lancement, 12 PR fusionnées ; l'outillage des barrières a pris l'essentiel (#5 : 4 tours de relecture ; #11 : 3 ; #23 en cours). **Décidé, pour accélérer sans baisser les barrières** :
+  1. tâche non sensible : un seul relecteur et un seul tour de correction, les mineurs passent en issues ;
+  2. tâche sensible : deux tours au plus, puis issues (règle de convergence de l'orchestrateur, généralisée) ;
+  3. consignes de T7a, T7b, T8, T9w et T9 écrites maintenant et envoyées en un seul lot à archi-sécu, pendant que T6 tourne ;
+  4. dès la fusion de T6a : T7a, T8 et T9w en parallèle (3 emplacements).
