@@ -36,14 +36,17 @@
 //! decoded. **No recursive type** in the schema (Q2): the depth is fixed at compile time.
 //!
 //! The world key is never encoded (L4, Q4): the kernel snapshot carries none, and this crate
-//! never sees one. The host decodes, then calls the kernel's `restore` with the key.
+//! never sees one. The kernel parts are read back by the kernel's own canonical decoder
+//! (`MemorySnapshot::from_canonical`, AS-36); the host then calls the kernel's `restore` with
+//! the key. This crate never rebuilds a world itself.
 
 #![forbid(unsafe_code)]
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::panic
+    clippy::panic,
+    clippy::arithmetic_side_effects
 )]
 
 mod codec;
@@ -54,12 +57,19 @@ mod limits;
 mod manifest;
 mod schema;
 
-pub mod fuzzing;
+// Development API (m2 of the review of #49): the fuzzing body and its corpus. It is absent
+// from the `public` profile (`not_public!`) and hidden from the documentation. A Cargo
+// feature of this crate would hide it from clippy instead: `cargo xtask check` lints this
+// crate with the default features only.
+ts_kernel::not_public! {
+    #[doc(hidden)]
+    pub mod fuzzing;
+}
 
 pub use codec::{Parts, decode_parts, encode_parts};
 pub use envelope::{FORMAT_VERSION, HEADER_LEN, MAGIC, open};
 pub use error::{Bound, DecodeError, EncodeError};
-pub use kernel::{META_PART, STATE_PART, SnapshotImage, decode_snapshot, encode_snapshot};
+pub use kernel::{META_PART, STATE_PART, decode_snapshot, encode_snapshot};
 pub use limits::Limits;
 pub use manifest::{Codec, Digest, Manifest, PartEntry};
 pub use schema::{MAX_SCHEMA_DEPTH, Schema, Seq};

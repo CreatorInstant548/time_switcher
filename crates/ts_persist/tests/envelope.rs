@@ -383,12 +383,27 @@ fn schema_depth_is_fixed() {
     const { assert!(Manifest::DEPTH <= MAX_SCHEMA_DEPTH) };
 }
 
+/// m6: a window at `ruzstd`'s own maximum (2^41 + 7 * 2^38) is a bound exceeded, not a
+/// broken frame.
 #[test]
-fn seeds_decode() {
-    let seeds = ts_persist::fuzzing::seeds();
-    assert_eq!(seeds.len(), 6);
-    for s in &seeds {
-        ts_persist::fuzzing::decode(s).unwrap();
-    }
-    assert!(ts_persist::fuzzing::decode(b"").is_err());
+fn window_beyond_ruzstd_maximum_is_too_large() {
+    // Magic, frame header descriptor (no single segment), window descriptor 0xff.
+    let frame = [0x28, 0xb5, 0x2f, 0xfd, 0x00, 0xff];
+    let entry = PartEntry {
+        name: "p".to_owned(),
+        codec: Codec::Zstd,
+        stored_len: frame.len() as u64,
+        stored_digest: digest(PART_CONTEXT, &frame),
+        len: 1,
+        digest: digest(PART_CONTEXT, b"x"),
+    };
+    let max = (1_u64 << 41) + 7 * (1 << 38);
+    assert_eq!(
+        decode_parts(&forge(vec![entry], &frame), &Limits::default()),
+        Err(DecodeError::TooLarge {
+            bound: Bound::Window,
+            len: max,
+            max: Limits::default().max_window
+        })
+    );
 }

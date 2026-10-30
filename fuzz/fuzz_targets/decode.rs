@@ -1,6 +1,7 @@
 // spec: carnet architecture-securite.md SEC0-24 (révisé)
-//! Fuzzing target of the snapshot decoder: envelope, manifest, parts and kernel snapshot.
-//! The body lives in `ts_persist::fuzzing::decode`, which compiles and is tested on stable.
+//! Fuzzing target of the snapshot decoder: envelope, manifest, parts, then the kernel's
+//! canonical decoder (`MemorySnapshot::from_canonical`, AS-36), also fed directly. The body
+//! lives in `ts_persist::fuzzing::decode`, which compiles and is tested on stable.
 
 #![no_main]
 

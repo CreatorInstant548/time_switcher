@@ -2,16 +2,23 @@ use super::*;
 use crate::rng::{Stream, draw};
 use crate::state::{FAMILY_CONTEXT, GLOBAL_CONTEXT};
 use crate::{
-    DueEvents, KERNEL_FAMILY, Phase, SimBuilder, StableIndex, StateHash, StateWriter, WorldStreams,
+    DueEvents, KERNEL_FAMILY, Phase, SimBuilder, StableIndex, StateDecode, StateHash, StateReader,
+    StateWriter, WorldStreams,
 };
 use bevy_ecs::prelude::{Component, Query, Res, ResMut, Resource};
 
 #[derive(Component, Clone)]
-struct Pos(i64);
+pub(super) struct Pos(pub(super) i64);
 
 impl StateHash for Pos {
     fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.i64(self.0);
+    }
+}
+
+impl StateDecode for Pos {
+    fn decode_state(r: &mut StateReader<'_>) -> Result<Self, CanonicalError> {
+        r.i64().map(Self)
     }
 }
 
@@ -24,12 +31,24 @@ impl StateHash for Heat {
     }
 }
 
+impl StateDecode for Heat {
+    fn decode_state(r: &mut StateReader<'_>) -> Result<Self, CanonicalError> {
+        r.f64().map(Self)
+    }
+}
+
 #[derive(Resource, Clone)]
-struct Total(i64);
+pub(super) struct Total(pub(super) i64);
 
 impl StateHash for Total {
     fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.i64(self.0);
+    }
+}
+
+impl StateDecode for Total {
+    fn decode_state(r: &mut StateReader<'_>) -> Result<Self, CanonicalError> {
+        r.i64().map(Self)
     }
 }
 
@@ -109,21 +128,24 @@ fn life(version: u32) -> Vec<Box<dyn Plugin>> {
     })]
 }
 
-fn key() -> WorldKey {
+pub(super) fn key() -> WorldKey {
     WorldKey::insecure_from_u64_for_tests(11)
 }
 
-fn build(rules: &[Box<dyn Plugin>]) -> Sim {
+pub(super) fn build(rules: &[Box<dyn Plugin>]) -> Sim {
     Sim::build(SimConfig::default(), rules, &key()).unwrap()
 }
 
-fn steps(sim: &mut Sim, n: usize) {
+pub(super) fn steps(sim: &mut Sim, n: usize) {
     for _ in 0..n {
         sim.step();
     }
 }
 
-fn restore(snap: &MemorySnapshot, rules: &[Box<dyn Plugin>]) -> Result<Sim, RestoreError> {
+pub(super) fn restore(
+    snap: &MemorySnapshot,
+    rules: &[Box<dyn Plugin>],
+) -> Result<Sim, RestoreError> {
     Sim::restore(snap, SimConfig::default(), rules, &key())
 }
 
@@ -306,21 +328,41 @@ fn state_hash_reference_vectors() {
     );
 }
 
-/// Snapshot at tick `k`, restore, then `n` ticks: same state as `k + n` ticks straight (F4).
+/// The snapshot decoded back from its own bytes (AS-36).
+pub(super) fn through_bytes(snap: &MemorySnapshot, rules: &[Box<dyn Plugin>]) -> MemorySnapshot {
+    let layout = StateLayout::of(&SimConfig::default(), rules).unwrap();
+    let limits = CanonicalLimits { max_len: 1 << 30 };
+    let decoded = MemorySnapshot::from_canonical(
+        &snap.header_bytes(),
+        snap.canonical_bytes(),
+        &layout,
+        &limits,
+    )
+    .unwrap();
+    assert_eq!(decoded.header_bytes(), snap.header_bytes());
+    assert_eq!(decoded.canonical_bytes(), snap.canonical_bytes());
+    decoded
+}
+
+/// Snapshot at tick `k`, restore, then `n` ticks: same state as `k + n` ticks straight (F4),
+/// from the snapshot in memory and from its bytes.
 fn assert_round_trips(rules: &[Box<dyn Plugin>], ks: &[usize], n: usize) {
     for &k in ks {
         let mut straight = build(rules);
         steps(&mut straight, k);
         let snap: MemorySnapshot = straight.snapshot(SnapshotScope::Full);
-        let mut restored = restore(&snap, rules).unwrap();
-        assert_eq!(restored.state_hash(), straight.state_hash(), "at tick {k}");
+        let mut restored = [
+            restore(&snap, rules).unwrap(),
+            restore(&through_bytes(&snap, rules), rules).unwrap(),
+        ];
+        for r in &restored {
+            assert_eq!(r.state_hash(), straight.state_hash(), "at tick {k}");
+        }
         steps(&mut straight, n);
-        steps(&mut restored, n);
-        assert_eq!(
-            restored.state_hash(),
-            straight.state_hash(),
-            "from tick {k}"
-        );
+        for r in &mut restored {
+            steps(r, n);
+            assert_eq!(r.state_hash(), straight.state_hash(), "from tick {k}");
+        }
     }
 }
 
@@ -566,7 +608,8 @@ fn time_skip_round_trips() {
         snaps.push(straight.snapshot::<MemorySnapshot>(SnapshotScope::Full));
     }
     for (k, snap) in snaps.iter().enumerate() {
-        let mut restored = restore(snap, &rules).unwrap();
+        // Through the bytes: far, past and pending events round trip too.
+        let mut restored = restore(&through_bytes(snap, &rules), &rules).unwrap();
         for &s in &stops[k + 1..] {
             restored.run_until(crate::StopCondition::At(s));
             restored.step();

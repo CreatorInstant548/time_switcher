@@ -27,6 +27,8 @@ crates/ts_view/
 crates/ts_kernel/src/build_profile.rs
 crates/ts_kernel/src/lib.rs
 crates/ts_kernel/src/rng/
+# Décodeur canonique : lit des octets non fiables (sauvegarde solo), AS-36.
+crates/ts_kernel/src/canonical.rs
 
 # Configuration et outillage
 .github/

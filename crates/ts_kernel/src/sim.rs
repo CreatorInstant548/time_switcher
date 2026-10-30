@@ -24,7 +24,7 @@ use crate::{
 };
 
 mod snapshot;
-pub use snapshot::{MemorySnapshot, RestoreError, Snapshot, SnapshotScope};
+pub use snapshot::{MemorySnapshot, RestoreError, Snapshot, SnapshotScope, StateLayout};
 
 // spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §9.10 L4, L5
 /// Encode l'état du noyau : date, origine des jours, compteur de [`StableId`], compteur `seq`
