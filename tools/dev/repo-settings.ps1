@@ -10,7 +10,7 @@
 # d'origin/main, et le script lancé doit être celui de cette copie (S4). Les invariants sont codés ici
 # (S2) : affaiblir les règles demande de modifier aussi ce script.
 # Codes de sortie : 0 conforme ; 1 écart, fichier refusé ou écriture refusée ; 2 usage, préalable ou erreur.
-# Conditions suivies : AS-30 R1 à R5, AS-31 E4 et E5 (et l'attestation qui remplace R6.4), AS-38, AS-41,
+# Conditions suivies : AS-30 R1 à R5, AS-31 E4 et E5 (et l'attestation qui remplace R6.4), AS-38, AS-41, AS-43,
 # §9.12 S1 à S5.
 # spec: carnet architecture-securite.md SEC0-30 ; §9.12 S1, S2, S3, S4, S5
 $ErrorActionPreference = 'Stop'
@@ -278,6 +278,26 @@ function Read-Config([string]$Rev) {
   return , $c   # une liste JSON reste une liste, refusée par Get-Invalid
 }
 
+# Bilan final de -Check : lignes à afficher et code de sortie (0 conforme, 1 écart, 2 erreur interne).
+# Get-Drift renvoie sa liste par « return , » : l'affecter telle quelle. @(Get-Drift …) l'envelopperait
+# dans un tableau d'un élément, compté comme un écart même vide (fausse dérive, AS-43). Garde-fou (Z3) :
+# autre chose qu'une liste, ou une ligne d'écart vide ou nulle, est une erreur interne (code 2), jamais
+# un écart ni un passage. Testé par tools/dev/test-repo-settings.ps1.
+# $RepoName n'est qu'affiché : Get-Drift lit $Slug du script (un paramètre $Slug le masquerait).
+function Get-CheckResult($C, [string]$Mode, [string]$From, [string]$RepoName) {
+  $drift = Get-Drift $C
+  if ($drift -isnot [Collections.Generic.List[string]]) { return @{ Code = 2; Error = 'erreur interne (Get-Drift : liste attendue)' } }
+  if (@($drift | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count) { return @{ Code = 2; Error = 'erreur interne (ligne d''écart vide ou nulle)' } }
+  $lines = [Collections.Generic.List[string]]::new()
+  foreach ($d in $drift) { $lines.Add("  ÉCART : $d") }
+  if ($drift.Count) {
+    $lines.Add("repo-settings $Mode : $($drift.Count) écart(s) avec $File $From")
+    return @{ Code = 1; Lines = $lines }
+  }
+  $lines.Add("repo-settings $Mode : conforme à $File $From ($RepoName)")
+  return @{ Code = 0; Lines = $lines }
+}
+
 if ($MyInvocation.InvocationName -eq '.') { return }   # chargé par tools/dev/test-repo-settings.ps1
 
 # --- Arguments et préalables ---
@@ -336,9 +356,8 @@ if ($Apply) {
   foreach ($k in $ActionsApi.Keys) { Invoke-Write 'PUT' $ActionsApi[$k] $cfg.actions[$k] }
 }
 
-$drift = @(Get-Drift $cfg)
-foreach ($d in $drift) { Write-Host "  ÉCART : $d" }
 $mode = if ($Apply) { '-Apply puis -Check' } else { '-Check' }
-if (@($drift).Count) { Write-Host "repo-settings $mode : $(@($drift).Count) écart(s) avec $File $From"; exit 1 }
-Write-Host "repo-settings $mode : conforme à $File $From ($Slug)"
-exit 0
+$result = Get-CheckResult $cfg $mode $From $Slug
+if ($result.Code -eq 2) { Stop-With 2 $result.Error }
+foreach ($l in $result.Lines) { Write-Host $l }
+exit $result.Code
