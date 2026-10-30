@@ -97,6 +97,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | sous-agent t2b-check | T2b | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t13-ci | T13 + A2 (mode CI de l'étape gitleaks) | Opus | worktree isolé, `claude/ci` | 30/10 |
 | sous-agent t2c-disk | T2c | Opus | worktree isolé, `claude/xtask-disk` | 30/10 |
+| sous-agent t4-spec-map | T4 | Sonnet | worktree isolé, `claude/xtask-spec-map` | 30/10 |
 
 ## Demandes envoyées
 
@@ -148,3 +149,4 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 - 30/10 : vérification du delta de la PR #11 : I1, I3, m4 réglés ; I2 incomplet (commentaires qui coupent les motifs, `r#`, `include` renommé, macro entre accolades, `cfg(debug_assertions)`, code sous fonctionnalité de développement). **Décidé** : correction structurelle et dernière passe (normalisation, refus textuel des lints `disallowed_*`, liste fermée de prédicats `cfg`, refus de `include`, clippy par fonctionnalité de développement). m11 ajouté à l'issue #12. Le garde est actif dans ma session : commentaires `gh` par `--body-file`.
 - 30/10 : PR #11 : correction structurelle de I2 (067a0cb, module `exemptions.rs`) ; `review-ok: 067a0cb` posé, aucun faux refus sur du code ordinaire ; m12 à m14 ajoutés à l'issue #12 ; `archsec-ok` demandé. Consigne T4 (`spec-map`, Sonnet) envoyée à archi-sécu.
 - 30/10 : **PR #11 fusionnée** (69b4849). Archi-sécu ajoute A1 (AS-18 à l'arrivée de `ts_py`), A2 (mode CI de l'étape gitleaks : confié à T13) et A3 (`git ls-tree` à permettre dans `guard-git`) à l'issue #12. **T13 et T2c lancées en parallèle** ; T4 attend la validation de sa consigne. Sessions qui compilent : 2 sur 3.
+- 30/10 : consigne T4 **validée avec corrections H1 à H8** (archi-sécu §9.7, §7 révisé) ; `spec-map-spec.md` recopié depuis la nouvelle version. H3 : les renvois faux existants vont dans une liste fermée `known_bad.txt` qui ne fait que diminuer et sera vide en fin de phase 0. **T4 lancée** (Sonnet). T13 prévenue : la CI doit récupérer `origin/pilotage` pour `spec-map`. Trois sessions compilent (T13, T2c, T4), le plafond.
