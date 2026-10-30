@@ -260,7 +260,8 @@ fn on_events(
             ARRIVE_WORK => {
                 moved(Place::Work, &mut at);
                 tally.arrivals += 1;
-                tally.travelling = tally.travelling.saturating_sub(1);
+                // Plain subtraction: an arrival without its departure panics (overflow-checks).
+                tally.travelling -= 1;
                 tally.at_work += 1;
                 let minutes = WORK_BASE + spread(key, subject, arg, P_WORK, WORK_SPREAD);
                 next(after(item.at, minutes), DEPART_WORK, arg);
@@ -268,7 +269,7 @@ fn on_events(
             DEPART_WORK => {
                 moved(Place::ToHome, &mut at);
                 tally.departures += 1;
-                tally.at_work = tally.at_work.saturating_sub(1);
+                tally.at_work -= 1;
                 tally.travelling += 1;
                 let minutes = travel(key, subject, commuter, arg, 1);
                 next(after(item.at, minutes), ARRIVE_HOME, arg);
@@ -277,7 +278,7 @@ fn on_events(
                 moved(Place::Home, &mut at);
                 at.trips += 1;
                 tally.arrivals += 1;
-                tally.travelling = tally.travelling.saturating_sub(1);
+                tally.travelling -= 1;
                 next(departure(key, subject, arg + 1), DEPART_HOME, arg + 1);
             }
             STROLL_START => {

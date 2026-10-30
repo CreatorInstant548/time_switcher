@@ -116,12 +116,7 @@ pub fn prove(v: &Version, threads: Threads) {
 
     // First run, with a snapshot on the way.
     let mut first = build(threads);
-    let rules_hex: String = first
-        .rules_fingerprint()
-        .as_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let rules_hex = hex(first.rules_fingerprint().as_bytes());
     let before = run(&mut first, snapshot_at);
     assert_eq!(in_full_simulation(&first), STROLLERS);
     let snap: MemorySnapshot = first.snapshot(SnapshotScope::Full);
@@ -163,7 +158,10 @@ pub fn prove(v: &Version, threads: Threads) {
 
     let label = v.label;
     report(&format!("{label}.rules"), rules_hex);
-    report(&format!("{label}.world"), hex(&first.state_hash().global));
+    report(
+        &format!("{label}.world"),
+        hex(first.state_hash().global.as_bytes()),
+    );
     report(&format!("{label}.ticks"), straight.ticks);
     report(&format!("{label}.skipped"), straight.skipped_ticks);
 }
@@ -176,6 +174,6 @@ pub fn generator(threads: Threads) {
     let inline = generate(&TownSpec::PHASE0, &keys, Execution::Inline);
     assert_eq!(pooled, inline);
     assert_eq!(pooled.residents.len(), TownSpec::PHASE0.people as usize);
-    report("generator", hex(&state_hash_digest(&pooled)));
+    report("generator", hex(state_hash_digest(&pooled).as_bytes()));
     report("process.threads", threads.count());
 }

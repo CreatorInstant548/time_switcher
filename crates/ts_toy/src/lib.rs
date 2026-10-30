@@ -18,8 +18,8 @@
 pub mod town;
 pub mod world;
 
+use ts_kernel::SimTime;
 use ts_kernel::rng::WorldKey;
-use ts_kernel::{SimTime, StateDigest};
 
 /// BLAKE3 context of the public test seeds, shared with `ts-sim` (T9b, Y2).
 pub const PUBLIC_TEST_SEED_CONTEXT: &str = "time_switcher public test seed v1";
@@ -40,13 +40,9 @@ pub const fn day_start(day: i64) -> SimTime {
     SimTime::from_millis(day * SimTime::MILLIS_PER_DAY)
 }
 
-/// Lower-case hexadecimal of a digest.
-pub fn hex(digest: &StateDigest) -> String {
-    digest
-        .as_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+/// Lower-case hexadecimal, the format of the golden values.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@
 //! commande vérifie que les processus donnent les mêmes valeurs, puis les compare aux valeurs
 //! dorées de `data/golden/ts_toy.json` : la version courte toujours, l'an complet avec `--full`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -93,12 +93,13 @@ pub fn step(cx: &Ctx) -> Outcome {
 }
 
 /// Vrai si un fichier modifié touche `ts_toy` ou l'une de ses dépendances, les valeurs dorées,
-/// ou un fichier racine qui vaut `--all`.
+/// ce contrôle lui-même, ou un fichier racine qui vaut `--all`.
 pub fn touches_toy(meta: &Metadata, changed: &[String]) -> bool {
     let root = changed.iter().any(|f| {
         crate::steps::ROOT_FILES.contains(&f.as_str())
             || f.starts_with(".cargo/")
             || f.starts_with("data/golden/")
+            || f.starts_with("tools/xtask/src/determinism")
     });
     let touched = changed
         .iter()
@@ -127,40 +128,53 @@ pub fn parse_results(output: &str) -> Result<Results, String> {
     Ok(out)
 }
 
-/// Compare les processus entre eux, puis aux valeurs dorées. Rend les écarts.
-pub fn compare(runs: &[(&str, Results)], golden: &Value, full: bool) -> Vec<String> {
-    let mut errors = Vec::new();
-    let shared = |r: &Results| -> Results {
-        r.iter()
-            .filter(|(k, _)| !PER_PROCESS.contains(&k.as_str()))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
-    };
+/// Résultats communs à tous les processus : sans les clés propres à chacun.
+fn shared(r: &Results) -> Results {
+    r.iter()
+        .filter(|(k, _)| !PER_PROCESS.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// Écarts entre les processus (L6), sur les clés de l'un comme de l'autre.
+pub fn disagreements(runs: &[(&str, Results)]) -> Vec<String> {
     let Some((first_name, first)) = runs.first() else {
         return vec!["aucun processus".to_owned()];
     };
     let reference = shared(first);
+    let show = |v: Option<&String>| v.map_or("absent", String::as_str).to_owned();
+    let mut errors = Vec::new();
     for (name, r) in &runs[1..] {
-        if shared(r) != reference {
-            errors.push(format!(
-                "{name} et {first_name} donnent des résultats différents"
-            ));
-            for (k, v) in &shared(r) {
-                let other = reference.get(k).map_or("absent", String::as_str);
-                if other != v {
-                    errors.push(format!("  {k} : {name} {v}, {first_name} {other}"));
-                }
+        let other = shared(r);
+        let keys: BTreeSet<&String> = reference.keys().chain(other.keys()).collect();
+        for k in keys {
+            let (a, b) = (reference.get(k), other.get(k));
+            if a != b {
+                errors.push(format!(
+                    "{k} : {first_name} {}, {name} {}",
+                    show(a),
+                    show(b)
+                ));
             }
         }
     }
+    errors
+}
+
+/// Vrai si la clé dorée `key` relève des versions lancées.
+fn in_scope(key: &str, full: bool) -> bool {
+    full || !key.starts_with(FULL_PREFIX)
+}
+
+/// Écarts entre les résultats, communs aux processus, et les valeurs dorées des versions
+/// lancées : valeur différente, valeur dorée sans résultat, résultat sans valeur dorée.
+pub fn against_golden(results: &Results, golden: &Value, full: bool) -> Vec<String> {
     let Some(expected) = golden.get("results").and_then(Value::as_object) else {
-        return [errors, vec![format!("{GOLDEN} : objet results absent")]].concat();
+        return vec![format!("{GOLDEN} : objet results absent")];
     };
-    for (k, v) in expected {
-        if k.starts_with(FULL_PREFIX) && !full {
-            continue;
-        }
-        match (reference.get(k), v.as_str()) {
+    let mut errors = Vec::new();
+    for (k, v) in expected.iter().filter(|(k, _)| in_scope(k, full)) {
+        match (results.get(k), v.as_str()) {
             (Some(got), Some(want)) if got == want => {}
             (Some(got), Some(want)) => {
                 errors.push(format!("{k} : {got}, valeur dorée {want}"));
@@ -169,21 +183,20 @@ pub fn compare(runs: &[(&str, Results)], golden: &Value, full: bool) -> Vec<Stri
             (_, None) => errors.push(format!("{GOLDEN} : {k} n'est pas une chaîne")),
         }
     }
-    for k in reference.keys().filter(|k| !expected.contains_key(*k)) {
+    for k in results.keys().filter(|k| !expected.contains_key(*k)) {
         errors.push(format!("{k} : résultat sans valeur dorée"));
     }
     errors
 }
 
-/// Remplace les résultats dorés produits par ceux-ci ; garde les autres clés.
-fn bless(golden: &mut Value, results: &Results) -> Result<(), String> {
+/// Remplace les valeurs dorées des versions lancées par `results` : celles qui ne sont plus
+/// produites disparaissent, celles des autres versions restent.
+fn bless(golden: &mut Value, results: &Results, full: bool) -> Result<(), String> {
     let Some(map) = golden.get_mut("results").and_then(Value::as_object_mut) else {
         return Err(format!("{GOLDEN} : objet results absent"));
     };
-    for (k, v) in results
-        .iter()
-        .filter(|(k, _)| !PER_PROCESS.contains(&k.as_str()))
-    {
+    map.retain(|k, _| !in_scope(k, full));
+    for (k, v) in results {
         map.insert(k.clone(), Value::String(v.clone()));
     }
     Ok(())
@@ -220,16 +233,24 @@ pub fn run(root: &Path, full: bool, bless_it: bool) -> Result<String, String> {
     let path = root.join(GOLDEN);
     let mut golden: Value = serde_json::from_str(&sys::read_text(&path)?)
         .map_err(|e| format!("{GOLDEN} illisible : {e}"))?;
-    let errors = compare(&runs, &golden, full);
-    let disagree = errors.iter().any(|e| e.contains("différents"));
-    if bless_it && !disagree {
-        bless(&mut golden, &runs[0].1)?;
+    let split = disagreements(&runs);
+    if !split.is_empty() {
+        split.iter().for_each(|e| println!("  - {e}"));
+        return Err(format!(
+            "les processus à 1 et à 4 fils diffèrent ({} écart(s))",
+            split.len()
+        ));
+    }
+    let results = shared(&runs[0].1);
+    if bless_it {
+        bless(&mut golden, &results, full)?;
         let mut text = serde_json::to_string_pretty(&golden).map_err(|e| e.to_string())?;
         text.push('\n');
         sys::write(&path, text.as_bytes())?;
         println!("  valeurs dorées réécrites : {GOLDEN} (à signaler dans la PR)");
         return Ok(format!("bénies ; {}", durations.join(", ")));
     }
+    let errors = against_golden(&results, &golden, full);
     if !errors.is_empty() {
         errors.iter().for_each(|e| println!("  - {e}"));
         return Err(format!("{} écart(s) ; voir {GOLDEN}", errors.len()));
@@ -270,11 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn compares_processes_and_golden() {
-        let golden: Value = serde_json::from_str(
-            r#"{"results":{"generator":"g","short.world":"s","year.world":"y"}}"#,
-        )
-        .unwrap();
+    fn compares_processes() {
         let one = results(&[
             ("generator", "g"),
             ("short.world", "s"),
@@ -285,36 +302,46 @@ mod tests {
             ("short.world", "s"),
             ("process.threads", "4"),
         ]);
-        let ok = [("one_thread", one.clone()), ("four_threads", four)];
-        assert!(compare(&ok, &golden, false).is_empty());
-        // Without --full, the year is not expected; with it, it is.
-        assert_eq!(compare(&ok, &golden, true).len(), 1);
-        // 1 thread against 4 threads.
-        let bad = results(&[("generator", "g"), ("short.world", "t")]);
-        let errors = compare(
-            &[("one_thread", one.clone()), ("four_threads", bad)],
-            &golden,
-            false,
+        assert!(disagreements(&[("one_thread", one.clone()), ("four_threads", four)]).is_empty());
+        // A value that differs, and a key that only the first process gave.
+        let bad = results(&[("generator", "h")]);
+        assert_eq!(
+            disagreements(&[("one_thread", one), ("four_threads", bad)]),
+            [
+                "generator : one_thread g, four_threads h",
+                "short.world : one_thread s, four_threads absent",
+            ]
         );
-        assert!(errors[0].contains("différents"), "{errors:?}");
-        // Against the golden value, and a result with no golden value.
-        let other = results(&[("generator", "h"), ("short.world", "s"), ("extra", "1")]);
-        let errors = compare(&[("a", other.clone()), ("b", other)], &golden, false);
-        assert_eq!(errors.len(), 2, "{errors:?}");
     }
 
     #[test]
-    fn bless_keeps_other_keys() {
-        let mut golden: Value =
-            serde_json::from_str(r#"{"manifest":{"a":1},"results":{"year.world":"y"}}"#).unwrap();
-        bless(
-            &mut golden,
-            &results(&[("short.world", "s"), ("process.threads", "1")]),
+    fn compares_with_golden() {
+        let golden: Value = serde_json::from_str(
+            r#"{"results":{"generator":"g","short.world":"s","year.world":"y"}}"#,
         )
         .unwrap();
+        let ok = results(&[("generator", "g"), ("short.world", "s")]);
+        assert!(against_golden(&ok, &golden, false).is_empty());
+        // Without --full, the year is not expected; with it, it is.
+        assert_eq!(against_golden(&ok, &golden, true).len(), 1);
+        // A value that differs, and a result with no golden value.
+        let other = results(&[("generator", "h"), ("short.world", "s"), ("extra", "1")]);
+        assert_eq!(against_golden(&other, &golden, false).len(), 2);
+    }
+
+    #[test]
+    fn bless_replaces_the_versions_run() {
+        let mut golden: Value = serde_json::from_str(
+            r#"{"manifest":{"a":1},"results":{"year.world":"y","short.old":"o"}}"#,
+        )
+        .unwrap();
+        bless(&mut golden, &results(&[("short.world", "s")]), false).unwrap();
         assert_eq!(golden["results"]["year.world"], "y");
         assert_eq!(golden["results"]["short.world"], "s");
-        assert!(golden["results"].get("process.threads").is_none());
+        assert!(golden["results"].get("short.old").is_none());
         assert_eq!(golden["manifest"]["a"], 1);
+        // With --full, the year values are replaced too.
+        bless(&mut golden, &results(&[("short.world", "s")]), true).unwrap();
+        assert!(golden["results"].get("year.world").is_none());
     }
 }

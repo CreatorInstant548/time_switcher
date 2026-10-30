@@ -26,7 +26,7 @@ C'est la vérification à lancer avant toute PR ; elle remplace la liste du §1 
 | `fmt` | `cargo fmt --all --check` | |
 | `clippy` | `cargo clippy --workspace --all-targets --locked -- -D warnings`, puis la même passe sur le **graphe livré** seul avec `--features ts_kernel/public` : `ts_kernel`, les hôtes présents et leurs dépendances normales de l'espace de travail, sans `--workspace` ni `--all-targets`. Enfin, une passe `--all-targets` sur les crates de cœur par fonctionnalité de développement, l'une après l'autre (`--features ts_kernel/dev-commands`, puis les trois autres) : le code sous `#[cfg(feature = "dev-…")]` est vu aussi. Jamais `--all-features` | F1, I2 |
 | `test` | `cargo test --locked` sur les crates touchées **et leurs dépendants**, directs ou non. Une modification de `Cargo.toml` racine, `Cargo.lock`, `clippy.toml`, `deny.toml`, `rustfmt.toml`, `rust-toolchain.toml` ou `.cargo/` vaut `--all`. Ignorée si aucune crate n'est touchée | F7 |
-| `determinism` | version courte de `cargo xtask determinism` (§7), lancée avec `--all`, si `ts_toy` ou l'une de ses dépendances est touchée, si `data/golden/` change, ou sur un fichier racine qui vaut `--all`. Ignorée sinon | V0-09, L6, Y5 |
+| `determinism` | version courte de `cargo xtask determinism` (§7), lancée avec `--all`, si `ts_toy` ou l'une de ses dépendances est touchée, si `data/golden/` ou `tools/xtask/src/determinism.rs` change, ou sur un fichier racine qui vaut `--all`. Ignorée sinon. Les tests de `ts_toy` tournent aussi dans `test` (accord interne, sans valeurs dorées) : la CI les voit tant que `determinism` n'est pas dans ses listes `--only` | V0-09, L6, Y5 |
 | `deny` | version de `cargo-deny` comparée au `tools/dev/tools.lock` du dépôt (lisible en CI), puis `cargo deny --locked check`, à chaque exécution | SEC0-03, F9 |
 | `audit` | version de `cargo-audit` comparée à `tools.lock`, puis `cargo audit`. Lancé avec `--all`, si `Cargo.lock` change, ou si la base RustSec locale a plus de 7 jours ; ignoré sinon. Si la mise à jour de la base échoue, un second essai `--no-fetch` n'est permis qu'avec une base de moins de 7 jours | SEC0-03, F9 |
 | `gitleaks` | binaire et empreinte SHA-256 lus dans le `tools.lock` de la **copie épinglée** désignée par `core.hooksPath`, qui doit être `TS_CACHE/hooks/<current.sha256>` ; configuration de cette même copie, jamais celle de la copie de travail ; `.gitleaksignore` à la racine refusé ; `--redact`. Arbre : `git ls-files -co --exclude-standard`, extrait dans `TS_CACHE\tmp`, sans `target/` ni lien. Commits : `origin/main..HEAD`, avec `--text --no-ext-diff --no-textconv` | SEC0-06, SEC0-08, F2 |
@@ -167,7 +167,7 @@ Si une seule condition échoue, l'approbation doit être **reposée sur `H`**. C
 
 ```
 cargo xtask determinism            # version courte : 14 jours simulés (étape de check)
-cargo xtask determinism --full     # plus l'an complet : 365 jours (chaque semaine en CI, Y5)
+cargo xtask determinism --full     # plus l'an complet : 365 jours (chaque semaine en CI, Y5, par une PR `.github/` à part)
 cargo xtask determinism --bless    # réécrit les valeurs dorées produites ; à signaler dans la PR
 ```
 
