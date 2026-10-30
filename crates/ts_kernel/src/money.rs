@@ -83,8 +83,8 @@ impl BasisPoints {
 /// cas à mi-chemin allant à l'entier **pair** (arrondi bancaire). La règle est symétrique :
 /// l'arrondi de `−x` est l'opposé de celui de `x`.
 ///
-/// Rend `None` si `denominator <= 0`. Ne déborde jamais : il n'y a de pas d'arrondi que si le
-/// reste est non nul, donc si `denominator >= 2`, et le quotient tronqué vaut alors au plus
+/// Rend `None` si `denominator <= 0`. Ne déborde jamais : le quotient ne bouge que si le reste
+/// est non nul, donc si `denominator >= 2`, et le quotient tronqué vaut alors au plus
 /// `|numerator| / 2` en valeur absolue.
 pub fn div_round_half_even(numerator: i128, denominator: i128) -> Option<i128> {
     if denominator <= 0 {
