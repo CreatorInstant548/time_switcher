@@ -971,6 +971,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ts_game"
+version = "0.0.0"
+dependencies = [
+ "ts_kernel",
+ "ts_model",
+]
+
+[[package]]
 name = "ts_kernel"
 version = "0.0.0"
 dependencies = [
@@ -978,6 +986,13 @@ dependencies = [
  "bevy_tasks",
  "blake3",
  "chacha20",
+]
+
+[[package]]
+name = "ts_model"
+version = "0.0.0"
+dependencies = [
+ "ts_kernel",
 ]
 
 [[package]]

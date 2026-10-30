@@ -1,0 +1,15 @@
+[package]
+name = "ts_game"
+version = "0.0.0"
+description = "Rules assembly of time_switcher: standard_rules(), the only list of rule plugins."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ts_kernel = { path = "../ts_kernel" }
+ts_model = { path = "../ts_model" }
+
+[lints]
+workspace = true
