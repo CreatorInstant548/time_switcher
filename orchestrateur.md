@@ -60,3 +60,13 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
 - **GitHub** : offre gratuite. `gh` est connecté au compte `CreatorInstant548`. Dépôt privé `CreatorInstant548/time_switcher` **créé le 30/10 avec l'accord explicite de l'utilisateur**. `main` et `pilotage` sont poussés. Réglages : fusion squash seule, branche supprimée après fusion, Actions en lecture seule, alertes et correctifs Dependabot, étiquettes de rôle. PR #1 fusionnée (f60e5bc) : le mode local est levé. PR #3 ouverte (repli par sous-agents), à fusionner par le responsable développement.
 - **Double authentification** : son état n'est pas lisible avec ces droits. GitHub l'impose de toute façon aux comptes qui publient du code. Ce n'est pas un prérequis du projet (décidé).
 - **Actions GitHub (SEC0-30, 30/10)** : d'après l'API, le jeton des workflows est déjà en lecture seule et Actions ne peut pas approuver de PR. La liste fermée des actions n'est pas réglée, car guard-git refuse `gh api -X PUT` (SEC0-14). Pas de contournement, pas d'exception au garde (décidé) : un réglage du dépôt ne justifie pas d'ouvrir une écriture par `gh api`. Compensation : un contrôle `xtask`/CI qui refuse tout `uses:` hors de la liste fermée ou non épinglé par SHA complet. Le dev et archi-sécu l'ont noté (AS-21).
+- **Actions bloqué (30/10, depuis 11:44 UTC)**
+  - **Symptôme** : chaque tâche échoue en 2 à 3 s avec « recent account payments have failed or your spending limit needs to be increased ».
+  - **Mesure** : environ 400 minutes facturées sur 2 000 (somme des durées des 224 tâches, Windows compté double). Le quota n'est donc pas la cause probable. Le compte a été créé le 25/10.
+  - **Cause** : sans doute la facturation du compte, illisible sans la portée `user`. L'utilisateur est informé, sans qu'on lui demande d'action.
+  - **Décisions** :
+    - pas de fusion pour l'instant ;
+    - le développement continue en local ;
+    - le dev relance l'exécution 41051384808 toutes les 2 h ;
+    - runner auto-hébergé écarté (installation d'un service et téléchargement d'un binaire : accord de l'utilisateur requis ; et `gh api POST` refusé par le garde) ;
+    - mode dégradé `ci-local: <sha> pass` (proposé) : verdict d'archi-sécu attendu. Chemins sensibles exclus sauf accord explicite. CI relancée sur `main` au retour d'Actions.
