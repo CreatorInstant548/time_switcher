@@ -18,6 +18,8 @@
 ///
 /// The absolute rules (minors, deadly danger to oneself), recusation and linked flows are
 /// checked at both stages. A refusal is a [`Rejection`] code, never an internal detail.
+// Remove `Eq` and `Hash` from the derives once a variant carries an `f32` (a direction, a
+// point of the world): `f32` has neither.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Intent {}
 

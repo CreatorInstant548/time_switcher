@@ -48,11 +48,21 @@ pub enum Location {
     },
 }
 
-// spec: revues/architecture.md §6.3 ; revues/generation.md P13
+// spec: revues/architecture.md §6.3 ; revues/generation.md P13 ; carnet architecture-securite.md §10, §9.11 N2
 /// Point on a floor, in metres (`f32`, 1 unit = 1 m, architecture §6.3).
 ///
 /// Two coordinates (decided, T7a): the physical geometry is made of discrete floors with 2D
 /// collisions per floor (P13), so the height is the [`Floor`], not a third coordinate.
+///
+/// **Boundary rule (AS-33).** The map (`ts_world_model`) counts in integer centimetres
+/// (`Cm`); the simulation counts in `f32` metres. Between the two:
+/// - map to simulation: one single conversion, `Cm` to `f32` metres;
+/// - simulation to map: only through `quantize` (N2), never by a cast or a rounding of
+///   one's own;
+/// - no other conversion.
+///
+/// When `Location` gets a `StateHash`, these `f32` are hashed by `to_bits()`, as the kernel
+/// encodes every float.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Position {
     /// East, in metres.
