@@ -320,3 +320,11 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - **T3g** (exception de réparation AS-38, `-Check -SourceCommit`) se fait dans une PR dédiée ;
   - consignes dans `consigne-T3g-T3h.md` ;
   - **en attendant T3h** : `cargo xtask verify-main --no-cache` une fois par jour depuis la copie principale, avec le résultat noté ici. Premier passage après le `-Apply` qui suit la #51.
+- 30/10 : **décision de l'orchestrateur** : ne pas attendre la #51. Les tâches suivantes sont relancées, et une tâche qui dépend d'une PR approuvée part de sa branche, en PR empilée.
+  - **Décidé** : une PR empilée a toujours pour base `main`, avec « Based on #N » dans son corps. Une base supprimée a fermé la #28, et le garde interdit `gh pr edit --base`.
+  - Tâches lancées :
+    - **T8b** (empilée sur la #49) ;
+    - **T3h** (empilée sur la #52) ;
+    - **T9w2** (#37, depuis `main`).
+  - Ensuite : T3g, T3e-1, puis T9. Le client Godot n'entre pas dans la phase 0 de mon découpage : je ne le lance pas sans feu vert.
+  - **#52** : `review-ok` et `archsec-ok` sur 877363c. Le m2 de la relecture est tranché par archi-sécu : pas de fetch en CI, `TS_CACHE` dans `runner.temp`.
