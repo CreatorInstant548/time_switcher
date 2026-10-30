@@ -347,3 +347,13 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - L'orchestrateur est prévenu pour l'essai R6.4. T3e-2 viendra si GitHub refuse la poussée.
   - **T9** validée avec Y1 à Y6 (§9.15). **T9a** lancée. T9b suivra : `parquet` sans `arrow` ni compression, clé dérivée d'une graine publique.
   - Issue #63 (objets de remplacement).
+- 30/10 : **#64 fusionnée** (1b707db, T9a) : **critère F1 prouvé sur `main`**.
+  - 1 000 résidents, un an simulé en saut de temps (207 994 ticks exécutés, 630 512 006 sautés), la même empreinte à chaque exécution, sur 1 fil comme sur 4 (processus distincts).
+  - Aller-retour par `ts_persist` au jour 182, et générateur-jouet identique sur 1 et sur N fils. Empreintes dorées dans `data/golden/ts_toy.json`.
+  - Debug : environ 2,5 s par an sur 1 fil, environ 25 s sur 4 fils (issue #67, coût de l'exécuteur multi-fils, à mesurer en release dans T12).
+  - Mineurs : issue #68.
+- 30/10 : en cours :
+  - **#65** (T3e-2 : J3 et G3 retirés pour les commits non sensibles ; cache supprimé ; `-Check` vérifie `current_user_can_bypass == never` et les 5 règles effectives), en relecture ;
+  - **#66** (T3g, avec AS-41 : S2 complet évalué par le script d'`origin/main`) ;
+  - **T9b** (`ts-sim run`, Parquet) ;
+  - **T9c** (CI : `determinism` dans `rust-linux` et `rust-windows`, l'an complet le dimanche, délai de `ci-ok`, issue #61).
