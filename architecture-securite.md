@@ -421,6 +421,7 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | Consigne T2a (espace de travail Cargo, V et S) | `side-session-notes/…/consigne-T2a.md` | **Validé avec corrections E1 à E9** (§9.4) ; lancement permis après la fusion de la PR #5 |
 | 30/10 | **PR #5 (T1), fusion** | SHA de tête `92ecc11915c3ba6ae49a589621a87467ed89f843` ; `review-ok` de la troisième relecture neuve | **`archsec-ok: 92ecc11915c3ba6ae49a589621a87467ed89f843`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/5#issuecomment-6514007221)) : aucun défaut bloquant au sens d'AS-16 ; conditions du §9.3 remplies ; non bloquant : m7 à m15 et [#6](https://github.com/CreatorInstant548/time_switcher/issues/6) (T3), bloquants pour la fin de la phase 0 ; R-ARCH-05 |
 | 30/10 | Consigne T2b (`xtask check`, `slots`, `disk` ; V et S) | `side-session-notes/…/consigne-T2b.md` | **Validé avec corrections F1 à F10** (§9.5) ; `serde_json` accepté pour les outils (AS-17) ; à découper en deux PR ; lancement après la fusion de la PR #10 |
+| 30/10 | **PR #10 (T2a), fusion** | SHA de tête `f14fb969ba0d0751b8780b586121cabad282fe44` ; `review-ok` du relecteur neuf | **`archsec-ok: f14fb969ba0d0751b8780b586121cabad282fe44`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/10#issuecomment-6514394030)) : E1 à E9 appliquées ; SEC0-02, 07, 19, 20 conformes ; non bloquant : `try_from_os_rng`, m3, m4 (→ F4, T2b) |
 
 ### 9.5 Consigne T2b : `xtask check`, `slots` et `disk` (30/10)
 
