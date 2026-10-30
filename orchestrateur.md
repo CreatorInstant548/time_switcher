@@ -43,6 +43,8 @@ L'ancienne session sur le voyage dans le temps (`local_df83bc0e-9984-4caa-9e36-7
 - 30/10 : le responsable développement n'a pas pu lancer de sessions, l'application refusant une session lancée par une autre. Le responsable conception, lui, avait pu en lancer une. Repli : sous-agents isolés en worktree, avec branche et PR. Inscrit dans organisation.md §2 par la PR #3.
 - 30/10 : demande du responsable développement d'inscrire `guard-git.ps1` dans `~/.claude/settings.json`. **Refusée (décidé)** : c'est la configuration personnelle de l'utilisateur, et elle touche tous ses projets. Le crochet ira dans le `.claude/settings.json` du projet, par la PR de T1, avec revue de sécurité.
 
+- 30/10 : T1 (outillage des agents) a été fusionnée (PR #5, 93fc98a) après trois relectures. J'ai coupé court : la troisième relecture était la dernière, et seuls trois cas bloquaient (écriture sur `main`, fuite de secret, faux refus). Les gardes sont actifs. Règles reportées dans CLAUDE.md par la PR #9. T2a (espace de travail Cargo) est en cours.
+
 ## Demandes envoyées
 
 | Date | À | Demande | État |
