@@ -282,13 +282,13 @@ fn pinned_dir(cx: &Ctx) -> Result<PathBuf, String> {
             .replace('\\', "/")
             .eq_ignore_ascii_case(&hooks.to_string_lossy().replace('\\', "/"))
     });
-    // Empreinte du jeu installé, écrite par install-hooks.ps1 ; -Verify recalcule le contenu.
+    // Empreinte du jeu installé, écrite par xtask hooks install ; hooks verify recalcule le contenu.
     let current = sys::read_text(&hooks.join("current.sha256")).unwrap_or_default();
     let hex = name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit());
     if !same_parent || !hex || !current.trim().eq_ignore_ascii_case(&name) {
         return Err(
             "core.hooksPath ne désigne pas la copie épinglée TS_CACHE/hooks/<current.sha256> : \
-             réinstaller les crochets (tools/dev/install-hooks.ps1)"
+             réinstaller les crochets (cargo xtask hooks install)"
                 .to_owned(),
         );
     }
@@ -612,6 +612,21 @@ pub fn profiles(cx: &Ctx) -> Outcome {
 pub fn features(cx: &Ctx) -> Outcome {
     let meta = tri!(cx.meta());
     let mut errors = manifests::check_features(meta);
+    // E7 : ni [patch] ni [replace], à la racine comme dans chaque crate.
+    let root = cx.root.join("Cargo.toml");
+    let manifests = std::iter::once(root).chain(
+        meta.packages
+            .iter()
+            .map(|p| PathBuf::from(&p.manifest_path)),
+    );
+    for m in manifests {
+        let text = tri!(sys::read_text(&m));
+        errors.extend(
+            manifests::patch_sections(&text)
+                .into_iter()
+                .map(|l| format!("{} : {l} interdit (E7)", m.display())),
+        );
+    }
     for host in HOSTS.iter().filter(|h| meta.package(h).is_some()) {
         let args = [
             "tree",

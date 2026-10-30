@@ -2,7 +2,10 @@
 # (Bash, PowerShell, Monitor, mcp__terminal__run_in_terminal). Refuse (code 2) par LISTE BLANCHE :
 # - git : options globales -C et --no-pager seulement ; sous-commandes permises, chacune avec ses règles ;
 #   toute autre sous-commande, tout alias, tout préfixe d'environnement : refus (SEC0-13, SEC0-14) ;
-# - gh : sous-commandes permises, api en lecture seule ; gh pr merge refusé (fusion par merge-pr.ps1, SEC0-15) ;
+# - gh : sous-commandes permises, api en lecture seule ; gh pr merge refusé (fusion par cargo xtask merge, SEC0-15) ;
+# - cargo xtask merge <PR> et cargo xtask hooks install : seulement depuis la racine de la copie principale ;
+#   merge --dry-run partout ; toute autre forme (cargo run -p xtask … merge, binaire xtask, Start-Process,
+#   chaîne) refusée, ainsi que toute variable de cargo ou rustc modifiée à côté (J2, I1, m4) ;
 # - réglages de Claude Code et configuration de Git : pure lecture seulement (SEC0-35) ;
 # - substitution ou évaluation avec un mot d'écriture Git : refus par prudence.
 # Les corps de heredoc cités (<<'EOF') et de here-string @'...'@ sont des données ; bash -c, pwsh -Command
@@ -33,6 +36,8 @@ function Split-Command([string]$Text, [string]$Tool) {
     if ($c -eq "'" -or $c -eq '"') { $q = $c; $has = $true; continue }
     if (" `t`r".Contains($c)) { & $flush; continue }
     if ($c -eq '>') {
+      # Descripteur numérique collé (2>, 1>>, 2>&1) : il fait partie de la redirection, pas de la commande.
+      if ($has -and $sb.ToString() -match '^\d+$') { [void]$sb.Clear(); $has = $false; $braces = 0 }
       & $flush; $r = '>'
       if ($i + 1 -lt $Text.Length -and $Text[$i + 1] -eq '>') { $r = '>>'; $i++ }
       if ($i + 1 -lt $Text.Length -and $Text[$i + 1] -eq '&') { $r = '>&'; $i++ }
@@ -84,6 +89,13 @@ $gitRead = 'status', 'log', 'show', 'diff', 'blame', 'grep', 'describe', 'rev-pa
            'merge-base', 'shortlog', 'rev-list', 'show-ref', 'for-each-ref', 'name-rev', 'check-ignore', 'check-attr',
            'count-objects', 'version', 'help', 'add', 'rm', 'mv', 'restore', 'clean'
 
+# Arguments sans les redirections (>, >>, >&) ni leur cible.
+function Remove-Redirections([string[]]$A) {
+  $out = [Collections.Generic.List[string]]::new()
+  for ($k = 0; $k -lt $A.Count; $k++) { if ($A[$k] -in '>', '>>', '>&') { $k++ } else { $out.Add($A[$k]) } }
+  return , $out.ToArray()
+}
+
 # Analyse d'un appel git à l'index $At du segment ; motif du refus ou $null.
 function Get-GitVerdict([string[]]$T, [int]$At, [string]$Dir) {
   for ($j = 0; $j -lt $At; $j++) {
@@ -102,7 +114,7 @@ function Get-GitVerdict([string[]]$T, [int]$At, [string]$Dir) {
     return "option globale de git « $o » interdite : seules -C <dossier> et --no-pager sont permises (SEC0-14)"
   }
   if ($i -ge $T.Count) { return $null }
-  $sub = $T[$i].ToLowerInvariant(); $a = @($T | Select-Object -Skip ($i + 1))
+  $sub = $T[$i].ToLowerInvariant(); $a = Remove-Redirections @($T | Select-Object -Skip ($i + 1))
   $pos = @($a | Where-Object { -not $_.StartsWith('-') })
   $onMain = { (Get-Branch $Dir) -ieq 'main' }
   $hasEscape = [bool]($a | Where-Object { $_ -in $escape })
@@ -223,7 +235,7 @@ function Get-GitVerdict([string[]]$T, [int]$At, [string]$Dir) {
 
 # Analyse d'un appel gh à l'index $At ; motif du refus ou $null.
 function Get-GhVerdict([string[]]$T, [int]$At) {
-  $a = @($T | Select-Object -Skip ($At + 1)); $words = @()
+  $a = Remove-Redirections @($T | Select-Object -Skip ($At + 1)); $words = @()
   for ($k = 0; $k -lt $a.Count; $k++) {
     if ($a[$k] -in '-R', '--repo') { $k++; continue }
     if (-not $a[$k].StartsWith('-')) { $words += $a[$k] }
@@ -240,11 +252,49 @@ function Get-GhVerdict([string[]]$T, [int]$At) {
       return 'gh pr edit --base est interdit : la base d''une PR reste main'
     }
     if ($sub -in $allowed[$top]) { return $null }
-    if ($top -eq 'pr' -and $sub -eq 'merge') { return 'gh pr merge est interdit : fusion par pwsh tools/dev/merge-pr.ps1 <PR> depuis la copie principale (SEC0-15)' }
+    if ($top -eq 'pr' -and $sub -eq 'merge') { return 'gh pr merge est interdit : fusion par cargo xtask merge <PR> depuis la racine de la copie principale (SEC0-15)' }
     return "gh $top $sub non permis (liste blanche de gh)"
   }
   if ($top -ne 'api') { return "gh $top non permis (alias ou commande hors liste blanche de gh)" }
   return Get-GhApiArgsVerdict $a
+}
+
+# Mots d'un segment hors valeurs de message de git et gh (--title, --body, -m…) : un titre de PR
+# peut citer « cargo xtask merge » sans rien lancer.
+function Get-ActiveWords([string[]]$S) {
+  $head = Get-Head $S
+  $msg = '--body', '--title', '-m', '--message', '-b', '-t'
+  return @(for ($k = 0; $k -lt $S.Count; $k++) {
+    if ($head -in 'git', 'gh' -and $k -gt 0 -and $S[$k - 1] -in $msg) { continue }
+    if ($head -in 'git', 'gh' -and $S[$k] -match '^--(body|title|message)=') { continue }
+    $S[$k]
+  })
+}
+
+# J2, I1, m4 : la fusion (cargo xtask merge <PR>) et l'installation des crochets (cargo xtask hooks
+# install) ne se lancent que sous leur forme exacte, depuis la racine de la copie principale, qui
+# compile le xtask de main ; merge --dry-run (aucune écriture) partout. Dès qu'une commande cite
+# xtask, tout segment qui cite merge ou install doit être une de ces formes exactes, ou une
+# pure lecture (cat, grep, git diff…) : Start-Process, -ArgumentList, iex et les chaînes sont refusés.
+function Get-XtaskVerdict([string[]]$S, [string]$Dir, [bool]$XtaskInCommand) {
+  if (-not $XtaskInCommand -or (Test-ReadOnlySegment $S)) { return $null }
+  $w = Get-ActiveWords $S
+  if (-not ($w | Where-Object { $_ -match '(?i)merge|install' })) { return $null }
+  $S = Remove-Redirections $S   # une sortie redirigée ne change pas ce qui est lancé
+  $merge = $S.Count -in 4, 5 -and $S[0] -ceq 'cargo' -and $S[1] -ceq 'xtask' -and $S[2] -ceq 'merge' -and $S[3] -match '^\d+$' -and
+           ($S.Count -eq 4 -or $S[4] -ceq '--dry-run')
+  $install = $S.Count -eq 4 -and $S[0] -ceq 'cargo' -and $S[1] -ceq 'xtask' -and $S[2] -ceq 'hooks' -and $S[3] -ceq 'install'
+  if (-not $merge -and -not $install) {
+    return 'seules les formes « cargo xtask merge <PR> [--dry-run] » et « cargo xtask hooks install » lancent la fusion ou l''installation des crochets (J2)'
+  }
+  if ($merge -and $S.Count -eq 5) { return $null }
+  $common = "$(& git -C $Dir rev-parse --path-format=absolute --git-common-dir 2>$null)".Trim()
+  $main = if ($LASTEXITCODE -eq 0 -and $common) { Split-Path ([IO.Path]::GetFullPath($common)) -Parent } else { '' }
+  $here = ConvertTo-FullPath $Dir $Dir
+  if (-not $main -or -not $here -or -not $here.Equals($main, [StringComparison]::OrdinalIgnoreCase)) {
+    return "cargo xtask $($S[2]) se lance seulement depuis la racine de la copie principale ($main), pas depuis $Dir (J2)"
+  }
+  return $null
 }
 
 # Arguments de gh api : lecture seule (GET, sans champs), hors chemins d'écriture ; motif du refus ou $null.
@@ -347,8 +397,23 @@ function Get-CommandVerdict([string]$Command, [string]$Tool, [string]$Cwd, [int]
   $v = Get-GhApiLineVerdict $text
   if ($v) { return $v }
 
+  # I1 : dans une commande qui cite cargo ou xtask, aucune variable de cargo ni de rustc n'est
+  # modifiée (alias, dossier cible, compilateur, chaîne d'outils).
+  # Sans xtask dans la commande, CARGO_TARGET_DIR reste permis : c'est le repli des chemins longs de
+  # session-start.ps1 ; un binaire xtask construit ainsi est de toute façon refusé par son empreinte.
+  $toolVars = if ($text -match '(?i)xtask') { '(CARGO_\w*|RUSTC\w*|RUSTUP_\w*|RUSTFLAGS)' }
+              else { '(CARGO_(?!TARGET_DIR\b)\w*|RUSTC\w*|RUSTUP_\w*|RUSTFLAGS)' }
+  if ($text -match '(?i)cargo|xtask' -and (
+      $text -match "(?i)(^|[\s;&|(])(\`$env:|\`$\{env:)?$toolVars\}?\s*=" -or
+      $text -match "(?i)\b(set-item|new-item|si|ni|sv|set-variable)\b[^;|&\n]*env:$toolVars" -or
+      $text -match "(?i)SetEnvironmentVariable\s*\(\s*['`"]$toolVars" -or
+      $text -match "(?i)\b(export|set|setx)\s+(-\w+\s+)*$toolVars")) {
+    return 'variable de cargo, rustc ou rustup modifiée dans une commande qui lance cargo ou xtask : refus (J2, I1)'
+  }
+  $segments = Split-Command $text $Tool
+  $xtaskInCommand = [bool]($segments | ForEach-Object { Get-ActiveWords $_ } | Where-Object { $_ -match '(?i)xtask' })
   $dir = $Cwd
-  foreach ($s in (Split-Command $text $Tool)) {
+  foreach ($s in $segments) {
     $head = Get-Head $s
     # SEC0-35 : un segment qui désigne les réglages doit être une pure lecture, sauf sur claude/outillage-*.
     # Les valeurs de --body, --title et -m de git ou gh sont des messages, pas des cibles.
@@ -391,6 +456,8 @@ function Get-CommandVerdict([string]$Command, [string]$Tool, [string]$Cwd, [int]
         if ($v) { return $v }
       }
     }
+    $v = Get-XtaskVerdict $s $dir $xtaskInCommand
+    if ($v) { return $v }
     for ($k = 0; $k -lt $s.Count; $k++) {
       # git ou gh en position de commande, ou n'importe où hors des commandes dont les arguments sont des données.
       $atCmd = $k -eq 0 -or $s[$k - 1] -in $prefixCmds -or $s[$k - 1] -match '^\w+=' -or $s[$k - 1] -eq 'env'
