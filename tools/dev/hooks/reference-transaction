@@ -1,7 +1,8 @@
 #!/bin/sh
-# reference-transaction : refs/heads/main ne bouge que vers refs/remotes/origin/main, c'est-à-dire par
-# avance rapide après fetch (git pull --ff-only) ou par création à cette valeur. Refus de sa suppression,
-# et de toute mise à jour si origin/main est absente. Couvre ce que pre-commit ne voit pas :
+# reference-transaction : refs/heads/main ne bouge que vers la valeur de main sur le distant origin
+# (git ls-remote, qui fait foi), c'est-à-dire par avance rapide (git pull --ff-only). Refus de sa
+# suppression, de toute mise à jour si refs/remotes/origin/main est absente ou si le distant ne répond
+# pas. Couvre ce que pre-commit ne voit pas :
 # revert, cherry-pick, rebase, am, reset, update-ref, branch -f (SEC0-13).
 # spec: carnet architecture-securite.md SEC0-13
 [ "$1" = "prepared" ] || exit 0
@@ -12,9 +13,13 @@ while read -r old new ref; do
   # Suppression : nouvelle valeur nulle (Git envoie aussi une ancienne valeur nulle, « peu importe »).
   case $new in *[!0]*) ;; *) fail "suppression de main interdite (SEC0-13)." ;; esac
   [ "$old" = "$new" ] && continue   # valeur inchangée
-  upstream=$(git rev-parse -q --verify refs/remotes/origin/main 2>/dev/null) ||
+  git rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1 ||
     fail "main ne bouge pas tant que refs/remotes/origin/main est absente (SEC0-13) : git fetch origin d'abord."
+  # La référence locale origin/main peut être déplacée à la main : seule fait foi la valeur du distant.
+  upstream=$(git ls-remote origin refs/heads/main 2>/dev/null | cut -f 1)
+  [ -n "$upstream" ] ||
+    fail "distant origin injoignable (git ls-remote) : main ne bouge pas sans vérification (SEC0-13)."
   [ "$new" = "$upstream" ] ||
-    fail "main ne bouge que vers origin/main, par git pull --ff-only (SEC0-13) ; tout autre changement passe par une branche et une PR."
+    fail "main ne bouge que vers le main du distant, par git pull --ff-only (SEC0-13) ; tout autre changement passe par une branche et une PR."
 done
 exit 0

@@ -23,7 +23,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       fail "poussée forcée vers $remote_ref interdite (SEC0-13) : l'historique distant serait réécrit."
     range="$remote_sha..$local_sha"
   fi
-  gitleaks_run --log-opts="$range" ||
+  # --text : un attribut -diff ou binary ne masque pas le contenu ; ni diff externe ni textconv (I3 bis).
+  gitleaks_run git --log-opts="--text --no-ext-diff --no-textconv $range" ||
     fail "gitleaks a trouvé un secret probable dans $range (SEC0-08). Il est tenu pour fuité s'il a quitté le poste."
 done
 exit 0

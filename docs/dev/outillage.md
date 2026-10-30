@@ -38,18 +38,20 @@ Les crochets vivent dans `tools/dev/hooks/`. Ils s'exécutent depuis une **copie
 
 | Crochet | Contrôles |
 |---|---|
-| `pre-commit` | Refus de **tout commit sur `main`**, sans variable d'exception (SEC0-13).<br>Refus d'un fichier de plus de 5 Mo (SEC0-11).<br>Refus, hors LFS, des extensions `.glb .gltf .png .jpg .ogg .wav .mp3 .otf .ttf .onnx .gguf .pt .safetensors .parquet .sqlite .db .blend .psd .fbx .zip .7z`. Exception : `**/tests/fixtures/**`, jusqu'à 256 Ko.<br>`gitleaks` sur l'index, sur toutes les branches, `pilotage` comprise (SEC0-08). |
+| `pre-commit` | Refus de **tout commit sur `main`**, sans variable d'exception (SEC0-13).<br>Refus d'un fichier de plus de 5 Mo (SEC0-11).<br>Refus, hors LFS, des extensions `.glb .gltf .png .jpg .ogg .wav .mp3 .otf .ttf .onnx .gguf .pt .safetensors .parquet .sqlite .db .blend .psd .fbx .zip .7z`. Exception : `**/tests/fixtures/**`, jusqu'à 256 Ko.<br>`gitleaks dir` sur une **extraction des fichiers indexés** (ajoutés ou modifiés). Elle est faite par `git checkout-index` dans `TS_CACHE\tmp`, puis supprimée. Un attribut `-diff`, `binary` ou `textconv` ne masque donc rien (I3 bis). Toutes les branches sont concernées, `pilotage` comprise (SEC0-08). |
 | `pre-merge-commit` | Mêmes contrôles, pour un `git merge` qui crée un commit de fusion. |
-| `reference-transaction` | `refs/heads/main` ne prend qu'une valeur : celle de `refs/remotes/origin/main`. C'est le cas de l'avance rapide de `git pull --ff-only`, ou d'une création à cette valeur. Sont refusés :<br>- la **suppression** de `main` ;<br>- toute mise à jour quand `origin/main` est absente ;<br>- tout autre déplacement : `revert`, `cherry-pick`, `rebase`, `am`, `reset`, `update-ref`, `branch -f`, `merge`.<br>Ce crochet couvre ce que `pre-commit` ne voit pas (I2). Attention : un `reset --hard` refusé a déjà modifié l'index et les fichiers. On les rétablit par `git reset --hard`, sans argument. |
-| `pre-push` | Refus de pousser vers `main` ; refus d'une poussée forcée (historique distant non ancêtre) ; refus de supprimer `pilotage`.<br>`gitleaks` sur la plage poussée. |
+| `reference-transaction` | `refs/heads/main` ne prend qu'une valeur : celle de `main` **sur le distant**, lue par `git ls-remote origin refs/heads/main`. C'est le cas de l'avance rapide de `git pull --ff-only`. La référence locale `refs/remotes/origin/main` ne fait pas foi, puisqu'elle peut être déplacée à la main (I2 bis). Sont refusés :<br>- la **suppression** de `main` ;<br>- toute mise à jour quand `origin/main` est absente, ou quand **le distant ne répond pas** ;<br>- tout autre déplacement : `revert`, `cherry-pick`, `rebase`, `am`, `reset`, `update-ref`, `branch -f`, `merge`.<br>L'appel réseau n'a lieu que lorsque `main` bouge. Attention : un `reset --hard` refusé a déjà modifié l'index et les fichiers. On les rétablit par `git reset --hard`, sans argument. |
+| `pre-push` | Refus de pousser vers `main` ; refus d'une poussée forcée (historique distant non ancêtre) ; refus de supprimer `pilotage`.<br>`gitleaks git` sur la plage poussée, avec `--text --no-ext-diff --no-textconv` (I3 bis). |
 | `commit-msg` | Format `type(portée): description`, avec un type parmi `feat fix refactor perf test docs build ci chore` (A31). Restent permis : `Merge …`, `Revert "…"`, `fixup!`, `squash!` et `amend!`. |
+
+Les crochets vident, avant tout contrôle, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, `GIT_EXTERNAL_DIFF`, `GITLEAKS_CONFIG` et `GITLEAKS_CONFIG_TOML`. Une option `git -c` ou une variable d'environnement ne change donc pas leurs contrôles.
 
 **`gitleaks`** :
 - il est appelé par son chemin épinglé dans `tools/dev/tools.lock`, et son SHA-256 est **vérifié avant chaque usage** : s'il manque ou si l'empreinte diffère, le crochet refuse (SEC0-06) ;
-- il n'utilise que la **configuration épinglée** du jeu de crochets, `tools/dev/hooks/gitleaks.toml`, qui étend les règles par défaut (I3). Les options sont `--config`, `--gitleaks-ignore-path` vers le jeu de crochets, et `--ignore-gitleaks-allow` ;
-- `GITLEAKS_CONFIG` et `GITLEAKS_CONFIG_TOML` sont vidées avant l'appel ;
+- il n'utilise que la **configuration épinglée** du jeu de crochets, `tools/dev/hooks/gitleaks.toml`, qui étend les règles par défaut. Les options sont `--config`, `--gitleaks-ignore-path` vers le jeu de crochets, et `--ignore-gitleaks-allow` ;
 - un `.gitleaksignore` à la racine de la copie de travail est **refusé**, car gitleaks 8.30.1 le lit malgré `--gitleaks-ignore-path` (constaté) ;
-- une exception passe par une PR qui modifie `gitleaks.toml`. Le `.gitleaks.toml` du dépôt et la CI viendront avec T13.
+- une exception passe par une PR qui modifie `gitleaks.toml` ;
+- **consigne pour T13** : la CI doit lancer gitleaks de la même façon, c'est-à-dire avec `--text` ou sur des fichiers extraits, et avec la configuration relue du dépôt seulement.
 
 **Installation (provisoire, remplacée en T3 par `cargo xtask hooks install`)**, depuis n'importe quelle copie de travail :
 
@@ -64,7 +66,7 @@ L'installation fait les opérations suivantes :
 - elle règle `core.hooksPath` dans `.git/config`, commun à toutes les copies de travail ;
 - elle écrit l'empreinte attendue dans `TS_CACHE\hooks\current.sha256`.
 
-`-Verify` contrôle l'empreinte du jeu installé. Il lit aussi la valeur **effective** de `core.hooksPath` dans **chaque** copie de travail, avec `git config --show-origin --get-all`, et refuse toute surcharge hors de la configuration commune : `config.worktree`, `includeIf`, configuration globale (m5).
+`-Verify` contrôle l'empreinte du jeu installé. Il lit aussi la valeur **effective** de `core.hooksPath` dans **chaque** copie de travail, avec `git config --show-origin --get-all`, et refuse toute surcharge hors de la configuration commune : `config.worktree`, `includeIf`, configuration globale.
 
 L'empreinte du jeu est le SHA-256 de la liste `nom NUL sha256 LF` des fichiers, triée par nom en ordre ordinal. Toute modification de `tools/dev/hooks/` ou de `tools.lock` demande de réinstaller.
 
@@ -80,7 +82,7 @@ Ce format a été vérifié le 30/10 par `claude -p` (Claude Code 2.1.302).
 
 ### 3.1 `guard-main.ps1` (`Edit|Write|NotebookEdit`)
 
-Le chemin est d'abord **rendu canonique** (m2) :
+Le chemin est d'abord **rendu canonique** :
 - les variables du dossier personnel sont développées ;
 - les préfixes `\\?\` et `\\.\` sont retirés ;
 - les flux NTFS sont retirés (`::$DATA`, et tout `:` après la lettre de lecteur) ;
@@ -90,69 +92,115 @@ Le chemin est d'abord **rendu canonique** (m2) :
 Un partage UNC vers l'hôte local (`\\localhost\`, `\\127.0.0.1\`, nom de la machine) ou un partage administratif (`C$`) est refusé, tout comme un nom 8.3 irrésoluble.
 
 Il refuse ensuite :
-- **SEC0-35** : `.claude/settings.json` et `.claude/settings.local.json` de toute copie de travail, sauf sur une branche `claude/outillage-*`. Les **réglages utilisateur** (`~/.claude/settings*.json`) sont refusés **toujours**, même sur une telle branche (m4). En cas d'erreur, cette partie **refuse** ;
+- **SEC0-35** : `.claude/settings.json` et `.claude/settings.local.json` de toute copie de travail, sauf sur une branche `claude/outillage-*`. Les **réglages utilisateur** (`~/.claude/settings*.json`) sont refusés **toujours**, même sur une telle branche. En cas d'erreur, cette partie **refuse** ;
 - **A19** : l'écriture dans la copie principale, hors de `.claude/worktrees/`. C'est un garde-fou de commodité : en cas d'erreur, cette partie laisse passer, avec un avertissement.
 
-### 3.2 `guard-git.ps1`
+### 3.2 `guard-git.ps1` : liste blanche
 
-Il couvre tous les outils qui lancent une commande (I1) : `Bash`, `PowerShell`, `Monitor` et `mcp__terminal__run_in_terminal`. Il lit le champ `tool_input.command` ; pour `run_in_terminal`, il lit aussi le `cwd` de l'appel.
+Il couvre tous les outils qui lancent une commande : `Bash`, `PowerShell`, `Monitor` et `mcp__terminal__run_in_terminal`. Il lit le champ `tool_input.command` ; pour `run_in_terminal`, il lit aussi le `cwd` de l'appel.
 - Un `Monitor` sur WebSocket (`ws`, sans commande) est permis.
 - Pour tout autre appel de ces outils, un champ `command` absent ou illisible entraîne un refus.
 
-Il refuse :
-- **Commits et poussées** :
-  - `git commit` sur `main`, y compris par `-C`, `cd` ou le `cwd` de l'appel ;
-  - `git push` vers `main` : `main`, `HEAD:main`, `heads/main`, `refs/heads/main`, `refs/heads//main`, `:main`, ou `HEAD` et poussée sans destination depuis `main` ;
-  - une destination préfixée par `+`, `--force`, `-f` (y compris groupé, comme `-uf`), `--force-with-lease`, `--force-if-includes` et leurs abréviations ;
-  - `--all`, `--mirror`, et la suppression de `pilotage` ;
-  - `send-pack`, `http-push` et `remote-*`, qui poussent sans `pre-push`.
-- **Configuration injectée** (B1) :
-  - `--no-verify` et ses abréviations, **n'importe où** dans le segment git, ainsi que `-n` groupé dans `commit` ;
-  - `-c` et `--config-env` sur `alias.*`, `include.*`, `includeIf.*`, `core.hooksPath`, `remote.*.push` et `remote.*.mirror` ;
-  - `git config` en écriture sur ces clés ;
-  - toute mention de `GIT_CONFIG*` dans une commande qui contient `git` ;
-  - `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` ou `GIT_INDEX_FILE` avec une écriture Git ;
-  - toute écriture, hors de `git`, d'un mot qui désigne `hooksPath`, `.git/config`, `config.worktree`, `.git/hooks` ou `.gitconfig`.
-- **`main` sans commit** (I2) : sur `main`, `revert`, `cherry-pick`, `rebase`, `am`, un `reset` vers un commit, ainsi que `merge` et `pull` sans `--ff-only`. Restent permis `--abort` et `--quit`, `git reset` sans argument, et `git pull --ff-only`.
-- **Autres écritures sur `main`** : `git update-ref` sur `main` ou `--stdin`, `git branch -f/-d/-D/-m/-c main`, `git checkout -B main` et `git switch -C main`.
-- **GitHub** (I4) :
-  - `gh pr merge` sous toutes ses formes ;
-  - `gh api` en écriture : `-X` ou `--method` autre que `GET`, `-f`, `-F`, `--field`, `--raw-field`, `--input` ;
-  - `gh api` sur `contents/`, `merges`, `pulls/*/merge`, `git/` et `graphql`.
-- **Git caché** (m1). Si la commande contient une substitution ou une évaluation, **et** l'un des mots `push`, `commit`, `update-ref`, `merge`, `reset`, `rebase`, `config` ou `send-pack`, elle est refusée par prudence. Formes de substitution : `$(`, accent grave en Bash, `$'`, `${`, `iex`, `Invoke-Expression`, `cmd /c`, `^` avec `cmd`, `& (…)`, `& $x`, `$x` en tête de commande.
-  - **Conséquence** : un message de commit se passe par fichier (`git commit -F <fichier>`), jamais par `-m "$(cat …)"`.
-- **Réglages de Claude Code** (SEC0-35, m3) : toute commande qui désigne un fichier de réglages est refusée. Sont visés `settings.json`, `settings.local.json`, un motif comme `setting[s].json` ou `sett*`, un nom 8.3 `SETTIN~1`, ou le dossier `.claude` lui-même.
-  - Seule exception : une **pure lecture**, c'est-à-dire un segment sans redirection ni `--output`, dont la commande de tête est l'une des suivantes : `cat`, `type`, `Get-Content`, `gc`, `less`, `more`, `head`, `tail`, `grep`, `rg`, `Select-String`, `ls`, `dir`, `Get-ChildItem`, `Test-Path`, `Get-FileHash`, `sha256sum`, `wc`, `cd`, ou `git diff`, `git show`, `git log`, `git status`.
-  - Le rattachement d'une commande à un fichier se fait **par segment**.
-  - `$HOME`, `${HOME}`, `~`, `$env:USERPROFILE` et `%USERPROFILE%` sont développés. Une autre variable dans le chemin vaut un refus.
-  - `disableAllHooks` est cherché aussi dans le texte débarrassé des guillemets, des `+` et des barres obliques inverses.
-  - Seule exception : une copie de travail sur une branche `claude/outillage-*`, jamais pour les réglages utilisateur.
+**`git` : liste blanche** (décidé à la deuxième relecture : une liste noire ne se ferme jamais).
+- **Options globales** : seules `-C <dossier>` et `--no-pager` sont permises (ainsi que `--version` et `--help`). Tout le reste est refusé : `-c`, `--config-env`, `--git-dir`, `--work-tree`, `--attr-source`, `--exec-path`, ou une option inconnue.
+- **Préfixe d'environnement** sur un appel `git` (`HOME=`, `XDG_CONFIG_HOME=`, `GIT_*=`, `env …`) : refus.
+- **Variable d'environnement modifiée** dans une commande qui contient `git` : refus. Sont visés `export X=`, `Set-Item Env:`, `$env:X =`, `[Environment]::SetEnvironmentVariable`, `GIT_CONFIG*`, et aussi un alias ou une fonction définis dans la même commande.
+- **Sous-commandes permises**, avec leurs règles :
 
-Chaque commande est lue deux fois :
-- une lecture stricte, qui respecte guillemets et échappements de Bash ou de PowerShell, et découpe sur `&&`, `||`, `;`, `|`, `&`, les parenthèses et les fins de ligne ;
-- une lecture naïve, qui ignore les guillemets, pour `bash -c "…"` et `pwsh -Command "…"`.
+| Sous-commande | Règle |
+|---|---|
+| `status`, `log`, `show`, `diff`, `blame`, `grep`, `describe`, `rev-parse`, `ls-files`, `ls-remote`, `cat-file`, `merge-base`, `shortlog`, `rev-list`, `show-ref`, `for-each-ref`, `name-rev`, `check-ignore`, `check-attr`, `count-objects`, `version`, `help` | Lecture ; `--output` refusé partout |
+| `add`, `rm`, `mv`, `restore`, `clean` | Permis ; `.claude` reste soumis à SEC0-35 |
+| `commit` | Jamais `-n` ni `--no-verify` ; jamais sur `main`. Un message par `-F <fichier>`, `-F -` avec heredoc cité, ou `-m` sans substitution |
+| `switch`, `checkout` | Sans `-b`, `-B`, `-c`, `-C` ni `--force-create` vers `main` |
+| `branch` | Aucune création, aucun `-f`, `-d`, `-m` ni `-c` sur `main` ; les listes restent permises |
+| `fetch` | Un distant au plus, sans refspec explicite : `refs/remotes/` ne bouge que par `git fetch <distant>` |
+| `pull` | Sur `main`, seulement avec `--ff-only` ; ailleurs, `--rebase` est permis. Jamais de refspec avec `:` ni `refs/` |
+| `push` | Règles de SEC0-14 (ci-dessous). Refus aussi vers `refs/remotes/` et vers le dépôt local `.` |
+| `merge` | Sur `main`, seulement `--ff-only origin/main`, `--abort` et `--quit` |
+| `rebase`, `revert`, `cherry-pick` | Hors `main`, ou avec `--abort`/`--quit` ; `rebase` qui désigne `main` refusé |
+| `reset` | Sans cible, ou vers `HEAD` ; sur `main`, aussi `--hard` ou `--keep` vers `origin/main`, valeur contrôlée par `reference-transaction` |
+| `stash` | `push`, `list`, `apply`, `drop` et `show` (pas `pop`, puisque la pile est partagée entre sessions) |
+| `worktree` | `list`, `add`, `remove` et `prune` ; jamais `-B`, ni `-b main` |
+| `remote` | Seulement `git remote` et `git remote -v` |
+| `config` | Lecture seule : `--get*`, `--list` |
+| `tag` | `git tag` et `git tag -l` |
+| `lfs` | Tout, sauf `install`, `uninstall` et `update`, qui touchent aux crochets |
 
-Un refus de l'une suffit, et une erreur interne vaut refus.
+Toute **autre sous-commande, et tout alias**, est refusée. Sont ainsi fermés : `update-ref`, `send-pack`, `http-push`, `remote-*`, `config` en écriture, `stash pop`, `gc`, `reflog expire`, `notes`, `apply`, `am`.
+
+**Règles de `push`** :
+- refus vers `main` : `main`, `HEAD:main`, `heads/main`, `refs/heads/main`, `refs/heads//main`, `:main`, ou `HEAD` et poussée sans destination depuis `main` ;
+- refus d'une destination préfixée par `+`, de `--force`, `-f` (y compris groupé), `--force-with-lease`, `--force-if-includes` et leurs abréviations ;
+- refus de `--all`, de `--mirror` et de la suppression de `pilotage`.
+
+**`gh` : liste blanche.** Les options `-R`/`--repo` sont sautées avec leur valeur, où qu'elles soient. Sont permis :
+- `pr create|view|list|diff|checks|comment|status` ;
+- `issue create|view|list|comment|edit` ;
+- `label list|create` ;
+- `run list|view|watch` ;
+- `repo view` ;
+- `auth status` ;
+- `version` et `help` ;
+- `api` en lecture seule : ni `-X`/`--method` autre que `GET`, ni `-f`, `-F`, `--field`, `--raw-field`, `--input`, ni `graphql`, `contents/`, `merges`, `pulls/*/merge` ou `git/`.
+
+Tout le reste est refusé, dont tout alias de `gh` : `pr merge`, `pr close`, `pr review`, `alias set|import`, `extension`, `secret`, `repo edit|delete`, `workflow`.
+
+**`gh pr merge` est refusé : la fusion passe par `pwsh tools/dev/merge-pr.ps1 <PR>`**, depuis la copie principale (§3.3). Le message de refus le dit.
+
+**Git caché.** Si la commande contient une substitution ou une évaluation, **et** l'un des mots `push`, `commit`, `update-ref`, `merge`, `reset`, `rebase`, `config` ou `send-pack`, elle est refusée par prudence.
+- Formes de substitution : `$(`, accent grave en Bash, `$'`, `${`, `iex`, `Invoke-Expression`, `cmd /c`, `^` avec `cmd`, `& (…)`, `& $x`, `$x` en tête de commande.
+- Seules `$(git rev-parse …)` et `$(pwd)` sont permises, par exemple `cd "$(git rev-parse --show-toplevel)"`.
+- `pwsh -EncodedCommand` est refusé.
+- Le message de refus propose la forme permise : `git commit -F <fichier>` et `--body-file`.
+
+**Données, pas commandes.**
+- Le corps d'un heredoc à délimiteur cité (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) et celui d'une here-string littérale PowerShell (`@'…'@`) ne sont pas analysés.
+- La valeur de `--body`, `--title`, `-m` ou `--message` d'un appel `git` ou `gh` ne déclenche pas la règle des réglages.
+- Un mot `git` dans les arguments d'une commande de données, comme `echo`, `printf` ou `grep`, n'est pas un appel.
+- `bash -c`, `sh -c`, `pwsh -Command`, `cmd /c` et `eval` sont **relus récursivement**, jusqu'à trois niveaux.
+
+**Réglages de Claude Code et configuration de Git** (SEC0-35) :
+- toute commande qui désigne un fichier de réglages est refusée. Sont visés `settings.json`, `settings.local.json`, un motif comme `setting[s].json` ou `sett*`, `SETTIN~1`, ou le dossier `.claude` ;
+- de même pour la configuration de Git : `.git/config` (y compris `.git/./config`), `config.worktree`, `.git/info/attributes`, `.git/hooks`, `~/.gitconfig`, `~/.config/git/`, `hooksPath` ;
+- seule exception, une **pure lecture** : un segment sans redirection ni `--output`, dont la commande de tête est l'une des suivantes : `cat`, `type`, `Get-Content`, `gc`, `less`, `more`, `head`, `tail`, `grep`, `rg`, `Select-String`, `ls`, `dir`, `Get-ChildItem`, `Test-Path`, `Get-FileHash`, `sha256sum`, `wc`, `cd`, ou `git diff|show|log|status|blame|ls-files|grep|cat-file` ;
+- `$HOME`, `${HOME}`, `~`, `$env:USERPROFILE` et `%USERPROFILE%` sont développés. Une autre variable dans le chemin vaut un refus ;
+- `disableAllHooks` est cherché aussi dans le texte débarrassé des guillemets, des `+` et des barres obliques inverses ;
+- pour les réglages de Claude Code, une copie de travail sur une branche `claude/outillage-*` est exceptée, jamais pour les réglages utilisateur.
+
+En cas d'erreur interne, la commande est refusée.
 
 ### 3.3 Fusion : `tools/dev/merge-pr.ps1 <PR>` (provisoire)
 
-**Provisoire, à supprimer par T3**, qui le remplace par `cargo xtask merge` : il ne doit rester qu'un seul chemin de fusion. C'est un chemin sensible. C'est la seule fusion permise par le garde, qui refuse `gh pr merge`. Dans l'ordre :
+**Provisoire, à supprimer par T3**, qui le remplace par `cargo xtask merge` : il ne doit rester qu'un seul chemin de fusion. C'est un chemin sensible, validé par archi-sécu, et la seule fusion permise par le garde. Dans l'ordre :
 1. Il est lancé depuis la **copie principale**, c'est-à-dire le script de la copie principale, jamais une copie modifiée dans un worktree. La copie principale doit être propre et sur `main` ; elle est mise à jour par `git pull --ff-only`.
-2. `gh pr view` : PR ouverte, base `main`, hors brouillon, `MERGEABLE`, et en retard de 0 commit sur `main`.
-3. **Chemin sensible** : la PR doit porter les commentaires `review-ok: <sha de tête>` **et** `archsec-ok: <sha de tête>`. Sont sensibles :
+2. **Crochets** : `install-hooks.ps1 -Verify` doit réussir. Il vérifie l'empreinte du jeu et la valeur effective dans chaque copie de travail (SEC0-12, I6). Le contrôle de l'origine (`origin-check`, SEC0-17) reste à T3.
+3. `gh pr view` : PR ouverte, base `main`, hors brouillon, `MERGEABLE`, et en retard de 0 commit sur `main`.
+4. **Liste complète des fichiers**, par `gh pr diff --name-only` : leur nombre doit égaler `changedFiles`, sinon la fusion est refusée. *Pourquoi : `gh pr view --json files` s'arrête à 100 fichiers (I5).*
+5. **Chemin sensible** : la PR doit porter les commentaires `review-ok: <sha de tête>` **et** `archsec-ok: <sha de tête>`. Sont sensibles :
    - `.claude/`, `.github/`, `.cargo/`, `tools/`, `fuzz/`, `deny.toml`, `.gitleaks.toml`, `rust-toolchain.toml` ;
    - les crates `ts_persist`, `ts_net`, `ts_pilot`, `ts_client_native`, `ts_accounts`, `ts_admin`, `ts_protocol` et `ts_view` ;
-   - un `Cargo.toml` dont le diff mentionne `[features]` ou `[profile…]`.
-4. **`ci-ok`** vert sur le SHA de tête, **exigé dès que `.github/workflows/ci.yml` existe sur `origin/main`**. Avant cela, le script avertit et rappelle de noter la sortie des vérifications dans le carnet du développement. Un `ci-ok` présent et rouge refuse toujours.
-5. `gh pr merge <PR> --squash --delete-branch --match-head-commit <sha>`, puis `git pull --ff-only`.
+   - un `Cargo.toml` dont le diff mentionne `[features]` ou `[profile…]` ;
+   - un `Cargo.lock` dont le diff ajoute une ligne `name = "…"`, c'est-à-dire une crate.
+6. **`ci-ok`** vert sur le SHA de tête, **exigé dès que `.github/workflows/ci.yml` existe sur `origin/main`**. Avant cela, le script avertit et rappelle de noter la sortie des vérifications dans le carnet du développement. Un `ci-ok` présent et rouge refuse toujours.
+7. `gh pr merge <PR> --squash --delete-branch --match-head-commit <sha>`, puis `git pull --ff-only`.
 
 `-DryRun` fait tous les contrôles en lecture, sans fusion ; il est permis depuis un worktree.
 
-### 3.4 Coût, limites et risque résiduel
+### 3.4 Coût, limites et risques connus
 
 **Coût** : chaque appel d'un outil de commande lance `pwsh`, soit environ 1,2 à 1,8 s, dont 0,8 s pour le seul démarrage de `pwsh`. **Reporté à T3 (décidé)** : un garde compilé dans `xtask` le ramènera à quelques dizaines de millisecondes.
 
-**Ce que les garde-fous n'attrapent pas** : scripts écrits puis exécutés, interpréteurs qui construisent un nom de fichier par morceaux, alias déjà présents dans une configuration globale. Ils protègent de l'erreur et de l'injection simple, pas d'une session décidée à contourner.
+**Ce que les garde-fous n'attrapent pas** :
+- un script écrit puis exécuté (`bash x.sh`, `pwsh -File x.ps1`) ;
+- un interpréteur qui construit un nom de fichier par morceaux.
+
+Un alias de Git défini ailleurs, par exemple dans un fichier désigné par `XDG_CONFIG_HOME`, passe toujours **au niveau de Git** : `--no-verify` saute `pre-push` par construction. La liste blanche de `guard-git` le refuse pourtant, puisque tout nom hors liste est refusé.
+
+**Risques connus**, relevés à la deuxième relecture et non corrigés (décidé) :
+- **m4** : le jeu épinglé `TS_CACHE\hooks\` n'est protégé en écriture que par l'attribut lecture seule. Une modification est détectée par `-Verify`, que lance `merge-pr.ps1` avant chaque fusion.
+- **m5** : une course entre trois sessions dans `Remove-OrphanLease` peut faire croire à deux sessions qu'elles tiennent le même bail. La fenêtre est de l'ordre de la milliseconde. Parade possible : un verrou `target\slots.lock` ouvert avec `FileShare.None` (T3).
+- **m6** : `.gitignore` restreint `id_*` de SEC0-09 à `id_rsa*`, `id_dsa*`, `id_ecdsa*` et `id_ed25519*`, puisque `id_*` attraperait des sources légitimes. Cet écart est à noter au carnet d'archi-sécu.
 
 **Risque résiduel (R-ARCH-04)** : une session peut modifier le `.claude/settings.json` de son propre worktree, par un moyen que le crochet ne voit pas, et retirer ainsi ses garde-fous. Restent alors :
 - les crochets Git épinglés hors du dépôt (`pre-commit`, `reference-transaction`, `pre-push`) ;

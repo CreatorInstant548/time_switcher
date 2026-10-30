@@ -3,6 +3,8 @@
 # Lancé depuis la copie principale, propre et sur main ; vérifie la PR (ouverte, base main, fusionnable,
 # à jour de main), les approbations liées au SHA de tête pour un chemin sensible, ci-ok, puis fusionne par
 # squash avec --match-head-commit et met la copie principale à jour par git pull --ff-only.
+# Revérifie l'empreinte des crochets installés (install-hooks.ps1 -Verify, SEC0-12) avant toute fusion.
+# Le contrôle de l'origine des commits de main (origin-check, SEC0-17) reste à T3.
 # -DryRun : tous les contrôles en lecture, sans fusion ni mise à jour (permis depuis un worktree).
 # spec: carnet architecture-securite.md SEC0-15 (révisé), §5 (chemins sensibles), §9.3
 param([Parameter(Mandatory)][int]$Pr, [switch]$DryRun)
@@ -23,9 +25,11 @@ if (-not $DryRun -and -not $here.Equals($main, [StringComparison]::OrdinalIgnore
 if ("$(Invoke-Git branch --show-current)".Trim() -ne 'main') { Fail 'la copie principale n''est pas sur main.' }
 if (Invoke-Git status --porcelain) { Fail 'la copie principale n''est pas propre.' }
 if (-not $DryRun) { Invoke-Git pull --ff-only --quiet | Out-Null } else { Invoke-Git fetch --quiet origin | Out-Null }
+$hooks = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'install-hooks.ps1') -Repo $main -Verify 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { Fail "crochets non conformes (install-hooks.ps1 -Verify) : $($hooks.Trim())" }
 
 # 2. La PR.
-$view = & gh pr view $Pr --json state,baseRefName,headRefOid,isDraft,mergeable,files,comments,url 2>&1
+$view = & gh pr view $Pr --json state,baseRefName,headRefOid,isDraft,mergeable,changedFiles,comments,url 2>&1
 if ($LASTEXITCODE -ne 0) { Fail "gh pr view $Pr : $view" }
 $p = $view | ConvertFrom-Json
 $sha = $p.headRefOid
@@ -37,13 +41,20 @@ $behind = & gh api "repos/{owner}/{repo}/compare/main...$sha" --jq .behind_by 2>
 if ($LASTEXITCODE -ne 0) { Fail "comparaison avec main : $behind" }
 if ([int]"$behind".Trim() -ne 0) { Fail "branche en retard de $behind commit(s) sur main : la mettre à jour." }
 
-# 3. Chemin sensible : review-ok et archsec-ok sur le SHA de tête.
-$paths = @($p.files | ForEach-Object path)
+# 3. Chemin sensible : review-ok et archsec-ok sur le SHA de tête. La liste complète des fichiers vient de
+# gh pr diff --name-only (gh pr view --json files s'arrête à 100) et doit compter changedFiles fichiers.
+$paths = @(& gh pr diff $Pr --name-only 2>&1 | Where-Object { $_ })
+if ($LASTEXITCODE -ne 0) { Fail "gh pr diff --name-only : $paths" }
+if ($paths.Count -ne [int]$p.changedFiles) { Fail "liste des fichiers incomplète ($($paths.Count) lus, $($p.changedFiles) annoncés)." }
 $isSensitive = [bool]($paths | Where-Object { $_ -match $sensitive })
-$cargo = @($paths | Where-Object { $_ -match '(^|/)Cargo\.toml$' })
-if (-not $isSensitive -and $cargo) {   # [features] et [profile.*] : tout diff de Cargo.toml qui les mentionne
+if (-not $isSensitive -and ($paths | Where-Object { $_ -match '(^|/)Cargo\.(toml|lock)$' })) {
   $diff = & gh pr diff $Pr 2>&1 | Out-String
-  if ($diff -match '(?m)^[ +\-@].*\[(features|profile[.\]])') { $isSensitive = $true }
+  if ($LASTEXITCODE -ne 0) { Fail "gh pr diff : $diff" }
+  foreach ($chunk in ($diff -split '(?m)^(?=diff --git )')) {
+    # [features] et [profile.*] d'un Cargo.toml ; crate ajoutée dans Cargo.lock.
+    if ($chunk -match '^diff --git a/\S*Cargo\.toml ' -and $chunk -match '(?m)^[ +\-@].*\[(features|profile[.\]])') { $isSensitive = $true }
+    if ($chunk -match '^diff --git a/\S*Cargo\.lock ' -and $chunk -match '(?m)^\+name = "') { $isSensitive = $true }
+  }
 }
 if ($isSensitive) {
   $bodies = @($p.comments | ForEach-Object body)

@@ -75,7 +75,23 @@ try {
   finally { Remove-Item Env:GITLEAKS_CONFIG_TOML, Env:GITLEAKS_CONFIG }
   Add 'config.txt' (Text "token = `"$fake`" # gitleaks:allow`n")
   Expect 'secret refusé malgré gitleaks:allow' $true { G commit -m 'chore(essai): secret' } 'gitleaks a trouv'
-  G rm -q --cached config.txt | Out-Null; Remove-Item (Join-Path $repo 'config.txt')
+  # I3 bis : un attribut -diff ou binary ne rend pas gitleaks aveugle.
+  Add 'config.txt' (Text "token = `"$fake`"`n")
+  Add '.gitattributes' (Text "config.txt -diff`n")
+  Expect 'secret refusé malgré .gitattributes -diff (pre-commit)' $true { G commit -m 'chore(essai): secret -diff' } 'gitleaks a trouv'
+  G rm -q --cached .gitattributes | Out-Null; Remove-Item (Join-Path $repo '.gitattributes')
+  $info = Join-Path "$(G rev-parse --git-common-dir)".Trim() 'info'
+  if (-not [IO.Path]::IsPathRooted($info)) { $info = Join-Path $repo $info }
+  New-Item -ItemType Directory -Force $info | Out-Null; Set-Content (Join-Path $info 'attributes') 'config.txt binary'
+  Expect 'secret refusé malgré .git/info/attributes binary (pre-commit)' $true { G commit -m 'chore(essai): secret binary' } 'gitleaks a trouv'
+  # pre-push : commit fait sans crochet (dossier de crochets vide), puis poussée avec les crochets épinglés.
+  $none = Join-Path $tmp 'sans-crochets'; New-Item -ItemType Directory -Force $none | Out-Null
+  G switch -q -c claude/cache | Out-Null
+  & git -C $repo -c "core.hooksPath=$none" commit -q -m 'chore(essai): secret caché' 2>&1 | Out-Null
+  Expect 'secret refusé malgré binary (pre-push, --text)' $true { G push origin claude/cache } 'gitleaks a trouv'
+  Remove-Item (Join-Path $info 'attributes')
+  G switch -q claude/essai | Out-Null; G branch -q -D claude/cache | Out-Null
+  G rm -q --cached config.txt 2>&1 | Out-Null; Remove-Item (Join-Path $repo 'config.txt') -ErrorAction SilentlyContinue
 
   Expect 'poussée d''une branche de tâche acceptée' $false { G push -q origin claude/essai }
   Expect 'poussée vers main refusée' $true { G push origin HEAD:main } 'vers main interdite'
@@ -89,16 +105,16 @@ try {
   $base = MainSha
   Expect 'fusion sur main refusée' $true { G merge --no-ff -m 'Merge claude/autre' claude/autre } 'SEC0-13'
   G merge --abort 2>&1 | Out-Null
-  Expect 'avance rapide de main hors origin/main refusée' $true { G merge --ff-only claude/autre } 'origin/main'
-  Expect 'git reset --hard vers une autre branche refusé' $true { G reset --hard claude/autre } 'origin/main'
+  Expect 'avance rapide de main hors origin/main refusée' $true { G merge --ff-only claude/autre } 'main du distant'
+  Expect 'git reset --hard vers une autre branche refusé' $true { G reset --hard claude/autre } 'main du distant'
   G reset -q --hard | Out-Null   # le reset refusé a déjà touché l'index et les fichiers : on les rétablit
-  Expect 'git cherry-pick sur main refusé' $true { G cherry-pick claude/autre } 'origin/main'
+  Expect 'git cherry-pick sur main refusé' $true { G cherry-pick claude/autre } 'main du distant'
   G cherry-pick --abort 2>&1 | Out-Null
-  Expect 'git revert sur main refusé' $true { G revert --no-edit HEAD } 'origin/main'
+  Expect 'git revert sur main refusé' $true { G revert --no-edit HEAD } 'main du distant'
   G revert --abort 2>&1 | Out-Null
-  Expect 'git update-ref refs/heads/main refusé' $true { G update-ref refs/heads/main claude/autre } 'origin/main'
+  Expect 'git update-ref refs/heads/main refusé' $true { G update-ref refs/heads/main claude/autre } 'main du distant'
   G switch -q claude/essai | Out-Null
-  Expect 'git branch -f main refusé' $true { G branch -f main claude/autre } 'origin/main'
+  Expect 'git branch -f main refusé' $true { G branch -f main claude/autre } 'main du distant'
   Expect 'suppression de main refusée' $true { G branch -D main } 'suppression de main'
   Check 'main inchangé après les refus' ((MainSha) -eq $base) "$(MainSha) / $base"
 
@@ -109,11 +125,57 @@ try {
   G switch -q main | Out-Null
   Expect 'git pull --ff-only accepté' $false { G pull -q --ff-only origin main }
   Check 'main avancé à origin/main' ((MainSha) -eq "$(G rev-parse origin/main)".Trim()) (G log --oneline -3)
+  # I2 bis : origin/main déplacé en local ; seule la valeur du distant (git ls-remote) fait foi.
+  G switch -q -c claude/nonrelu | Out-Null; Add 'n.txt' (Text "n`n"); G commit -q -m 'docs(essai): non relu' | Out-Null
+  G switch -q main | Out-Null; G update-ref refs/remotes/origin/main claude/nonrelu | Out-Null
+  Expect 'avance rapide vers un origin/main local déplacé refusée' $true { G merge --ff-only origin/main } 'main du distant'
+  G fetch -q origin | Out-Null
+  # Distant injoignable : refus.
+  & git -C $other -c user.name=essai -c user.email=essai@example.invalid commit -q --allow-empty -m 'docs(essai): distant 2'
+  & git -C $other push -q origin main
+  G fetch -q origin | Out-Null
+  G remote set-url origin (Join-Path $tmp 'absent.git') | Out-Null
+  Expect 'distant injoignable : mise à jour de main refusée' $true { G merge --ff-only origin/main } 'injoignable'
+  G remote set-url origin $remote | Out-Null
+  Expect 'distant rétabli : git merge --ff-only origin/main accepté' $false { G merge --ff-only origin/main }
   # origin/main absente : toute mise à jour de main refusée.
   $head = MainSha
   G switch -q claude/essai | Out-Null; G update-ref -d refs/remotes/origin/main | Out-Null
   Expect 'mise à jour de main sans origin/main refusée' $true { G branch -f main $head } 'absente'
   G fetch -q origin | Out-Null
+
+  # Essai réel de travail courant : chaque commande passe guard-git, puis s'exécute avec les crochets épinglés.
+  . (Join-Path $dev 'guard-git.ps1')
+  $gitBash = Join-Path (Split-Path (Split-Path (Get-Command git).Source)) 'bin\bash.exe'
+  function Invoke-Real([string]$Tool, [string]$Cmd) {
+    $label = $Cmd -replace "`n", ' / '
+    $v = Get-CommandVerdict $Cmd $Tool $repo
+    if ($v) { Check "essai réel, garde : $label" $false $v; return }
+    Push-Location $repo
+    try {
+      $out = if ($Tool -eq 'Bash') { & $gitBash -c $Cmd 2>&1 | Out-String } else { & pwsh -NoProfile -Command $Cmd 2>&1 | Out-String }
+      $code = $LASTEXITCODE
+    } finally { Pop-Location }
+    Check "essai réel : $label" ($code -eq 0) $out
+  }
+  G switch -q claude/essai | Out-Null
+  Set-Content (Join-Path $repo 'msg.txt') "docs(essai): travail courant`n" -NoNewline
+  Set-Content (Join-Path $repo 'travail.txt') 'travail'
+  Invoke-Real 'PowerShell' 'git switch -c claude/travail'
+  Invoke-Real 'PowerShell' 'git status'
+  Invoke-Real 'PowerShell' 'git add travail.txt'
+  Invoke-Real 'PowerShell' 'git commit -q -F msg.txt'
+  Set-Content (Join-Path $repo 'travail.txt') 'travail 2'
+  if (Test-Path $gitBash) { Invoke-Real 'Bash' "git commit -q -F - -- travail.txt <<'EOF'`ndocs(essai): corps cité`n`nCite .claude/settings.json et git push origin main, sans effet.`nEOF" }
+  Invoke-Real 'PowerShell' 'git push -q -u origin claude/travail'
+  Invoke-Real 'PowerShell' 'git fetch -q origin'
+  Invoke-Real 'PowerShell' 'gh pr view 5 -R CreatorInstant548/time_switcher --json state'
+  & git -C $other -c user.name=essai -c user.email=essai@example.invalid commit -q --allow-empty -m 'docs(essai): distant 3'
+  & git -C $other push -q origin main
+  G switch -q main | Out-Null; G branch -q -u origin/main main | Out-Null
+  Invoke-Real 'PowerShell' 'git pull -q --ff-only'
+  Check 'essai réel : main à jour du distant' ((MainSha) -eq "$(& git -C $remote rev-parse main)".Trim())
+  G switch -q claude/essai | Out-Null
 
   # Empreinte de gitleaks fausse : copie du jeu installé, tools.lock modifié.
   $installed = (G config --get core.hooksPath).Trim()

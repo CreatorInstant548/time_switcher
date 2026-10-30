@@ -43,6 +43,6 @@ $errors"
 
 # 3. Secrets dans l'index.
 gitleaks_checked
-gitleaks_run --pre-commit --staged ||
+gitleaks_index ||
   fail "gitleaks a trouvé un secret probable dans l'index (SEC0-08). Retirez-le ; s'il est réel, il est à remplacer."
 exit 0
