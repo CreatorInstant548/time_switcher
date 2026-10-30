@@ -480,6 +480,40 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | **PR #30 (T6b : empreinte, instantané, `WorkBudget` ; remplace la #28), fusion** | SHA de tête `cbe11b51e04fa71e058577018c11d35cfe9bc79d`, `ci-ok` vert ; relecteur neuf en cours sur les corrections I1 à I3 | **`archsec-ok: cbe11b51e04fa71e058577018c11d35cfe9bc79d`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/30#issuecomment-6521795909)) : L3 à L6 conformes ; preuve L1 par `cargo tree`. Deux points d'API confirmés : `state_hash()` sans `HashScope`, et `restore(&WorldKey)`. Non bloquant : un `StableId` en double devra devenir une erreur (T7 ou T8) |
 | 30/10 | **PR #30, après F1 et mise à jour depuis `main` (#25)** | SHA de tête `4d1a4aebcb75aabbd01f009bdcbec6c3aaeb9bf8` ; `ci-ok` absent (GitHub Actions bloqué par la facturation du compte) | **`archsec-ok: 4d1a4aebcb75aabbd01f009bdcbec6c3aaeb9bf8`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/30#issuecomment-6522140160)) : delta inchangé, sauf le texte du contrat AS-27 et les `TODO(#31)` ; aucune ligne de code modifiée. La fusion attend `ci-ok` |
 | 30/10 | Consignes T6c, T7a et T9w | `scratchpad/…/consigne-T6c-clippy.md`, `consigne-T7a.md`, `consigne-T9w.md` | **T6c validée avec P1** : interdire seulement `ambiguous_with`, le reste étant refusé à la construction et utilisé par les tests du noyau. **T7a validée avec M1 à M3** : `Pilot` reste privé à `ts_pilot` (architecture §6.6). **T9w validée avec N1 à N4**, dont le trait scellé `ClientShippable` pour la part publique (§9.11) |
+| 30/10 | Consigne T3d (réglages GitHub en fichiers ; V et S) | `scratchpad/…/consigne-T3d.md` | **Validée avec S1 à S6** (§9.12) : `ci-ok` lié à `integration_id`, réglages de fusion du dépôt, invariants codés dans le script, *rulesets* inconnus signalés, invocation depuis la copie principale seulement |
+
+### 9.12 Consigne T3d : réglages GitHub décrits dans des fichiers (30/10)
+
+**Validée avec les corrections S1 à S6**, toutes décidées. Elle applique AS-30 et AS-31.
+
+**Réponses aux quatre questions :**
+1. **Épingler `ci-ok` sur l'`integration_id` de GitHub Actions** : **oui, obligatoire** (R1, E5). L'API des *rulesets* accepte `integration_id` dans chaque élément de `required_status_checks`. Si elle le refuse, la PR le montre, et le contrôle G3 de `merge` reste en place.
+2. **Permettre `-Check` dans le garde** : oui. C'est une lecture seule, aux mêmes conditions d'invocation exacte que `-Apply`.
+3. **Sauter `-Check` en CI** : oui, **avec un avertissement visible** dans le résumé du travail, puisque `GITHUB_TOKEN` n'a pas les droits d'administration. `-Check` reste **obligatoire à chaque `cargo xtask merge`** (E4). Un échec suspend les fusions.
+4. **`repo-settings.ps1` et `tools/github/` en chemins sensibles** : oui, tous les deux.
+
+**Corrections :**
+- **S1. Réglages du dépôt (R2), absents de la consigne.** Un fichier `tools/github/repo.json` décrit :
+  - `allow_squash_merge: true`, `allow_merge_commit: false`, `allow_rebase_merge: false` ;
+  - `delete_branch_on_merge: true`, `allow_auto_merge: false` ;
+  - `squash_merge_commit_title: PR_TITLE`.
+
+  `-Check` et `-Apply` le traitent comme les autres fichiers.
+- **S2. Invariants codés dans le script.** `-Apply` refuse un `ruleset-main.json` auquel manque l'une des règles suivantes :
+  - `pull_request` ;
+  - `required_status_checks`, avec `ci-ok`, `strict` et `integration_id` ;
+  - `required_linear_history`, `non_fast_forward` et `deletion` ;
+  - une liste `bypass_actors` vide.
+
+  Il refuse aussi un fichier d'Actions avec `allowed_actions` différent de `selected`, sans `sha_pinning_required`, ou avec un motif hors de la liste fermée.
+
+  *Pourquoi :* affaiblir les règles demande alors de modifier aussi le script, et une PR qui ne toucherait que le JSON ne pourrait pas les désarmer.
+- **S3. `-Check` signale aussi les *rulesets* inconnus** qui visent `main` ou `pilotage`, et toute protection de branche classique encore présente. C'est un écart, qui suspend les fusions.
+- **S4. Garde.** Les invocations exactes ne sont permises **que depuis la racine de la copie principale**, comme J2. Le script le vérifie aussi de son côté (propre, sur `main`, à jour d'`origin/main`).
+- **S5. *Fork*.** Si l'API le permet pour un dépôt privé, on désactive l'exécution des workflows des PR venues d'un *fork* (R4).
+- **S6. Rappel de la séquence d'AS-31.** Les retraits locaux viennent dans T3e-1, l'essai de poussée R6.4 ensuite, et le retrait du contrôle d'origine de `verify-main` seulement dans T3e-2.
+
+**Revue de la PR :** relecteur neuf, puis mon `archsec-ok`. Les critères bloquants sont R1 à R5 d'AS-30 et S1 à S5.
 
 ### 9.11 Consignes T6c (`clippy.toml`), T7a (`ts_model`) et T9w (`ts_world_model`) (30/10)
 
