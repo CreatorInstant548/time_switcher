@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::manifests::{self, DEV_FEATURES, HOSTS, TOOLS};
 use crate::metadata::{self, Metadata};
 use crate::sys::{self, cargo, run_captured, run_live, stdout_of};
-use crate::{scan, workflows};
+use crate::{exemptions, scan, workflows};
 
 pub enum Outcome {
     Ok(String),
@@ -195,10 +195,48 @@ pub fn clippy(cx: &Ctx) -> Outcome {
     let mut args = vec!["clippy", "--locked", "--features", "ts_kernel/public"];
     shipped.iter().for_each(|p| args.extend(["-p", p.as_str()]));
     args.extend(["--", "-D", "warnings"]);
-    status(
-        tri!(run_live(&cx.root, &cargo(), &args)),
-        "cargo clippy (profil public)",
-    )
+    if !tri!(run_live(&cx.root, &cargo(), &args)) {
+        return Outcome::Fail("cargo clippy (profil public) a échoué".to_owned());
+    }
+    // Crates de cœur avec chaque fonctionnalité de développement, l'une après l'autre (I2) :
+    // le code sous #[cfg(feature = "dev-…")] est vu aussi. Jamais --all-features (E3).
+    let core: Vec<&str> = meta
+        .packages
+        .iter()
+        .map(|p| p.name.as_str())
+        .filter(|n| is_core(n))
+        .collect();
+    for f in DEV_FEATURES {
+        let args = dev_clippy_args(&core, f);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        if !tri!(run_live(&cx.root, &cargo(), &args)) {
+            return Outcome::Fail(format!("cargo clippy (fonctionnalité {f}) a échoué"));
+        }
+    }
+    Outcome::Ok(format!(
+        "espace de travail, public, et {} fonctionnalités de développement",
+        DEV_FEATURES.len()
+    ))
+}
+
+/// Crate de cœur ou de règles : ni hôte, ni outil (refus par défaut).
+fn is_core(name: &str) -> bool {
+    !TOOLS.contains(&name) && !HOSTS.contains(&name)
+}
+
+/// `cargo clippy` des crates de cœur avec une fonctionnalité de développement de `ts_kernel`.
+fn dev_clippy_args(core: &[&str], feature: &str) -> Vec<String> {
+    let mut args = vec![
+        "clippy".to_owned(),
+        "--locked".to_owned(),
+        "--all-targets".to_owned(),
+    ];
+    for c in core {
+        args.extend(["-p".to_owned(), (*c).to_owned()]);
+    }
+    args.extend(["--features".to_owned(), format!("ts_kernel/{feature}")]);
+    args.extend(["--", "-D", "warnings"].map(str::to_owned));
+    args
 }
 
 pub fn test(cx: &Ctx) -> Outcome {
@@ -512,11 +550,7 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
         errors.push("CLIPPY_CONF_DIR remplace clippy.toml : refusé".to_owned());
     }
     let files = tri!(cx.files());
-    for p in meta
-        .packages
-        .iter()
-        .filter(|p| !TOOLS.contains(&p.name.as_str()) && !HOSTS.contains(&p.name.as_str()))
-    {
+    for p in meta.packages.iter().filter(|p| is_core(&p.name)) {
         let dir = format!("{}/", meta.rel_dir(p));
         for rel in files
             .iter()
@@ -524,7 +558,7 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
         {
             let text = String::from_utf8_lossy(&tri!(cx.read(rel))).into_owned();
             errors.extend(
-                scan::clippy_exemptions(&text)
+                exemptions::clippy_exemptions(&text)
                     .iter()
                     .map(|l| format!("{rel}:{l} : exemption ou code caché à clippy interdit")),
             );
@@ -628,6 +662,28 @@ mod tests {
         );
         assert!(super::lock_value(lock, "x.version").is_err());
         assert!(super::lock_value(lock, "cargo-audit.version").is_err());
+    }
+
+    /// v8 : le code sous `#[cfg(feature = "dev-…")]` est vu par une passe de clippy par
+    /// fonctionnalité, nommée, jamais `--all-features`.
+    #[test]
+    fn dev_feature_clippy_passes() {
+        for f in crate::manifests::DEV_FEATURES {
+            let args = super::dev_clippy_args(&["ts_kernel", "ts_model"], f);
+            let feature = format!("ts_kernel/{f}");
+            assert!(
+                args.windows(2)
+                    .any(|w| w[0] == "--features" && w[1] == feature)
+            );
+            assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "ts_model"));
+            assert!(
+                !args
+                    .iter()
+                    .any(|a| a == "--all-features" || a == "--workspace")
+            );
+        }
+        assert!(super::is_core("ts_kernel") && super::is_core("ts_rules_x"));
+        assert!(!super::is_core("xtask") && !super::is_core("ts_host"));
     }
 
     #[test]

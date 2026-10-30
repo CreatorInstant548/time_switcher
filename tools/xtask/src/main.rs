@@ -5,6 +5,7 @@
 // Outil en ligne de commande : il écrit sur la console.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod exemptions;
 mod manifests;
 mod metadata;
 mod scan;
