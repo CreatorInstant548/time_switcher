@@ -2,13 +2,14 @@
 
 use core::fmt;
 
-use bevy_ecs::component::Component;
+use bevy_ecs::component::{Component, ComponentId};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule};
 use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::world::World;
 
-use crate::Phase;
+use crate::state::StateEntry;
+use crate::{Phase, StateHash};
 
 // spec: revues/architecture.md §5.3
 /// Greffon de règles. `standard_rules()` (`ts_game`) en donne la liste unique.
@@ -23,6 +24,27 @@ use crate::Phase;
 /// A system must therefore leave the state unchanged on a tick with no due event and no
 /// entity in full simulation: no per-tick counter, no `Local` accumulator, no polling of the
 /// clock. Otherwise skipping and ticking would give different worlds.
+///
+/// **No hidden state between ticks** (architecture §11.1, §12.4): a restore builds fresh
+/// systems and keeps only the declared state, yet restoring at any tick k > 0 must give
+/// exactly the uninterrupted run. A plugin therefore keeps **no** state from one tick to the
+/// next outside its declared state (the components and resources registered with
+/// [`SimBuilder::state_component`] and [`SimBuilder::state_resource`]). In particular
+/// (AS-27):
+/// - no `Local<T>` kept from one tick to the next;
+/// - no game logic based on `Added` or `Changed` (nor on `is_changed`): change ticks
+///   restart on restore;
+/// - a `Message` is written **and** read within the same tick, with an explicit phase
+///   order between writer and reader;
+/// - no undeclared game resource or game entity: every persistent entity carries
+///   [`crate::StableEntity`];
+/// - a cache that can be rebuilt from the state is declared with
+///   [`SimBuilder::transient_component`].
+///
+/// Enforced before the first rule plugin merges (phase 1) by a generic restore test and
+/// `clippy.toml` bans, see #31 (AS-27).
+// TODO(#31): enforce this contract automatically.
+// spec: revues/architecture.md §11.1, §12.4
 pub trait Plugin {
     /// Nom stable et unique du greffon (par exemple `"economy"`).
     fn name(&self) -> &'static str;
@@ -53,6 +75,12 @@ pub struct SimBuilder {
     pub(crate) world: World,
     pub(crate) phases: Vec<Schedule>,
     pub(crate) current: &'static str,
+    /// Types d'état, dans l'ordre de déclaration.
+    pub(crate) state: Vec<StateEntry>,
+    /// Migrations déclarées, `(greffon, version d'origine)`.
+    pub(crate) migrations: Vec<(&'static str, u32)>,
+    /// Components allowed on stable entities: declared state and transient components.
+    pub(crate) known_components: Vec<ComponentId>,
 }
 
 impl SimBuilder {
@@ -75,6 +103,47 @@ impl SimBuilder {
         systems: impl IntoScheduleConfigs<ScheduleSystem, M>,
     ) -> &mut Self {
         self.phases[phase.index()].add_systems(systems);
+        self
+    }
+
+    // spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §9.10 L3
+    /// Déclare un composant d'état de la famille `family` : il entre dans l'empreinte et dans
+    /// l'instantané, pour les entités qui portent [`crate::StableEntity`]. L'ordre de
+    /// déclaration fixe l'ordre d'encodage.
+    pub fn state_component<C: Component + Clone + StateHash>(
+        &mut self,
+        family: &'static str,
+    ) -> &mut Self {
+        let id = self.world.register_component::<C>();
+        self.known_components.push(id);
+        self.state.push(StateEntry::component::<C>(family));
+        self
+    }
+
+    // spec: revues/architecture.md §11.3
+    /// Declares a component that stable entities may carry without it being state: a cache
+    /// that the plugin rebuilds from the state. It is neither hashed nor saved, and a restore
+    /// drops it.
+    pub fn transient_component<C: Component>(&mut self) -> &mut Self {
+        let id = self.world.register_component::<C>();
+        self.known_components.push(id);
+        self
+    }
+
+    /// Déclare une ressource d'état de la famille `family`, comme [`Self::state_component`].
+    pub fn state_resource<R: Resource + Clone + StateHash>(
+        &mut self,
+        family: &'static str,
+    ) -> &mut Self {
+        self.state.push(StateEntry::resource::<R>(family));
+        self
+    }
+
+    // spec: revues/architecture.md §12.5 ; carnet architecture-securite.md §9.10 L5
+    /// Déclare que le greffon en construction sait reprendre un instantané de sa version
+    /// `version`. Sans cette déclaration, une autre version fait refuser la restauration.
+    pub fn migrates_from(&mut self, version: u32) -> &mut Self {
+        self.migrations.push((self.current, version));
         self
     }
 
