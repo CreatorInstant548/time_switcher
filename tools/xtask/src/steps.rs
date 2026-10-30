@@ -27,6 +27,10 @@ const ROOT_FILES: [&str; 7] = [
     "rustfmt.toml",
     "rust-toolchain.toml",
 ];
+/// Liens symboliques permis dans l'arbre (I3), en liste fermée : aucun pour l'instant.
+const SYMLINK_EXEMPT: [&str; 0] = [];
+/// Fichiers autres que `.rs` permis sous `<crate de cœur>/src` (I2), en liste fermée : aucun.
+const NON_RS_SRC_EXEMPT: [&str; 0] = [];
 /// Âge maximal de la base RustSec locale (SEC0-03).
 const MAX_DB_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
@@ -61,31 +65,38 @@ impl Ctx {
         stdout_of(&self.root, "git", args)
     }
 
-    fn git_lines(&self, args: &[&str]) -> Result<Vec<String>, String> {
-        Ok(self
-            .git(args)?
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(str::to_owned)
-            .collect())
+    /// Chemins rendus par une commande Git lancée avec `-z` : séparés par NUL, jamais cités (I3).
+    fn git_paths(&self, args: &[&str]) -> Result<Vec<String>, String> {
+        Ok(split_nul(&self.git(args)?))
     }
 
-    /// Fichiers ordinaires présents sur le disque : suivis, plus non suivis et non ignorés (F2).
-    /// Ni lien, ni fichier supprimé mais encore indexé.
+    /// Fichiers suivis, plus non suivis et non ignorés (F2). Chacun doit être un fichier ordinaire
+    /// présent sur le disque : un lien (hors `SYMLINK_EXEMPT`), un fichier suivi mais supprimé ou
+    /// un autre objet font échouer toute étape qui lit l'arbre (I3).
     fn files(&self) -> Result<&[String], String> {
         let init = || {
-            let args = [
-                "-c",
-                "core.quotepath=off",
-                "ls-files",
-                "-co",
-                "--exclude-standard",
-            ];
-            let mut files = self.git_lines(&args)?;
-            files.retain(|f| {
-                std::fs::symlink_metadata(self.root.join(f)).is_ok_and(|m| m.file_type().is_file())
-            });
-            Ok(files)
+            let files = self.git_paths(&["ls-files", "-z", "-co", "--exclude-standard"])?;
+            let mut errors = Vec::new();
+            for f in &files {
+                match std::fs::symlink_metadata(self.root.join(f)) {
+                    Ok(m) if m.file_type().is_file() => {}
+                    Ok(m) if m.file_type().is_symlink() && SYMLINK_EXEMPT.contains(&f.as_str()) => {
+                    }
+                    Ok(m) if m.file_type().is_symlink() => {
+                        errors.push(format!("{f} : lien refusé"))
+                    }
+                    Ok(_) => errors.push(format!("{f} : pas un fichier ordinaire")),
+                    Err(_) => errors.push(format!("{f} : suivi mais absent du disque")),
+                }
+            }
+            if errors.is_empty() {
+                return Ok(files);
+            }
+            errors.iter().for_each(|e| println!("  - {e}"));
+            Err(format!(
+                "{} fichier(s) illisible(s) dans l'arbre",
+                errors.len()
+            ))
         };
         self.files
             .get_or_init(init)
@@ -97,24 +108,11 @@ impl Ctx {
     /// Fichiers modifiés depuis `origin/main`, commités ou non (F7).
     fn changed(&self) -> Result<&[String], String> {
         let init = || {
-            // Sans renommage, un déplacement compte ses deux chemins ; noms non ASCII lisibles.
-            let diff = [
-                "-c",
-                "core.quotepath=off",
-                "diff",
-                "--name-only",
-                "--no-renames",
-            ];
-            let mut all = self.git_lines(&[&diff[..], &["origin/main...HEAD"]].concat())?;
-            all.extend(self.git_lines(&[&diff[..], &["HEAD"]].concat())?);
-            let others = [
-                "-c",
-                "core.quotepath=off",
-                "ls-files",
-                "-o",
-                "--exclude-standard",
-            ];
-            all.extend(self.git_lines(&others)?);
+            // Sans renommage, un déplacement compte ses deux chemins ; -z : noms jamais cités.
+            let diff = ["diff", "--name-only", "-z", "--no-renames"];
+            let mut all = self.git_paths(&[&diff[..], &["origin/main...HEAD"]].concat())?;
+            all.extend(self.git_paths(&[&diff[..], &["HEAD"]].concat())?);
+            all.extend(self.git_paths(&["ls-files", "-z", "-o", "--exclude-standard"])?);
             Ok(all)
         };
         self.changed
@@ -127,6 +125,14 @@ impl Ctx {
     fn read(&self, rel: &str) -> Result<Vec<u8>, String> {
         sys::read(&self.root.join(rel))
     }
+}
+
+/// Découpe une sortie `-z` de Git : un chemin par champ NUL, sans citation ni échappement.
+fn split_nul(out: &str) -> Vec<String> {
+    out.split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn status(ok: bool, what: &str) -> Outcome {
@@ -520,8 +526,17 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
             errors.extend(
                 scan::clippy_exemptions(&text)
                     .iter()
-                    .map(|l| format!("{rel}:{l} : exemption interdite")),
+                    .map(|l| format!("{rel}:{l} : exemption ou code caché à clippy interdit")),
             );
+        }
+        // Un fichier non .rs sous src/ ne peut servir qu'à #[path] ou include! (I2).
+        let src = format!("{dir}src/");
+        for rel in files.iter().filter(|f| {
+            f.starts_with(&src) && !f.ends_with(".rs") && !NON_RS_SRC_EXEMPT.contains(&f.as_str())
+        }) {
+            errors.push(format!(
+                "{rel} : fichier autre que .rs sous src/ d'une crate de cœur"
+            ));
         }
     }
     let mut dirs: BTreeSet<String> = meta.packages.iter().map(|p| meta.rel_dir(p)).collect();
@@ -613,5 +628,20 @@ mod tests {
         );
         assert!(super::lock_value(lock, "x.version").is_err());
         assert!(super::lock_value(lock, "cargo-audit.version").is_err());
+    }
+
+    #[test]
+    fn splits_git_nul_output() {
+        let out = ".github/workflows/ci\"x.yml\0docs/a b é.md\0crates/k/src/\\t.rs\0";
+        let paths = super::split_nul(out);
+        assert_eq!(
+            paths,
+            [
+                ".github/workflows/ci\"x.yml",
+                "docs/a b é.md",
+                "crates/k/src/\\t.rs"
+            ]
+        );
+        assert!(super::split_nul("").is_empty());
     }
 }

@@ -1,5 +1,6 @@
 //! Contrôle des workflows GitHub Actions (SEC0-29 à 31, F10), par lignes et par indentation,
-//! sans dépendance YAML. En cas de doute, la forme est refusée.
+//! sans dépendance YAML. **Toute ligne non reconnue est refusée** (I1) : on n'accepte que
+//! `clé: valeur`, `- clé: valeur`, `- scalaire`, les commentaires et le contenu des blocs `|`/`>`.
 
 /// Actions permises (SEC0-30), épinglées par SHA de 40 caractères.
 const ALLOWED_ACTIONS: [&str; 4] = [
@@ -8,13 +9,18 @@ const ALLOWED_ACTIONS: [&str; 4] = [
     "swatinem/rust-cache",
     "actions/upload-artifact",
 ];
-/// Seul contexte permis dans une interpolation `${{ }}` d'un `run:` (SEC0-31). Tout le reste
-/// passe par `env:` et une variable citée : `github`, `inputs`, `env`, `steps`, `needs`, les
-/// fonctions, et aussi `matrix`, qui peut recopier `github.event`.
-const RUN_SAFE_CONTEXTS: [&str; 1] = ["runner."];
+/// Seul contexte sûr dans une interpolation `${{ }}`. Tout autre (`github`, `inputs`, `matrix`,
+/// `env`, `steps`, `needs`, les fonctions) n'est permis que sous `env:`, sous `with:` et dans
+/// `if:` ; un `run:` le reçoit par `env:` et une variable citée (SEC0-31).
+const SAFE_CONTEXTS: [&str; 1] = ["runner."];
+/// Clés dont les valeurs descendantes peuvent porter une interpolation non sûre.
+const DATA_KEYS: [&str; 2] = ["env", "with"];
+/// Premiers caractères d'un scalaire de liste refusés : clé explicite, flux, ancre, alias,
+/// balise, bloc, directive, réservés.
+const ODD_SCALAR_START: &str = "?:{[&*!|>%@`";
 
-/// Vrai si une ligne contient une interpolation hors des contextes permis.
-fn tainted(line: &str) -> bool {
+/// Vrai si une ligne contient une interpolation hors des contextes sûrs.
+fn unsafe_interpolation(line: &str) -> bool {
     line.split("${{").skip(1).any(|expr| {
         let expr: String = expr
             .split("}}")
@@ -26,7 +32,7 @@ fn tainted(line: &str) -> bool {
         let plain = expr
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b));
-        !(plain && RUN_SAFE_CONTEXTS.iter().any(|c| expr.starts_with(c)))
+        !(plain && SAFE_CONTEXTS.iter().any(|c| expr.starts_with(c)))
     })
 }
 
@@ -34,26 +40,116 @@ fn indent(line: &str) -> usize {
     line.len() - line.trim_start_matches(' ').len()
 }
 
-/// (indentation de la clé, clé, valeur) d'une ligne `clé: valeur` ou `- clé: valeur`.
-fn key_of(line: &str) -> Option<(usize, &str, &str)> {
-    let mut col = indent(line);
-    let mut rest = &line[col..];
-    if let Some(item) = rest.strip_prefix('-') {
-        let item_rest = item.trim_start_matches(' ');
-        col += 1 + item.len() - item_rest.len();
-        rest = item_rest;
+/// Ligne structurée reconnue.
+struct Line<'a> {
+    /// Élément de liste (`- …`), dont le tiret est à la colonne `dash`.
+    item: bool,
+    dash: usize,
+    /// Colonne de la clé (ou du scalaire, après le tiret).
+    col: usize,
+    /// Clé en minuscules (m4) ; `None` pour un scalaire de liste.
+    key: Option<String>,
+    value: &'a str,
+}
+
+/// `clé: valeur`, `- clé: valeur` ou `- scalaire` ; `None` pour toute autre forme.
+fn parse(line: &str) -> Option<Line<'_>> {
+    let dash = indent(line);
+    let mut col = dash;
+    let mut rest = &line[dash..];
+    let item = rest == "-" || rest.starts_with("- ");
+    if item {
+        let r = rest[1..].trim_start_matches(' ');
+        col += rest.len() - r.len();
+        rest = r;
     }
-    let (key, value) = rest.split_once(':')?;
-    let key = key.trim_matches(['"', '\'']); // clé citée : même traitement
-    let valid = !key.is_empty()
-        && key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_-".contains(c));
-    (valid && (value.is_empty() || value.starts_with(' '))).then(|| (col, key, value.trim()))
+    let pair = rest
+        .split_once(':')
+        .filter(|(_, v)| v.is_empty() || v.starts_with(' '));
+    match pair {
+        Some((key, value)) => {
+            let key = key.trim_matches(['"', '\'']); // clé citée : même traitement
+            let valid = !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_-".contains(c));
+            let key = Some(key.to_ascii_lowercase());
+            let value = value.trim();
+            valid.then_some(Line {
+                item,
+                dash,
+                col,
+                key,
+                value,
+            })
+        }
+        None if item && !rest.is_empty() && !rest.starts_with(|c| ODD_SCALAR_START.contains(c)) => {
+            let value = rest.trim();
+            Some(Line {
+                item,
+                dash,
+                col,
+                key: None,
+                value,
+            })
+        }
+        None => None,
+    }
 }
 
 fn strip_comment(value: &str) -> &str {
     value.find(" #").map_or(value, |i| &value[..i]).trim()
+}
+
+/// Niveau ouvert de la pile d'indentation : clé, ou élément de liste (`key` = `-`).
+struct Level {
+    col: usize,
+    key: String,
+    /// La clé attend des enfants (valeur vide).
+    open: bool,
+    /// Colonne de ses enfants, fixée par le premier.
+    child: Option<usize>,
+}
+
+/// Place la ligne dans la pile ; `false` si son indentation est incohérente.
+fn place(stack: &mut Vec<Level>, l: &Line) -> bool {
+    let fits = |parent: &mut Level, col: usize| {
+        let ok = parent.open && parent.child.is_none_or(|c| c == col);
+        parent.child = Some(col);
+        ok
+    };
+    if l.item {
+        while stack
+            .last()
+            .is_some_and(|t| t.col > l.dash || (t.col == l.dash && t.key == "-"))
+        {
+            stack.pop();
+        }
+        let Some(parent) = stack.last_mut() else {
+            return false;
+        };
+        let ok = parent.col <= l.dash && fits(parent, l.dash);
+        let open = l.key.is_some();
+        stack.push(Level {
+            col: l.dash,
+            key: "-".into(),
+            open,
+            child: Some(l.col),
+        });
+        ok
+    } else {
+        while stack.last().is_some_and(|t| t.col > l.col) {
+            stack.pop();
+        }
+        if stack.last().is_some_and(|t| t.col == l.col && t.key != "-") {
+            stack.pop();
+        }
+        match stack.last_mut() {
+            None => l.col == 0,
+            Some(p) if p.key == "-" => p.child == Some(l.col),
+            Some(p) => p.col < l.col && fits(p, l.col),
+        }
+    }
 }
 
 /// Lignes de l'élément de liste (étape) qui contient la ligne `i`, de clé à l'indentation `col`.
@@ -74,26 +170,53 @@ fn step_block<'b, 'a>(lines: &'b [&'a str], i: usize, col: usize) -> &'b [&'a st
     &lines[start..end]
 }
 
+/// `uses:` d'une étape : action de la liste, épinglée ; `persist-credentials: false` sous le
+/// `with:` d'un `actions/checkout`.
+fn check_uses(lines: &[&str], i: usize, l: &Line, errors: &mut Vec<String>) {
+    let n = i + 1;
+    let v = strip_comment(l.value).trim_matches(['"', '\'']);
+    let (repo, sha) = v.split_once('@').unwrap_or((v, ""));
+    let owner_repo = repo.splitn(3, '/').take(2).collect::<Vec<_>>().join("/");
+    let owner_repo = owner_repo.to_ascii_lowercase();
+    let pinned = sha.len() == 40 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if !ALLOWED_ACTIONS.contains(&owner_repo.as_str()) || !pinned {
+        errors.push(format!(
+            "ligne {n} : action hors liste ou non épinglée par SHA (SEC0-30)"
+        ));
+    }
+    let mut under_with = false;
+    let persist = step_block(lines, i, l.col).iter().any(|s| {
+        let Some(s) = parse(s) else { return false };
+        let key = s.key.as_deref().unwrap_or_default();
+        if s.col == l.col {
+            under_with = key == "with";
+        }
+        s.col > l.col
+            && under_with
+            && key == "persist-credentials"
+            && strip_comment(s.value) == "false"
+    });
+    if owner_repo == "actions/checkout" && !persist {
+        errors.push(format!(
+            "ligne {n} : actions/checkout sans persist-credentials: false sous with:"
+        ));
+    }
+}
+
 /// Écarts d'un workflow, chacun avec son numéro de ligne.
 pub fn check_workflow(text: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
     let mut errors = Vec::new();
     let mut top_permissions = false;
-    // (indentation de la clé run:, valeur en bloc littéral `|` ou `>`)
-    let mut run_until: Option<(usize, bool)> = None;
-    for (i, &line) in lines.iter().enumerate() {
+    let mut stack: Vec<Level> = Vec::new();
+    // Bloc `|` ou `>` ouvert : (colonne de sa clé, interpolations non sûres permises).
+    let mut block: Option<(usize, bool)> = None;
+    for (i, &raw) in lines.iter().enumerate() {
         let n = i + 1;
-        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-        let in_run = run_until.is_some_and(|(c, _)| line.trim().is_empty() || indent(line) > c);
-        let in_block = in_run && run_until.is_some_and(|(_, block)| block);
-        if line.contains('\t') {
+        let compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+        let compact = compact.to_ascii_lowercase();
+        if raw.contains('\t') {
             errors.push(format!("ligne {n} : tabulation refusée"));
-        }
-        // Hors d'un bloc littéral, YAML décode les échappements : `"u\x73es"` vaut `"uses"`.
-        if line.contains('\\') && !in_block {
-            errors.push(format!(
-                "ligne {n} : barre oblique inverse hors d'un bloc run: |"
-            ));
         }
         for bad in [
             "pull_request_target",
@@ -105,74 +228,81 @@ pub fn check_workflow(text: &str) -> Vec<String> {
                 errors.push(format!("ligne {n} : {bad} interdit"));
             }
         }
-        let key = key_of(line);
-        if tainted(line) && (in_run || key.is_some_and(|k| k.1 == "run")) {
+        if let Some((col, data)) = block {
+            if raw.trim().is_empty() || indent(raw) > col {
+                if unsafe_interpolation(raw) && !data {
+                    errors.push(format!(
+                        "ligne {n} : interpolation non sûre hors de env:, with: et if: (SEC0-31)"
+                    ));
+                }
+                continue; // contenu d'un bloc : seules les interpolations y comptent
+            }
+            block = None;
+        }
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // Hors d'un bloc, YAML décode les échappements : `"u\x73es"` vaut `"uses"`.
+        if raw.contains('\\') {
             errors.push(format!(
-                "ligne {n} : interpolation hors de runner. dans un run: (SEC0-31)"
+                "ligne {n} : barre oblique inverse hors d'un bloc | ou >"
             ));
         }
-        if in_run {
-            continue; // contenu d'un script : seules les interpolations y comptent
+        let Some(l) = parse(raw) else {
+            errors.push(format!(
+                "ligne {n} : forme non reconnue (clé explicite, flux, ancre, balise…)"
+            ));
+            continue;
+        };
+        if !place(&mut stack, &l) {
+            errors.push(format!("ligne {n} : indentation incohérente"));
         }
-        run_until = None;
-        // uses: ou run: ailleurs qu'en clé de tête de ligne (collection en ligne, etc.).
+        let key = l.key.as_deref().unwrap_or_default();
+        // Les ancêtres sont en pile ; la ligne elle-même n'y est que si c'est une clé d'élément.
+        let data = key == "if"
+            || stack
+                .iter()
+                .any(|lv| DATA_KEYS.contains(&lv.key.as_str()) && lv.col < l.col);
+        let data = data && key != "run";
+        if unsafe_interpolation(raw) && !data {
+            errors.push(format!(
+                "ligne {n} : interpolation non sûre hors de env:, with: et if: (SEC0-31)"
+            ));
+        }
         let hidden = ["uses", "run"].iter().any(|k| {
             ["", "\"", "'"]
                 .iter()
                 .any(|q| compact.contains(&format!("{k}{q}:")))
         });
-        if hidden && !key.is_some_and(|k| k.1 == "uses" || k.1 == "run") {
+        if hidden && key != "uses" && key != "run" {
             errors.push(format!("ligne {n} : forme de uses: ou run: non reconnue"));
         }
-        let Some((col, k, value)) = key else {
-            continue;
-        };
-        if value.starts_with(['&', '*']) {
-            errors.push(format!("ligne {n} : ancre ou alias YAML refusé"));
+        let v = strip_comment(l.value);
+        if v.starts_with(['&', '*', '!']) {
+            errors.push(format!("ligne {n} : ancre, alias ou balise YAML refusé"));
         }
         // Collection en ligne : seules `{}`, `[]` et une liste de mots (`[push, pull_request]`).
-        let v = strip_comment(value);
         if v.starts_with(['{', '[']) && v != "{}" && v != "[]" && v[1..].contains([':', '{', '[']) {
             errors.push(format!("ligne {n} : collection en ligne refusée"));
         }
-        if k == "run" {
-            run_until = Some((col, value.starts_with(['|', '>'])));
+        if v.starts_with(['|', '>']) {
+            block = Some((l.col, data));
         }
-        if k == "permissions" && col == 0 && !line.starts_with('-') {
-            top_permissions = strip_comment(value) == "{}";
-        }
-        if k == "uses" {
-            let v = strip_comment(value).trim_matches(['"', '\'']);
-            let (repo, sha) = v.split_once('@').unwrap_or((v, ""));
-            let owner_repo: Vec<&str> = repo.splitn(3, '/').take(2).collect();
-            let allowed =
-                ALLOWED_ACTIONS.contains(&owner_repo.join("/").to_ascii_lowercase().as_str());
-            let pinned =
-                sha.len() == 40 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-            if !allowed || !pinned {
-                errors.push(format!(
-                    "ligne {n} : action hors liste ou non épinglée par SHA (SEC0-30)"
-                ));
-            }
-            let checkout = owner_repo
-                .join("/")
-                .eq_ignore_ascii_case("actions/checkout");
-            // persist-credentials: false sous le with: de l'étape, pas ailleurs (env:, etc.).
-            let mut under_with = false;
-            let no_persist = !step_block(&lines, i, col).iter().any(|l| {
-                let Some((c, k, v)) = key_of(l) else {
-                    return false;
-                };
-                if c == col {
-                    under_with = k == "with";
-                }
-                c > col && under_with && k == "persist-credentials" && strip_comment(v) == "false"
+        if l.key.is_some() {
+            let open = v.is_empty();
+            stack.push(Level {
+                col: l.col,
+                key: key.to_owned(),
+                open,
+                child: None,
             });
-            if checkout && no_persist {
-                errors.push(format!(
-                    "ligne {n} : actions/checkout sans persist-credentials: false"
-                ));
-            }
+        }
+        if key == "permissions" && !l.item && l.col == 0 {
+            top_permissions = v == "{}";
+        }
+        if key == "uses" {
+            check_uses(&lines, i, &l, &mut errors);
         }
     }
     if !top_permissions {
@@ -247,6 +377,36 @@ mod tests {
             ),
             ("  pull_request:", "  \"pull_request_t\\x61rget\":"),
             ("        with:\n", "        env:\n"),
+            // Relecture neuve, I1 : clés explicites, balises, flux, indentation, interpolations.
+            (
+                "        run: |",
+                "        ? run\n        : echo \"${{ github.head_ref }}\"\n        x: |",
+            ),
+            (
+                "      - name: t",
+                "      - name: k\n        ? uses\n        : evil/x@main\n      - name: t",
+            ),
+            ("      - name: t", "      - ? uses\n      - name: t"),
+            ("TITLE: ${{", "TITLE: !!str x\n          X: ${{"),
+            ("TITLE: ${{", "TITLE: &a x\n          X: ${{"),
+            ("        env:", "         env:"),
+            (
+                "      contents: read",
+                "      contents: read\n     actions: read",
+            ),
+            ("  a:\n", "  name: ${{ github.event.issue.title }}\n  a:\n"),
+            ("  a:\n", "  a:\n    runs-on: ${{ matrix.os }}\n"),
+            ("permissions: {}", "permissions: {}\n---"),
+            // m4 : clés comparées sans tenir compte de la casse.
+            (
+                "      - name: t",
+                "      - USES: evil/x@main\n      - name: t",
+            ),
+            (
+                "        run: |",
+                "        Run: echo ${{ github.head_ref }} |",
+            ),
+            ("persist-credentials: false", "Persist-Credentials: true"),
         ];
         for (from, to) in cases {
             let text = good().replacen(from, to, 1);
@@ -256,6 +416,10 @@ mod tests {
         let inline = good().replace("run: |", "run: echo ${{ github.event.issue.title }}");
         assert!(!check_workflow(&inline).is_empty());
         assert!(!check_workflow(&good().replace("permissions: {}\n", "")).is_empty());
+    }
+
+    #[test]
+    fn accepts_safe_forms() {
         let runner = good().replace(
             "echo \"$TITLE\"",
             "echo ${{ runner.os }} ${{runner.temp}} \\",
@@ -263,8 +427,31 @@ mod tests {
         assert_eq!(check_workflow(&runner), Vec::<String>::new());
         let list = good().replace(
             "  pull_request:",
-            "  push:\n    branches: [main, \"release\"]",
+            "  push:\n    branches: [main, \"release\"]\n    tags:\n      - v1\n      - 'v2'",
         );
         assert_eq!(check_workflow(&list), Vec::<String>::new());
+        let data = good().replace(
+            "    steps:",
+            "    if: ${{ github.event_name == 'push' }}\n    env:\n      M: ${{ matrix.os }}\n    steps:",
+        );
+        assert_eq!(check_workflow(&data), Vec::<String>::new());
+        let with = good().replace(
+            "          persist-credentials: false",
+            "          persist-credentials: false\n          ref: ${{ github.head_ref }}",
+        );
+        assert_eq!(check_workflow(&with), Vec::<String>::new());
+        let flush = good().replace("      - uses", "    - uses").replace(
+            "        with:\n          persist",
+            "      with:\n        persist",
+        );
+        let flush = flush.replace(
+            "      - name: t\n        env:\n          TITLE",
+            "    - name: t\n      env:\n        TITLE",
+        );
+        let flush = flush.replace(
+            "        run: |\n          echo \"$TITLE\"\n          cargo",
+            "      run: |\n        echo \"$TITLE\"\n        cargo",
+        );
+        assert_eq!(check_workflow(&flush), Vec::<String>::new());
     }
 }
