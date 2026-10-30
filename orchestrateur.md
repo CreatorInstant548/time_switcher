@@ -107,3 +107,12 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
     - les campagnes de fin de phase 0 en profil `sim` dans la copie principale : déterminisme, performances ;
     - les points 2 et 4 de §5.
   - Les points 1 et 3 de §5 (audit de sécurité de fin de phase, vérification de conformité par la conception) seront demandés quand T9b et T9c seront fusionnées.
+  - Le lancement du responsable qualité a été refusé : l'utilisateur écrivait par le contrôle à distance, et une session ne se lance que sur un message tapé dans l'application de bureau. Il sera relancé au prochain message de bureau.
+- **30/10 au soir, gel des fusions**
+  - Un faux écart de `-Check` (bug arrivé avec la #66, AS-43) bloque les fusions. Le correctif sera fusionné une seule fois sur le web par l'utilisateur.
+  - Depuis 22:07 UTC, Actions est de nouveau bloqué par la facturation du compte. Environ 1 550 minutes facturées sur 3 000 (premières exécutions seulement) : c'est donc plutôt le paiement ou la limite de dépense. L'utilisateur est informé.
+- **Contrôle quotidien sans Actions (AS-44, AA4)** — 30/10, 22:30 UTC :
+  - `-Check` : faux écart AS-43 (« ÉCART : » vide), attendu ;
+  - lecture directe : règles effectives sur `main` = deletion, non_fast_forward, required_linear_history, pull_request, required_status_checks ; `enforcement=active`, `bypass=0`, `can_bypass=never` ;
+  - tête de `main` = 7365327 (#66) ;
+  - conforme.
