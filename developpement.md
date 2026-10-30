@@ -90,7 +90,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | T2c | `claude/xtask-disk`, [#16](https://github.com/CreatorInstant548/time_switcher/pull/16), tête 95b66f2 | **Fusionnée** par `merge-pr.ps1` | `check --all` vert ; 30 tests ; jonction réelle non suivie (test) | `/code-review` et `/security-review` par l'auteur | relecture neuve **refusée** : B1 (baux suivis à travers une jonction à la place de `target`), I1 (`TS_CACHE` non validé), I2 (essai jetable qui agit sur le vrai dépôt) ; `review-ok` et `archsec-ok` sur 95b66f2 | **14b6c58** |
 | T13 | `claude/ci`, [#14](https://github.com/CreatorInstant548/time_switcher/pull/14), tête e3e2f2a | **Fusionnée** par `merge-pr.ps1` | **`ci-ok` vert** (run 41011605890) ; ~9 min facturées par exécution | relecture interne faite par l'auteur | `review-ok` et `archsec-ok` sur 5a47413 ; mise à jour (e3e2f2a), `ci-ok` vert, `review-ok` et `archsec-ok` sur e3e2f2a | **dd83f66** |
 | (conception) | `#22` (A12, documentation) | **Fusionnée** par `merge-pr.ps1`, `ci-ok` vert | — | relue | sans objet | 60aedbe |
-| T5a | `claude/ts-kernel-1`, [#20](https://github.com/CreatorInstant548/time_switcher/pull/20), tête bbe2c76 | Prête (attend T3a) | **`ci-ok` vert** ; `check --all` (13 étapes) | `/security-review` et relecture interne par l'auteur | I1, m1, m4 et AS-22 faits (bbe2c76, `ci-ok` vert) ; **`review-ok` sur bbe2c76** ; `archsec-ok` demandé ; fusion après T3a | — |
+| T5a | `claude/ts-kernel-1`, [#20](https://github.com/CreatorInstant548/time_switcher/pull/20), tête bbe2c76 | **Fusionnée** par `merge-pr.ps1` | **`ci-ok` vert** ; `check --all` (13 étapes) | `/security-review` et relecture interne par l'auteur | `review-ok` et `archsec-ok` sur bbe2c76 ; fusionnée avant T3a (accord d'archi-sécu) | **43b3509** |
 
 ## Sessions et agents actifs
 
@@ -102,7 +102,8 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | sous-agent t2b-check | T2b | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t13-ci | T13 + A2 | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t3a-merge | T3a | Opus | worktree isolé, `claude/xtask-merge` | 30/10 |
-| sous-agent t5a-kernel | T5a | Opus | — | 30/10, **livrée** (PR #20) |
+| sous-agent t5a-kernel | T5a | Opus | — | 30/10, **terminée** (fusionnée) |
+| sous-agent t5b-rng | T5b | Opus | worktree isolé, `claude/ts-kernel-rng` | 30/10 |
 | sous-agent t2c-disk | T2c | Opus | — | 30/10, **livrée** (PR #16) |
 | sous-agent t4-spec-map | T4 | Sonnet | — | 30/10, **livrée** (PR #15) |
 
@@ -178,3 +179,4 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
 - 30/10 : arbitrage A12 de la conception (#21) : `SimDay(i16)` avec conversion saturante. PR #22 (documentation) fusionnée, 60aedbe : première fusion où `merge-pr.ps1` a exigé `ci-ok`. A12 transmis à T5a (borne haute saturée provisoirement, `PROVISOIRE(conception #21)`).
 - 30/10 : archi-sécu **AS-22** remplace K8 : `SimDay(i16)` relatif à une origine glissante `DayOrigin(i64)` ; conversion saturante sans `Option` ; `rebase` pur ; constantes techniques seuil 21 900 jours et pas 10 950 jours ; test de glissement sur 200 ans. Transmis à T5a (PR #20). Phase 1 : système de glissement et trait `RebaseDays`. T8 : `DayOrigin` dans l'instantané.
 - 30/10 : PR #20 : `review-ok` sur bbe2c76 (I1 fermé, AS-22 vérifié par une sonde, glissement sur 200 ans) ; `archsec-ok` demandé. Pour la phase 1 : `SimDay` garde un `Default` (jour 0) ; glissement à faire en fin de journée. Limite de `spec-map` (identifiants en 2ᵉ colonne) ajoutée à l'issue #18.
+- 30/10 : **PR #20 fusionnée** (43b3509) avant T3a, avec l'accord d'archi-sécu. Le premier essai de `merge-pr.ps1` a été refusé par `install-hooks -Verify` (« Permission denied » sur `.git/config`, accès concurrent passager) ; la configuration était conforme, et le second essai est passé. À traiter dans T3a : relancer la lecture une fois avant de conclure, sans jamais réussir en silence. **T5b (aléa) lancée.**
