@@ -1,0 +1,20 @@
+[package]
+name = "ts_model"
+version = "0.0.0"
+description = "Shared types of time_switcher: components, intents, commands, events (data only)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# No default feature. `dev-commands` turns on the kernel's own, so the kernel's compile_error!
+# refuses it together with `public` (SEC0-20, S8).
+[features]
+default = []
+dev-commands = ["ts_kernel/dev-commands"]
+
+[dependencies]
+ts_kernel = { path = "../ts_kernel" }
+
+[lints]
+workspace = true
