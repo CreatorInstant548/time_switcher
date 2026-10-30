@@ -170,7 +170,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: xtask check --all (hors étapes du travail security)
         if: steps.gate.outputs.go == 'true'
-        run: cargo xtask check --all --only fmt,clippy,test,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map
+        run: cargo xtask check --all --only fmt,clippy,test,determinism,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map
 
   rust-windows:
     name: rust-windows
@@ -219,17 +219,20 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: xtask check --all (sans fmt ni étapes du travail security)
         if: steps.gate.outputs.go == 'true'
-        run: cargo xtask check --all --only clippy,test,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map
+        run: cargo xtask check --all --only clippy,test,determinism,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map
 
   ci-ok:
     name: ci-ok
     if: always()
     needs: [changes, pr-title, security, rust-linux, rust-windows]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    # The job timeout also covers the wait for a runner (#61): 10 min absorbs a slow pickup,
+    # while the step timeout below still bounds the script itself.
+    timeout-minutes: 10
     permissions: {}
     steps:
       - name: Résultat des travaux (G2)
+        timeout-minutes: 2
         env:
           EVENT: ${{ github.event_name }}
           DRAFT: ${{ github.event.pull_request.draft }}
