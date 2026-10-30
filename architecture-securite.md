@@ -356,6 +356,29 @@ Organisation §3.1 point 3. Construit en phase 0 par une session de tâche du re
 - Déterministe : sortie triée.
 - Tests sur un petit corpus de documents et de code factices.
 
+**Révision du 30/10 (H1, H2, H7 de l'avis sur la consigne T4, §9.7), qui fait foi**
+
+- **Marques de commentaire (H7)** :
+  - `// spec:`, `//! spec:` et `/// spec:` en Rust, C# et **RON** : RON se commente par `//` et non par `#`, comme le disait par erreur la version initiale ;
+  - `# spec:` en Python, TOML, YAML, shell et PowerShell ;
+  - les mêmes formes pour `PROVISOIRE(conception #<id>)`.
+
+  Sont analysés les fichiers suivis par Git, sauf `*.md`, `docs/` et `docs/archives/`.
+- **Grammaire d'un renvoi (H1)**, conforme aux renvois déjà présents dans le dépôt :
+  - **Découpage :** `;` sépare les fichiers. Dans un même fichier, `,` sépare les éléments.
+  - **Élément :** c'est une section `§n(.m)*` (avec `bis`, `ter` ou une lettre en option), un identifiant, ou une plage `X à Y` de même préfixe (`SEC0-29 à 31`, `F1 à F10`).
+  - **Préfixe repris :** un nombre seul reprend le préfixe de l'identifiant qui le précède (`SEC0-03, 06`).
+  - **Contexte :** une section peut précéder un identifiant pour le situer (`§9.5 F1 à F10`).
+  - **Parenthèses :** un texte entre parenthèses est ignoré (`(révisé)`, `(chemins sensibles)`).
+- **Renvois vers un carnet (H1)** : `carnet <rôle>.md …` se résout dans `origin/pilotage:<rôle>.md`, lu par `git show`, en lecture seule.
+  - Si `origin/pilotage` est absent, l'étape **échoue** avec le message « git fetch origin pilotage ». Jamais de réussite silencieuse.
+  - La CI (T13) récupère cette branche.
+  - Ces renvois sont réécrits vers les revues à la consolidation de fin de phase 0.
+- **Identifiants (H2)** : la liste fermée de lettres (S, D, P, E, G, A, M) est remplacée par une règle générale.
+  - **Forme :** un identifiant `[A-Z][A-Z0-9]*(-[A-Z0-9]+)*-?\d+`, par exemple `S8`, `M28`, `A19`, `SEC0-35`, `AS-12`, `R-ARCH-04`, `T0-06` ou `F3`.
+  - **Validité :** il est valide s'il est **défini** dans le fichier cible. Une définition est soit la première cellule d'une ligne de tableau, soit un gras en tête d'élément de liste (`- **X**`, `- **X.**`, `- [ ] **X**`), soit un gras en tête de ligne.
+  - **Dans une section :** quand une section précède l'identifiant, celui-ci doit être défini dans cette section.
+
 ## 8. Avis sur la demande de la direction artistique (§12.9) (tâche 3, décidé)
 
 Source : [direction-artistique.md](../time_switcher/docs/conception/domaines/direction-artistique.md), v0.4, §12.9. Aucun de ces avis ne change le jeu.
@@ -424,6 +447,29 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | **PR #10 (T2a), fusion** | SHA de tête `f14fb969ba0d0751b8780b586121cabad282fe44` ; `review-ok` du relecteur neuf | **`archsec-ok: f14fb969ba0d0751b8780b586121cabad282fe44`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/10#issuecomment-6514394030)) : E1 à E9 appliquées ; SEC0-02, 07, 19, 20 conformes ; non bloquant : `try_from_os_rng`, m3, m4 (→ F4, T2b) |
 | 30/10 | Consigne T13 (CI GitHub Actions ; V et S) | `scratchpad/…/consigne-T13.md` du responsable développement | **Validé avec corrections G1 à G12** (§9.6) ; pas de `.gitleaks.toml` à la racine ; lancement après la fusion de T2b |
 | 30/10 | **PR #11 (T2b, `xtask check`), fusion** | SHA de tête `067a0cbaaa2711ad4b763d9d5e0d63fb6198e6ac` ; `review-ok` du vérificateur neuf (deux tours) | **`archsec-ok: 067a0cbaaa2711ad4b763d9d5e0d63fb6198e6ac`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/11#issuecomment-6515590937)) : F1 à F7, F9 et F10 conformes ; aucune réussite silencieuse ; non bloquant : [#12](https://github.com/CreatorInstant548/time_switcher/issues/12), dont A1 (AS-18 à l'arrivée de `ts_py`), A2 (mode CI de gitleaks, pour T13) et A3 (`git ls-tree` dans `guard-git`) ; écart de taille (≈ 1 900 lignes) accepté |
+| 30/10 | Consigne T4 (`xtask spec-map` ; S) | `scratchpad/…/consigne-T4.md` du responsable développement | **Validé avec corrections H1 à H8** (§9.7) ; §7 révisé (grammaire, carnets, identifiants, RON), `spec-map-spec.md` à recopier ; lancement après la fusion de la PR #11 |
+
+### 9.7 Consigne T4 : `cargo xtask spec-map` (30/10)
+
+Avis **validé avec corrections H1 à H8**, toutes décidées. Lancement après la fusion de la PR #11. Le modèle Sonnet est accepté : la tâche n'est pas sensible en elle-même, mais elle vit dans `tools/xtask/`, d'où les points H4 à H6.
+
+- **H1. Grammaire des renvois.** Les renvois déjà présents dans le dépôt (`tools/dev/`, `tools/xtask/`) n'entrent pas dans la grammaire initiale du §7 : renvois vers un carnet, listes séparées par `,`, plages `à`, préfixes repris, parenthèses. **Le §7 est révisé** (voir « Révision du 30/10 »), et c'est lui qui fait foi. `spec-map-spec.md` doit être recopié de nouveau depuis le §7 révisé.
+- **H2. Identifiants.** On abandonne la liste fermée de lettres pour la règle générale : un identifiant est valide s'il est **défini** dans le fichier cible (§7 révisé). *Pourquoi :* les revues et le carnet emploient aussi `RS`, `C`, `R`, `SEC0-`, `AS-`, `T0-`, `V0-` et `R-ARCH-`. Une liste de lettres serait soit trop étroite, ce qui donnerait de faux refus, soit trop large, ce qui laisserait passer des renvois pendants.
+- **H3. Renvois existants faux hors de `tools/xtask/`.** La consigne veut les signaler sans les corriger, mais `check` doit passer sur tout le dépôt. Les deux exigences se contredisent. Pour les concilier :
+  - une liste fermée, `tools/xtask/src/spec_map/known_bad.txt`, donne pour chaque renvoi faux le fichier, la ligne, le texte du renvoi, la raison et l'*issue* `role:dev` ouverte ;
+  - `check` ignore ces entrées-là et échoue sur tout autre renvoi faux ;
+  - une entrée qui ne correspond plus à rien fait aussi échouer : la liste ne peut que **diminuer** ;
+  - elle doit être **vide à la fin de la phase 0**, à la PR de consolidation.
+- **H4. `diff <révision>`.**
+  - La révision est vérifiée d'abord par `git rev-parse --verify --end-of-options <rév>^{commit}`.
+  - Une valeur qui commence par `-` est refusée.
+  - Aucune chaîne de l'utilisateur n'est passée à Git sans `--end-of-options`.
+- **H5. Lecture des fichiers.** Ils sont lus par la liste de `Ctx::files()` de la PR #11 : fichiers ordinaires seulement, aucun lien suivi. La sortie, Markdown ou JSON, ne contient que des chemins relatifs avec `/`, jamais un chemin absolu ni un nom d'utilisateur (SEC0-26). Le schéma JSON est fixé et documenté dans `docs/dev/spec-map.md`.
+- **H6. Effet sur `check`.** L'étape `spec-map` **s'ajoute** aux autres étapes : le diff ne doit modifier aucune autre étape de `check`. Si l'étape ne peut pas lire la conception ou `origin/pilotage`, elle **échoue**, sans jamais rien ignorer en silence.
+- **H7. Commentaires RON.** RON se commente par `//`, pas par `#`. C'est une erreur de la version initiale du §7, corrigée dans la révision.
+- **H8. Filtre par phase de `report` : reporté.** La conception ne porte pas la phase dans ses titres. Le filtre par fichier suffit en phase 0. Le filtre par phase sera ajouté quand le responsable qualité en aura besoin (organisation §3.1 point 4).
+
+**Revue :** `tools/xtask/` est un chemin sensible, donc `/security-review`, un relecteur neuf, puis mon `archsec-ok`. Critères bloquants : H3 à H6, plus SEC0-26.
 
 ### 9.6 Consigne T13 : intégration continue (30/10)
 
