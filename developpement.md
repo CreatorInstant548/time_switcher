@@ -85,6 +85,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | T1 | `claude/outillage-agents`, [#5](https://github.com/CreatorInstant548/time_switcher/pull/5), tête 92ecc11 | **Fusionnée** | sans objet (pas encore de xtask) ; tests 451/451, 57/57, 12/12 ; `merge-pr.ps1 5 -DryRun` conforme | 9 constats, traités | 3 relectures neuves ; `review-ok` et `archsec-ok` sur 92ecc11 | **93fc98a** |
 | (orchestrateur) | #9 (`CLAUDE.md`, règles de l'outillage) | Fusionnée par `merge-pr.ps1` (premier usage) | sans objet (documentation, pas de CI) | relue | sans objet | 2362c64 |
 | T2a | `claude/espace-travail`, [#10](https://github.com/CreatorInstant548/time_switcher/pull/10), tête f14fb96 | **Fusionnée** par `merge-pr.ps1` | équivalents (fmt, clippy `-D warnings`, tests, `deny`, `audit`, 4 `compile_error!` E8) verts selon l'auteur | lu par le responsable : rien de bloquant | `review-ok` et `archsec-ok` sur f14fb96 | **5209fd2** |
+| T2b | `claude/xtask-check`, [#11](https://github.com/CreatorInstant548/time_switcher/pull/11), tête af19281 | En relecture | `cargo xtask check --all` vert (11 OK, 2 ignorées : workflows, spec-map) ; 15 tests | `/code-review` et `/security-review` faits par l'auteur | relecture neuve en cours ; `archsec-ok` à demander | — |
 
 ## Sessions et agents actifs
 
@@ -93,7 +94,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | sous-agent t0-machine | T0 | Sonnet | aucun (hors dépôt) | 30/10, **terminée** |
 | sous-agent t1-outillage | T1 | Opus | worktree isolé | 30/10, **terminée** (fusionnée) |
 | sous-agent t2a-espace | T2a | Opus | — | 30/10, **terminée** (fusionnée) |
-| sous-agent t2b-check | T2b | Opus | worktree isolé, `claude/xtask-check`, emplacement par `-Acquire` | 30/10 |
+| sous-agent t2b-check | T2b | Opus | — | 30/10, **livrée** (PR #11) |
 
 ## Demandes envoyées
 
@@ -138,3 +139,4 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 - 30/10 : consigne T2b **validée avec corrections F1 à F10** (archi-sécu §9.5). Découpage : T2b (`check`) puis T2c (`slots`, `disk`). `serde_json` pré-approuvée pour les crates d'outil (AS-17).
 - 30/10 : **PR #10 fusionnée** (5209fd2), `review-ok` et `archsec-ok` sur f14fb96 ; worktrees des sous-agents retirés. **T2b lancée** (consigne copiée dans le scratchpad). Consigne T13 (CI) écrite et envoyée à archi-sécu ; lancement après T2b.
 - 30/10 : consigne T13 **validée avec corrections G1 à G12** (archi-sécu §9.6), intégrées à `consigne-T13.md` (scratchpad). G7 : option `cargo xtask check --only <étape>` ajoutée à la consigne de T2b, en cours. G3 et G8 vont aussi dans T3 (issue #6).
+- 30/10 : T2b livrée, PR #11 : `serde` et `serde_json` (11 crates de plus) ; ~1 500 lignes hors tests, **écart accepté (décidé)** : `xtask check` forme un tout, et un redécoupage coûterait plus qu'il ne protège ; relecture neuve ciblée étape par étape. Points pour T13 : l'étape `gitleaks` exige la copie épinglée locale (la CI lancera gitleaks dans `security` et `xtask check` sans cette étape) ; `C:\Dev\` non refusé (F6, sinon `CLAUDE.md` et la conception échouent).
