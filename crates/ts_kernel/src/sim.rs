@@ -9,7 +9,7 @@ use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::{QueryState, With};
 use bevy_ecs::resource::Resource;
-use bevy_ecs::schedule::Schedule;
+use bevy_ecs::schedule::{Schedule, Schedules};
 use bevy_ecs::world::World;
 use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 
@@ -208,6 +208,20 @@ pub enum BuildError {
         /// Message de `bevy_ecs`.
         message: String,
     },
+    /// A plugin depends on a plugin that comes later in the rules.
+    DependencyOrder {
+        /// Plugin that declares the dependency.
+        plugin: &'static str,
+        /// Required plugin, placed after it.
+        dependency: &'static str,
+    },
+    /// A plugin switched off ambiguity detection (L7): `ambiguous_with_all` on a system of
+    /// `phase`, or, with `phase: None`, `allow_ambiguous_component` or
+    /// `allow_ambiguous_resource` on the world.
+    AmbiguityOptOut {
+        /// Phase concerned, or `None` for a world-wide opt-out.
+        phase: Option<Phase>,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -227,6 +241,21 @@ impl fmt::Display for BuildError {
                 write!(f, "{wanted} fils demandés, le processus en a déjà {actual}")
             }
             Self::Schedule { phase, message } => write!(f, "phase {phase:?} : {message}"),
+            Self::DependencyOrder { plugin, dependency } => {
+                write!(
+                    f,
+                    "plugin {plugin} depends on {dependency}, which comes after it"
+                )
+            }
+            Self::AmbiguityOptOut { phase: Some(phase) } => {
+                write!(
+                    f,
+                    "a system of phase {phase:?} opts out of ambiguity detection"
+                )
+            }
+            Self::AmbiguityOptOut { phase: None } => {
+                f.write_str("the world opts components or resources out of ambiguity detection")
+            }
         }
     }
 }
@@ -317,11 +346,28 @@ fn active_plugins<'a>(
             return Err(BuildError::NotDisableable(name));
         }
     }
-    Ok(rules
+    let active: Vec<&dyn Plugin> = rules
         .iter()
         .filter(|p| !cfg.disabled_plugins.contains(&p.name()))
         .map(|p| &**p)
-        .collect())
+        .collect();
+    // Dependencies are checked before any `build` runs (T6a review m5).
+    for (i, p) in active.iter().enumerate() {
+        for &dependency in p.dependencies() {
+            let plugin = p.name();
+            if cfg.disabled_plugins.contains(&dependency) {
+                return Err(BuildError::DisabledDependency { plugin, dependency });
+            }
+            match active.iter().position(|q| q.name() == dependency) {
+                None => return Err(BuildError::MissingDependency { plugin, dependency }),
+                Some(j) if j > i => {
+                    return Err(BuildError::DependencyOrder { plugin, dependency });
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    Ok(active)
 }
 
 impl Sim {
@@ -363,19 +409,10 @@ impl Sim {
                 .map(|&p| phase_schedule(p, cfg.threads))
                 .collect(),
             current: "",
-            dependencies: Vec::new(),
         };
         for p in &plugins {
             b.current = p.name();
             p.build(&mut b);
-        }
-        for &(plugin, dependency) in &b.dependencies {
-            if cfg.disabled_plugins.contains(&dependency) {
-                return Err(BuildError::DisabledDependency { plugin, dependency });
-            }
-            if !plugins.iter().any(|p| p.name() == dependency) {
-                return Err(BuildError::MissingDependency { plugin, dependency });
-            }
         }
 
         let SimBuilder {
@@ -383,7 +420,18 @@ impl Sim {
             mut phases,
             ..
         } = b;
+        // L7 cannot be switched off (T6a review m3). `ambiguous_with(x)` edges are not
+        // visible through the `bevy_ecs` API; `clippy.toml` bans them in rule crates.
+        let world_opt_out = world
+            .get_resource::<Schedules>()
+            .is_some_and(|s| !s.ignored_scheduling_ambiguities.is_empty());
+        if world_opt_out {
+            return Err(BuildError::AmbiguityOptOut { phase: None });
+        }
         for (schedule, &phase) in phases.iter_mut().zip(Phase::ALL.iter()) {
+            if !schedule.graph().ambiguous_with_all.is_empty() {
+                return Err(BuildError::AmbiguityOptOut { phase: Some(phase) });
+            }
             if let Err(e) = schedule.initialize(&mut world) {
                 let message = e.to_string(schedule.graph(), &world);
                 return Err(BuildError::Schedule { phase, message });
@@ -454,7 +502,8 @@ impl Sim {
         self.complete.iter(&self.world).next().is_some()
     }
 
-    /// Premier début de tick à `t` ou avant.
+    /// Premier début de tick à `t` ou avant. Only called with `t > now()`, so the result is
+    /// at least `now()` and cannot underflow.
     fn tick_floor(&self, t: SimTime) -> SimTime {
         let ms = t.as_millis();
         SimTime::from_millis(ms - ms.rem_euclid(self.tick_ms))
@@ -466,20 +515,29 @@ impl Sim {
     /// **Saut de temps** : tant qu'aucune entité ne porte [`LodComplete`], la boucle ne tique
     /// plus et saute directement au tick qui contient l'événement suivant. Les ticks sautés
     /// sont vides : un événement est donc traité dans le même tick, qu'il y ait saut ou non.
+    /// This relies on the time-skip contract stated on [`Plugin`].
+    ///
+    /// Never panics on extreme dates: a stop date at or before `now()` does nothing, and a
+    /// stop date within one tick of `i64::MAX` stops at the last tick start before it
+    /// (T6a review m2).
     pub fn run_until(&mut self, stop: StopCondition) -> RunReport {
         let StopCondition::At(at) = stop;
+        let mut report = RunReport::default();
+        if at <= self.now() {
+            return report;
+        }
         let floor = self.tick_floor(at);
         let target = if floor == at {
             at
         } else {
-            floor.add_millis(self.tick_ms)
+            floor.checked_add_millis(self.tick_ms).unwrap_or(floor)
         };
-        let mut report = RunReport::default();
         while self.now() < target {
             if !self.has_complete_entities() {
                 let next = self.world.resource::<EventQueue>().peek_next_time();
                 let to = match next {
-                    Some(t) if t < target => self.tick_floor(t).max(self.now()),
+                    Some(t) if t <= self.now() => self.now(),
+                    Some(t) if t < target => self.tick_floor(t),
                     _ => target,
                 };
                 let skipped = to.checked_millis_since(self.now()).unwrap_or(0) / self.tick_ms;

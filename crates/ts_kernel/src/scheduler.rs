@@ -56,6 +56,12 @@ impl<E> Ord for HeapEntry<E> {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Test-only count of elements shifted by sorted inserts (complexity regression test).
+    static SHIFTS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
 /// Un niveau du calendrier : ses cases, et un mot de 64 bits par groupe de 64 cases occupées.
 #[derive(Debug)]
 struct Level<E> {
@@ -72,9 +78,15 @@ impl<E> Level<E> {
     }
 
     /// Insère en gardant la case triée par `seq` croissant.
+    ///
+    /// Callers insert in increasing `seq` order (new events carry the largest `seq`; cascaded
+    /// batches are sorted by `seq` first), so this is an append. The sorted insert stays as
+    /// a safety net.
     fn insert(&mut self, slot: usize, item: Scheduled<E>) {
         let q = &mut self.slots[slot];
         let pos = q.partition_point(|e| e.seq < item.seq);
+        #[cfg(test)]
+        SHIFTS.with(|s| s.set(s.get() + (q.len() - pos)));
         q.insert(pos, item);
         self.occupied[slot / 64] |= 1 << (slot % 64);
     }
@@ -205,8 +217,7 @@ impl<E> Scheduler<E> {
         }
         let (_, crem) = split(self.cursor);
         if let Some(s) = self.levels[0].next_occupied(digit(crem, 0)) {
-            let base = self.cursor.as_millis() - crem % SPAN[0];
-            return Some(SimTime::from_millis(base + s as i64));
+            return Some(self.slot_start(crem, 0, s));
         }
         for k in 1..LEVELS {
             if let Some(s) = self.levels[k].next_occupied(digit(crem, k) + 1) {
@@ -244,9 +255,8 @@ impl<E> Scheduler<E> {
                 return self.heap.pop().map(|Reverse(e)| e.0);
             }
             let (_, crem) = split(self.cursor);
-            let second_start = self.cursor.as_millis() - crem % SPAN[0];
             if let Some(s) = self.levels[0].next_occupied(digit(crem, 0)) {
-                let t = SimTime::from_millis(second_start + s as i64);
+                let t = self.slot_start(crem, 0, s);
                 if t > until {
                     return None;
                 }
@@ -269,8 +279,7 @@ impl<E> Scheduler<E> {
             let Some(s) = self.levels[k].next_occupied(digit(crem, k) + 1) else {
                 continue;
             };
-            let parent_start = self.cursor.as_millis() - crem % SPAN[k];
-            let start = SimTime::from_millis(parent_start + s as i64 * UNIT[k]);
+            let start = self.slot_start(crem, k, s);
             if start > until {
                 return None;
             }
@@ -291,14 +300,31 @@ impl<E> Scheduler<E> {
             return None;
         }
         self.cursor = start;
+        let mut batch = Vec::new();
         while let Some(Reverse(top)) = self.heap.peek()
             && split(top.0.at).0 == day
         {
             if let Some(Reverse(e)) = self.heap.pop() {
-                self.place(e.0);
+                batch.push(e.0);
             }
         }
+        // The heap yields `(at, seq)` order; placing in `seq` order makes every slot insert
+        // an append, so a day boundary costs O(n log n), not O(n²) (T6a review I1).
+        batch.sort_unstable_by_key(|e| e.seq);
+        for item in batch {
+            self.place(item);
+        }
         Some(true)
+    }
+
+    /// Start of slot `s` of level `k`, in the level-`k` span that holds the cursor
+    /// (`crem` is the cursor's position in its day). Computed as an offset from the cursor
+    /// (at least the slot's earliest pending date), so it never overflows near `i64::MIN`
+    /// (T6a review m1).
+    fn slot_start(&self, crem: i64, k: usize, s: usize) -> SimTime {
+        // Exact conversion: `s` is below `RADIX[k]`.
+        let offset = s as i64 * UNIT[k] - crem % SPAN[k];
+        SimTime::from_millis(self.cursor.as_millis() + offset)
     }
 }
 
@@ -494,6 +520,65 @@ mod tests {
         let out: Vec<_> = s.pop_due(t(600)).into_iter().map(|e| e.event).collect();
         assert_eq!(out, [5, 4, 1, 3]);
         assert_eq!(s.pop_due(t(800)).len(), 1);
+    }
+
+    /// T6a review I1: many next-day events in one hour, scheduled out of date order, cascade
+    /// at midnight without shifting slot contents (a bound on operations, not on time).
+    #[test]
+    fn day_boundary_cascade_is_not_quadratic() {
+        let mut d = Draws::new(5);
+        let mut s = Scheduler::new(SimTime::EPOCH);
+        let n = 20_000;
+        for i in 0..n {
+            let at = DAY + 8 * 3_600_000 + d.below(3_600_000) as i64;
+            s.schedule(t(at), i);
+        }
+        SHIFTS.with(|c| c.set(0));
+        let out = s.pop_due(t(2 * DAY));
+        assert_eq!(out.len(), n);
+        assert!(out.windows(2).all(|w| w[0].key() < w[1].key()));
+        let shifts = SHIFTS.with(core::cell::Cell::get);
+        assert_eq!(shifts, 0, "{shifts} elements shifted");
+    }
+
+    /// T6a review m1: dates and cursors at the bounds of `i64` never overflow, and the
+    /// output still matches a sorted reference.
+    #[test]
+    fn extreme_dates_do_not_overflow() {
+        let marks = [
+            i64::MIN,
+            i64::MIN + 1,
+            i64::MIN + 999,
+            i64::MIN + DAY,
+            -DAY,
+            0,
+            DAY,
+            i64::MAX - DAY,
+            i64::MAX - 1,
+            i64::MAX,
+        ];
+        for &start in &[i64::MIN, -1, 0, i64::MAX - 1] {
+            let mut s = Scheduler::new(t(start));
+            let mut reference = BTreeMap::new();
+            for (i, &at) in marks.iter().chain(marks.iter().rev()).enumerate() {
+                let seq = s.schedule(t(at), i);
+                reference.insert((at, seq), i);
+            }
+            for &until in &marks {
+                assert_eq!(
+                    s.peek_next_time(),
+                    reference.keys().next().map(|&(at, _)| t(at))
+                );
+                let got: Vec<_> = s.pop_due(t(until)).into_iter().map(|e| e.event).collect();
+                let expected: Vec<_> = reference
+                    .range(..=(until, u64::MAX))
+                    .map(|(_, &v)| v)
+                    .collect();
+                reference.retain(|&(at, _), _| at > until);
+                assert_eq!(got, expected, "start {start}, until {until}");
+            }
+            assert!(s.is_empty());
+        }
     }
 
     #[test]
