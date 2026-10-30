@@ -418,6 +418,52 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | Découpage v2 (T0 à T13, avec T2a, T2b, T7a, T7b et T9w) | `developpement.md`, commit 1468629 | **Validé avec corrections R1 à R5** (§9.2) ; **feu vert pour T1** |
 | 30/10 | Crochet Claude Code dans les réglages du projet (T1, T3) | Message du responsable développement | **Favorable**, avec SEC0-35 : point 1 dans T1, points 2 à 4 dans T3 (`hooks verify`) |
 | 30/10 | PR #5 (T1) : décisions I4 et I2 du responsable développement | Message du responsable développement ; PR non encore soumise | **Favorable avec conditions** (§9.3) ; mon avis sur le SHA de tête reste à donner |
+| 30/10 | Consigne T2a (espace de travail Cargo, V et S) | `side-session-notes/…/consigne-T2a.md` | **Validé avec corrections E1 à E9** (§9.4) ; lancement permis après la fusion de la PR #5 |
+
+### 9.4 Consigne T2a : espace de travail Cargo (30/10)
+
+Le périmètre est juste : aucune dépendance, `tools/xtask` laissé à T2b, et `public` déclarée seulement dans `ts_kernel`. La décision sur le membre manquant est confirmée : Cargo refuse un membre explicite absent, donc T2b ajoute `tools/xtask` à `members`. Le motif `crates/*` ne le couvre pas.
+
+Corrections à intégrer à la consigne avant le lancement. Elles sont toutes décidées :
+
+- **E1. Groupe de lints clippy.** Écrire `all = { level = "warn", priority = -1 }`, sinon le lint `clippy::lint_groups_priority`, refusé par défaut, fait échouer clippy. Dans `clippy.toml`, mettre `allow-unwrap-in-tests = true` et `allow-expect-in-tests = true`. *Pourquoi : avec `--all-targets -D warnings`, chaque `unwrap` de test échouerait ; ce serait un faux refus.*
+- **E2. `overflow-checks = true` dans tous les profils**, `release` et `sim` compris.
+  - *Pourquoi :* un dépassement d'entier sur l'argent en centimes ou sur un compteur doit devenir une panique, et jamais un enroulement silencieux. Un enroulement est une création d'argent exploitable, et il diverge entre `dev` et `release`.
+  - Le type `Money` de T5 utilisera de toute façon une arithmétique vérifiée. Ce réglage est le filet.
+  - `panic` reste `unwind`.
+- **E3. Aucune construction avec `--all-features`**, ni en CI, ni dans `xtask`, ni dans la documentation : elle active `public` avec les fonctions de développement et déclenche le `compile_error!`. Les combinaisons sont testées une à une. À écrire dans `docs/dev/espace-travail.md`.
+- **E4. `deny.toml` au format de cargo-deny v2** :
+  - `[graph] all-features = true`, pour que les dépendances qu'on n'atteint que par une fonctionnalité de développement soient aussi contrôlées ;
+  - `[advisories]` :
+    - les crates non maintenues sont refusées (`unmaintained = "all"`) ;
+    - chaque entrée de `ignore` porte l'identifiant, une raison et une date ;
+    - elle est revue à l'audit hebdomadaire (SEC0-04). C'est plus strict que l'« alerte » de SEC0-02, que la v2 n'offre plus.
+  - `[sources]` : `allow-registry` limité à crates.io et `allow-git = []`.
+  - `[bans]` :
+    - `wildcards = "deny"`, avec `allow-wildcard-paths = true` pour les crates internes ;
+    - ajouter `openssl-sys` à la liste refusée.
+  - `[licenses]` : `confidence-threshold = 0.93`, aucune `exceptions`.
+- **E5. `clippy.toml`, interdictions complétées** :
+  - aléa :
+    - `rand::rng`, le nouveau nom de `thread_rng` depuis rand 0.9 ;
+    - `getrandom::fill` et `getrandom::getrandom` ;
+    - `std::collections::hash_map::RandomState::new` ;
+  - horloge : `std::time::Instant::elapsed` et `std::time::SystemTime::elapsed`, qui lisent l'horloge ;
+  - environnement : `std::env::vars` ;
+  - E/S, interdites dans le cœur par l'architecture §9.2 : `std::fs::read`, `std::fs::read_to_string`, `std::fs::write`, `std::fs::File::open` et `std::fs::File::create` ;
+  - types : `hashbrown::HashMap` et `hashbrown::HashSet`, en plus de ceux de `std`.
+
+  Les chemins de crates absentes du graphe (`rand`, `getrandom`, `hashbrown`) portent `allow-invalid = true` si clippy 1.99 l'accepte. Sinon, ils sont ajoutés avec la crate. T5 pourra autoriser explicitement la table à hachage déterministe qu'il choisira.
+- **E6. Exemptions locales.** `#[allow(clippy::disallowed_methods)]` et `#[allow(clippy::disallowed_types)]` (ou `#[expect]`) restent permis dans les crates d'hôte et d'outil, avec un commentaire. **Condition pour T2b** : `xtask check` refuse toute exemption de ce type dans `ts_kernel`, `ts_model`, `ts_data` et les crates de règles. La liste fermée de ces crates est tenue dans `xtask`. *Pourquoi : sans contrôle, une seule ligne `allow` rouvre l'horloge ou l'aléa dans le cœur.*
+- **E7. `.cargo/config.toml` et `Cargo.toml` racine** :
+  - aucune section `[source]`, `[registries]`, `[patch]` ni `[replace]`, aucun `linker` et aucune `rustflags`. *Pourquoi : ce sont des contournements de SEC0-02.*
+  - `Cargo.lock` est commité et n'est pas ignoré (SEC0-01).
+- **E8. Preuve du `compile_error!`.** Pour chacune des quatre combinaisons `public,<f>`, la sortie collée dans la PR montre **notre message**, pas seulement un échec. *Pourquoi : un échec d'une autre cause ferait réussir la preuve à tort.*
+- **E9. `BUILD_PROFILE` vaut `"public"` si et seulement si `public` est active.** Sans fonctionnalité, il vaut `"dev"`. Le futur refus de démarrer en ligne compare la valeur à `"public"` : il reste donc fermé par défaut. Le test unitaire le vérifie.
+
+**Note pour plus tard, sans effet sur T2a.** `xtask release` (phase 3 ou 4) devra retirer les chemins de la machine de construction du binaire public, par `--remap-path-prefix`. Ces chemins ne vont pas dans `.cargo/config.toml`. *Pourquoi : SEC0-26 et S-journal, aucun nom d'utilisateur dans un artefact livré.*
+
+Revue de la PR T2a : chemins sensibles, donc `/security-review`, relecteur neuf, puis mon `archsec-ok: <sha>`. Critères bloquants : SEC0-02, 07, 19, 20 et 22, et les corrections E1 à E9.
 
 ### 9.3 Décisions I4 et I2 de la PR #5 (30/10)
 
