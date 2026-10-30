@@ -301,3 +301,10 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - `ruzstd`, taux 2,28 (budget du §12.3 : de 2,1 à 6,7). `postcard`, `cobs` ; `fuzz/` à part.
   - Écart Q4 : le décodage s'arrête à une `SnapshotImage`, faute de décodeur dans le noyau (issue #46). Je propose de fusionner le codec, puis de faire une PR noyau #46 qui intègre la doc de `DevFeature::Commands` (#31). Proposition soumise à archi-sécu.
   - Relecteur neuf (Opus) lancé. Issue #45 (bornes provisoires).
+- 30/10 : **#42 (T3d) fusionnée** (3c80c9d) : deux `review-ok` (A et B, contre-relectures comprises) et l'`archsec-ok` sur 18f8710.
+  - Trois refus de `cargo xtask merge` sur des HTTP 500 et 502 passagers de GitHub (`check-runs` d'anciens commits), puis succès au quatrième essai.
+  - L'orchestrateur est prévenu pour `-Apply`, puis `-Check` ; les fusions restent suspendues jusque-là.
+- 30/10 : **T3f** (cache des faits de `verify-main` et reprises bornées des `GET`) validée par archi-sécu (§9.14, V1 à V4) et lancée.
+  - #47 et #49 ont leurs approbations (AS-35, AS-36, `archsec-ok` sur f0752c2 et 002c995) et attendent leur mise à jour depuis `main`.
+  - Issue #50 : signature du manifeste (AS-37).
+  - Consigne T8b (#46, décodeur canonique du noyau, F4) prête.
