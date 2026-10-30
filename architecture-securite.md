@@ -274,6 +274,7 @@ Menaces ajoutées le 30/10 avec le dépôt GitHub :
 | T0-09 | Injection de script dans un workflow par le titre ou la branche d'une PR | SEC0-31 |
 | T0-10 | Action tierce compromise, ou étiquette d'action déplacée | SEC0-30 ; permissions minimales SEC0-29 |
 | T0-11 | Poussée directe sur `main` hors de Claude Code (aucun *ruleset*) | Détectée par SEC0-17, sans être empêchée (§3.6) |
+| T0-12 | Une session désactive le crochet Claude Code de son worktree (crochet versionné dans le projet, AS-15) | `.claude/` est un chemin sensible ; crochets Git `pre-commit` et `pre-push` épinglés hors du dépôt ; contrôle d'intégrité SEC0-35 à chaque fusion ; SEC0-17. **Risque résiduel accepté** (R-ARCH-04) : l'écart n'est détecté qu'à la fusion suivante |
 
 **Risque résiduel accepté** : tout vit sur un seul compte Windows et un seul compte GitHub. Jetons, crochets et commentaires d'approbation peuvent être forgés par qui contrôle le poste. Les barrières protègent de l'**erreur** et de l'**injection**, pas de la compromission de la machine (même limite que l'en-tête de 05, « Console et sessions »).
 
