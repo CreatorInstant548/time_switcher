@@ -385,7 +385,7 @@ struct GitleaksSetup {
 
 /// Mode CI (A2) : `CI=true` et `GITHUB_ACTIONS=true`. Un exécuteur n'a pas de copie épinglée des
 /// crochets ; le mode CI n'est pas plus permissif : binaire vérifié, configuration de `main`.
-fn ci_mode() -> bool {
+pub fn ci_mode() -> bool {
     let is_true = |v: &str| sys::env(v).as_deref() == Some("true");
     is_true("CI") && is_true("GITHUB_ACTIONS")
 }

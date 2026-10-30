@@ -150,6 +150,17 @@ Tout le reste est refusé, dont tout alias de `gh` : `pr merge`, `pr review`, `a
 
 Dans le découpage, `{` ne coupe un mot qu'en début de mot, et la `}` qui la ferme reste littérale : `repos/{owner}/{repo}/…` et `HEAD@{0}` sont des mots entiers.
 
+**`tools/dev/repo-settings.ps1`** (§6) ne se lance que sous l'une de ces formes exactes, **seule** dans la commande et **depuis la racine de la copie principale** (AS-30 R5, S4) :
+
+```
+pwsh tools/dev/repo-settings.ps1 -Check
+pwsh tools/dev/repo-settings.ps1 -Apply
+pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check
+pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply
+```
+
+Tout autre segment qui cite le script est refusé : autre argument, `;` ou `&&`, redirection, autre chemin (`./tools/…`, barres obliques inverses, chemin absolu), motif (`repo-set*`, ou un motif dans `tools/` avec `repo-s`, `sett` ou `~<chiffre>` comme `tools/d?v/repo-setting?.ps1`), nom court 8.3 (`REPO-S~1.PS1`), nom fabriqué par concaténation (`'repo-'+'settings.ps1'`, ou tout nom du script qui n'apparaît en clair qu'une fois les guillemets et les `+` retirés), `pwsh -Command`, `bash -c`, `&`, `Start-Process`, argument tiré d'une variable. Un segment de lecture ou de données peut le citer : `cat`, `grep`, `git diff`, `git add`, titre de PR. Le fichier `tools/ci/repo-settings.json` contient `settings.json` dans son nom : la règle SEC0-35 refuse donc de le nommer dans une commande d'écriture (`git add tools/ci/repo-settings.json`). On passe par son dossier : `git add tools/ci/`.
+
 **`gh pr merge` est refusé : la fusion passe par `pwsh tools/dev/merge-pr.ps1 <PR>`**, depuis la copie principale (§3.3). Le message de refus le dit.
 
 **Git caché.** Si la commande contient une substitution ou une évaluation, **et** l'un des mots `push`, `commit`, `update-ref`, `merge`, `reset`, `rebase`, `config` ou `send-pack`, elle est refusée par prudence. Le mot doit être placé :
@@ -225,6 +236,7 @@ pwsh -NoProfile -File tools/dev/test-guards.ps1        # table des commandes ref
 pwsh -NoProfile -File tools/dev/test-hooks.ps1         # crochets Git et install-hooks, dans un TS_CACHE jetable
 pwsh -NoProfile -File tools/dev/test-slots.ps1         # logique des baux, dans un TS_CACHE jetable
 pwsh -NoProfile -File tools/dev/test-slots.ps1 -Real   # plus les vérifications du §6.3, dans les vrais emplacements
+pwsh -NoProfile -File tools/dev/test-repo-settings.ps1 # invariants, comparaison ; arguments et refus S4 dans un dépôt jetable dont origin est local : jamais d'appel à GitHub
 ```
 
 ## 5. Vérifications bloquantes de §6.3 (30/10/2026)
@@ -245,3 +257,66 @@ Conditions de l'essai :
 | Archivage par l'application | Non essayé ici. Il passe par `git worktree remove` : même comportement attendu. Le premier archivage réel est à observer. |
 
 Le mécanisme de jonction est **adopté** (A9) ; le repli `CARGO_TARGET_DIR` sert seulement aux racines longues. À la fin de l'essai, l'emplacement a été débarrassé des fichiers de l'essai, **puis** le bail a été libéré.
+
+## 6. Réglages GitHub (T3d)
+
+Sources : AS-30 (R1 à R6), AS-31 (E4, E5) et §9.12 (S1 à S6) du carnet d'archi-sécu. Depuis le passage à GitHub Pro (décidé par l'utilisateur le 30/10), les réglages du dépôt sont **décrits dans un fichier versionné**, relu comme du code, et appliqués par une seule commande.
+
+### 6.1 Fichier de valeurs : `tools/ci/repo-settings.json`
+
+C'est un chemin sensible. Il a quatre sections :
+
+| Section | Contenu |
+|---|---|
+| `ruleset_main` (R1) | *Ruleset* actif sur `refs/heads/main`, **sans contournement** (`bypass_actors: []`, le jeton administrateur des sessions est lié lui aussi) :<br>- PR obligatoire, 0 approbation (un seul compte : les approbations restent `review-ok` et `archsec-ok`, vérifiés par `cargo xtask merge`), fusion par squash seulement ;<br>- `ci-ok` requis, **lié à l'application GitHub Actions** (`integration_id` 15368), branche à jour (`strict`) ;<br>- historique linéaire, poussée forcée et suppression interdites. |
+| `ruleset_pilotage` (R3) | `refs/heads/pilotage` : poussée forcée et suppression interdites. La poussée directe reste permise. Aucun contournement. |
+| `repo` (R2, S1) | Squash seulement (`allow_merge_commit` et `allow_rebase_merge` à `false`), titre du squash = titre de la PR, branche supprimée après fusion, **fusion automatique désactivée**. |
+| `actions` (R4, S5) | `allowed_actions: selected` avec `sha_pinning_required` ; motifs = liste fermée de SEC0-30 (`actions/checkout@*`, `actions/cache@*`, `actions/cache/restore@*`, `actions/cache/save@*`, `Swatinem/rust-cache@*`, `actions/upload-artifact@*`), sans les actions de GitHub ni les vérifiées ; jeton en lecture seule, aucune approbation de PR par les Actions ; **aucun workflow pour les PR venues d'un *fork*** (réglage des dépôts privés). |
+
+`integration_id` 15368 est l'`app.id` des contrôles `ci-ok` existants (relevé le 30/10 par `gh api`). Le motif `actions/cache@*` ne couvre pas `actions/cache/restore@…` : chaque sous-action est nommée.
+
+### 6.2 `tools/dev/repo-settings.ps1 -Check | -Apply`
+
+Deux modes exclusifs ; tout autre argument est refusé (code 2).
+
+- **Source** : le fichier est lu par `git show origin/main:tools/ci/repo-settings.json`, **jamais sur le disque**. Une modification d'un worktree ne peut donc pas être appliquée avant d'avoir été fusionnée. Ordre des préalables, chacun avec son message (code 2) : arguments, préalables S4 ci-dessous, `git fetch origin` et égalité avec `origin/main`, présence du fichier sur `origin/main` (sinon il le dit et s'arrête), et enfin distant `origin` sur `github.com`.
+- **Préalables** (S4) : lancé depuis la racine de la copie principale, script de cette copie (pas celui d'un worktree), copie propre, sur `main`, égale à `origin/main`. Sinon : code 2.
+- **Invariants codés dans le script** (S2). Le fichier est refusé s'il manque à `ruleset_main` l'une des règles `pull_request`, `required_status_checks` (`ci-ok`, `strict`, `integration_id` 15368), `required_linear_history`, `non_fast_forward`, `deletion` ; si un `bypass_actors` n'est pas vide ; si un *ruleset* vise une autre branche ; si `repo` contient une autre clé que ses six clés (visibilité, branche par défaut… ne passent jamais par `-Apply`), permet autre chose que le squash ou la fusion automatique ; si `allowed_actions` n'est pas `selected`, si `sha_pinning_required` manque, si un motif sort de la liste fermée, si le jeton passe en écriture, si les Actions peuvent approuver, ou si les workflows des *forks* sont permis. Il est refusé aussi si une action utilisée par les workflows d'`origin/main` n'est couverte par aucun motif (`-Apply` casserait la CI). Affaiblir une règle demande donc de modifier aussi le script.
+- **`-Check`** (lecture seule, `GET` seulement) compare GitHub au fichier et affiche chaque écart, avec la valeur attendue et la valeur lue ; code 1 s'il y en a un. Il signale :
+  - un fichier refusé par les invariants ;
+  - un *ruleset* attendu absent, en double, ou différent (règles indexées par type, listes comparées sans tenir compte de l'ordre) ;
+  - tout *ruleset* inconnu qui vise `main` ou `pilotage` (S3 ; motifs `~ALL`, `~DEFAULT_BRANCH` et jokers compris, de façon prudente) ;
+  - toute **protection de branche classique** encore présente, sur n'importe quelle branche (S3). `branches?protected=true` compte aussi les branches visées par un *ruleset* : chaque branche listée est relue par `branches/<nom>/protection`. Seul le 404 dont le message est « Branch not protected » vaut « aucune » ; tout autre 404 arrête `-Check` (code 2) ;
+  - au-delà de 100 *rulesets* ou de 100 branches protégées, `-Check` s'arrête (code 2) : la pagination n'est pas gérée ;
+  - toute différence des champs de `repo` et des quatre ressources d'Actions.
+
+  Champs ignorés, liste explicite : `id`, `node_id`, `source`, `source_type`, `_links`, `created_at`, `updated_at`, `current_user_can_bypass` d'un *ruleset* ; les champs de l'objet du dépôt absents du fichier ; `selected_actions_url`. Un paramètre de règle présent sur GitHub et absent du fichier est un **écart** (par exemple `do_not_enforce_on_create: true`, qui affaiblirait la règle ; le fichier le fixe donc à `false`). Seule exception, une liste fermée et commentée dans le script, et seulement avec sa valeur neutre : `automatic_copilot_code_review_enabled: false` et `required_reviewers: []`, que GitHub peut renvoyer sans qu'on les envoie. Elle évite qu'un `-Apply` conforme laisse un écart qui suspendrait toutes les fusions.
+- **`-Apply`** : refuse un fichier invalide sans rien écrire. Sinon, crée (`POST`) ou remplace (`PUT`, identifiant retrouvé par nom) les deux *rulesets*, règle le dépôt (`PATCH`) et les quatre ressources d'Actions (`PUT`), puis relance `-Check` et échoue si un écart subsiste. Il ne supprime ni *ruleset* inconnu ni protection classique : `-Check` les signale.
+
+Codes de sortie : 0 conforme, 1 écart ou écriture refusée, 2 usage, préalable non rempli ou erreur.
+
+### 6.3 Qui lance quoi
+
+- **`-Apply`** : l'**orchestrateur**, après la fusion de la PR qui modifie `repo-settings.json` ou le script, depuis la copie principale à jour. Ordre de R6 : fusion, `-Apply`, `-Check` vert, puis essai de poussée directe vers `main`, qui doit être refusé par GitHub. Entre la fusion de T3d et le premier `-Apply`, `-Check` est en écart : les fusions sont suspendues jusqu'à `-Apply`.
+- **`-Check`** : `cargo xtask verify-main`, donc **à chaque `cargo xtask merge`** (étape 2) et chaque nuit (AS-31 E4). Le contrôle de nuit doit tourner **en local**, dans la copie principale, puisqu'il est sauté en CI. Cette tâche planifiée n'existe pas encore : elle relève de T3e, suivie par l'issue que le responsable développement ouvrira. `verify-main` lance `pwsh -NoProfile -NonInteractive -File <copie principale>\tools\dev\repo-settings.ps1 -Check` :
+  - code 1 (écart) : une *issue* `role:architecture` de clé `repo-settings-drift` est ouverte (ou réutilisée), et les fusions sont suspendues ;
+  - autre code (préalable, réseau) : `verify-main` échoue ; en `--dry-run`, c'est un avertissement et le résultat reste un refus ;
+  - **en CI** (`CI=true` et `GITHUB_ACTIONS=true`), le contrôle est **sauté** avec un avertissement dans le résumé du travail : `GITHUB_TOKEN` n'a pas les droits d'administration. Pour que ce saut ne serve pas à contourner le contrôle, `cargo xtask merge` **refuse** de tourner en mode CI ;
+  - l'historique est vérifié avant les réglages : un `-Check` qui échoue ne cache pas une anomalie de l'historique.
+
+### 6.4 Côté serveur, côté local
+
+| Barrière | Serveur (GitHub) | Local |
+|---|---|---|
+| PR obligatoire, `ci-ok` de GitHub Actions, branche à jour, historique linéaire | *ruleset* `main` | `cargo xtask merge` (G3, toujours en place, E5) |
+| Poussée forcée, suppression de `main` et de `pilotage` | *rulesets* | `pre-push`, `guard-git` ; `reference-transaction` pour la copie locale de `main` |
+| Poussée directe vers `main` | *ruleset* `main` | `pre-push`, `guard-git` |
+| Squash seulement, pas de fusion automatique | réglages du dépôt | `cargo xtask merge` (seul chemin de fusion) |
+| Actions permises, épinglage par SHA | réglages d'Actions | étape `workflows` de `xtask check` |
+| Avis `review-ok` et `archsec-ok` sur les chemins sensibles | — (un seul compte) | `cargo xtask merge`, `verify-main` (J4) |
+| Secrets | — (pas de détection en Pro sur un dépôt privé) | `gitleaks` en `pre-commit`, `pre-push` et CI |
+| Dérive des réglages eux-mêmes | — | `repo-settings.ps1 -Check` dans `verify-main` |
+
+**Risque résiduel (R-ARCH-05)** : un script écrit puis exécuté par une session peut appeler `gh api` en écriture avec le jeton administrateur, ce que `guard-git` ne voit pas (§3.4). Les *rulesets* sans contournement le lient pour `main` et `pilotage`, mais il peut modifier les réglages eux-mêmes : `-Check` le détecte après coup, à la fusion suivante ou la nuit.
+
+T3d ne retire **aucune** barrière locale (S6). Les retraits viennent ensuite, dans l'ordre d'AS-31 : T3e-1 (refus de poussée vers `main` dans `pre-push` et `guard-git`), l'essai R6.4, puis T3e-2 (contrôle d'origine de `verify-main`).

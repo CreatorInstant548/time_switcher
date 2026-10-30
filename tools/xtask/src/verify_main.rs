@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use serde_json::Value;
 
 use crate::github::{Repo, approved, is_sha};
-use crate::sensitive;
+use crate::{sensitive, sys};
 
 /// Commits d'avant l'outillage, sans PR : la base, liste fermée.
 const BASE: [&str; 2] = [
@@ -177,7 +177,64 @@ pub fn check(repo: &Repo) -> Result<Vec<(String, Vec<String>)>, String> {
     Ok(anomalies)
 }
 
-/// `verify-main`, avec une *issue* par anomalie ; vrai si l'historique est conforme.
+/// Dérive des réglages GitHub (AS-30 R5, AS-31 E4) : `repo-settings.ps1 -Check` de la copie
+/// principale, en lecture seule. `Ok(true)` si conformes, ou en CI, où le contrôle est sauté avec un
+/// avertissement dans le résumé du travail (`GITHUB_TOKEN` n'a pas les droits d'administration) ;
+/// `Ok(false)` sur un écart (code 1), avec une *issue* ; `Err` si `-Check` n'a pas pu conclure.
+pub fn settings_or_report(repo: &Repo) -> Result<bool, String> {
+    println!("  réglages GitHub : repo-settings.ps1 -Check");
+    if repo.ci {
+        let msg = "repo-settings.ps1 -Check sauté en CI : GITHUB_TOKEN n'a pas les droits \
+                   d'administration ; il tourne à chaque cargo xtask merge (AS-30 R5)";
+        println!("  AVERTISSEMENT : {msg}");
+        // Not from the tests, which also run in CI.
+        if let Some(path) = sys::env("GITHUB_STEP_SUMMARY").filter(|_| !cfg!(test)) {
+            let path = std::path::PathBuf::from(path);
+            let mut text = sys::read(&path).unwrap_or_default();
+            text.extend_from_slice(format!("\n> [!WARNING]\n> {msg}\n").as_bytes());
+            if let Err(e) = sys::write(&path, &text) {
+                println!("  (résumé du travail non écrit : {e})");
+            }
+        }
+        return Ok(true);
+    }
+    let script = repo
+        .main
+        .join("tools")
+        .join("dev")
+        .join("repo-settings.ps1");
+    let script = script.to_string_lossy();
+    let args = ["-NoProfile", "-NonInteractive", "-File", &script, "-Check"];
+    let (code, out, err) = repo.runner.run(&repo.main, "pwsh", &args)?;
+    let out = String::from_utf8_lossy(&out);
+    print!("{out}");
+    match code {
+        Some(0) => Ok(true),
+        Some(1) => {
+            let body = format!(
+                "`repo-settings.ps1 -Check` : les réglages GitHub du dépôt diffèrent de \
+                 `tools/ci/repo-settings.json` d'`origin/main`, et les fusions sont suspendues.\n\n\
+                 ```\n{}\n```\n\nPour lever l'écart : corriger le fichier par une PR de chemin \
+                 sensible, ou relancer `-Apply` depuis la copie principale (orchestrateur).",
+                out.chars().take(4000).collect::<String>().trim_end()
+            );
+            repo.open_issue(
+                "repo-settings-drift",
+                "verify-main : réglages GitHub différents de tools/ci/repo-settings.json",
+                &body,
+            )?;
+            Ok(false)
+        }
+        _ => Err(format!(
+            "repo-settings.ps1 -Check n'a pas pu conclure (code {code:?}) : {}",
+            err.trim()
+        )),
+    }
+}
+
+/// `verify-main`, avec une *issue* par anomalie ; vrai si l'historique et les réglages GitHub sont
+/// conformes. L'historique passe d'abord : un `-Check` qui échoue ne le cache pas. En `--dry-run`,
+/// un `-Check` qui n'a pas pu conclure compte comme un écart.
 pub fn verify_or_report(repo: &Repo) -> Result<bool, String> {
     let anomalies = check(repo)?;
     for (sha, bad) in &anomalies {
@@ -193,7 +250,15 @@ pub fn verify_or_report(repo: &Repo) -> Result<bool, String> {
             &body,
         )?;
     }
-    Ok(anomalies.is_empty())
+    let settings = match settings_or_report(repo) {
+        Ok(ok) => ok,
+        Err(e) if repo.dry_run => {
+            println!("  AVERTISSEMENT (--dry-run) : {e}");
+            false
+        }
+        Err(e) => return Err(e),
+    };
+    Ok(anomalies.is_empty() && settings)
 }
 
 pub fn main(args: &[String]) -> ExitCode {
@@ -212,7 +277,9 @@ pub fn main(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(false) => {
-            println!("Résultat : ÉCHEC (anomalies de l'historique : fusions suspendues)");
+            println!(
+                "Résultat : ÉCHEC (anomalies de l'historique ou des réglages GitHub : fusions suspendues)"
+            );
             ExitCode::FAILURE
         }
         Err(e) => {
@@ -224,7 +291,12 @@ pub fn main(args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+    use std::rc::Rc;
+
     use super::*;
+    use crate::github::{Output, Run};
 
     const SHA: &str = "e3e2f2a842612bebfba1a8388f86fd296f64344c";
 
@@ -244,6 +316,65 @@ mod tests {
         assert!(!carnet_approves(&format!("archsec-ok: {SHA}f"), SHA));
         assert!(!carnet_approves(&format!("archsec-ok:{SHA}"), SHA));
         assert!(section_9("# rien\n## 10. x\n").is_none());
+    }
+
+    /// Answers `repo-settings.ps1 -Check` with a fixed exit code, and `gh issue list` with `[]`.
+    struct Settings(Option<i32>, Rc<RefCell<Vec<String>>>);
+
+    impl Run for Settings {
+        fn run(&self, _dir: &Path, prog: &str, args: &[&str]) -> Result<Output, String> {
+            let line = format!("{prog} {}", args.join(" "));
+            self.1.borrow_mut().push(line.clone());
+            match prog {
+                "pwsh" => Ok((self.0, b"  ECART : x\n".to_vec(), "erreur".to_owned())),
+                "gh" if line.starts_with("gh issue list") => {
+                    Ok((Some(0), b"[]".to_vec(), String::new()))
+                }
+                _ => Err(format!("unexpected command: {line}")),
+            }
+        }
+    }
+
+    fn settings(code: Option<i32>, ci: bool, dry_run: bool) -> (Result<bool, String>, Vec<String>) {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let repo = Repo {
+            main: PathBuf::from("main"),
+            here: PathBuf::from("main"),
+            slug: "o/r".to_owned(),
+            dry_run,
+            ci,
+            cache: std::env::temp_dir(),
+            home: None,
+            runner: Box::new(Settings(code, Rc::clone(&calls))),
+        };
+        let result = settings_or_report(&repo);
+        let calls = calls.borrow().clone();
+        (result, calls)
+    }
+
+    /// AS-30 R5, AS-31 E4: drift (code 1) suspends merges and opens an issue; a `-Check` that
+    /// could not conclude is an error; in CI the check is skipped without running anything.
+    #[test]
+    fn settings_check_codes() {
+        let (r, calls) = settings(Some(0), false, false);
+        assert_eq!(r, Ok(true));
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].starts_with("pwsh -NoProfile -NonInteractive -File ")
+                && calls[0].ends_with("repo-settings.ps1 -Check"),
+            "{calls:?}"
+        );
+        // Drift: false, and the issue is only shown with --dry-run (no gh issue create).
+        let (r, calls) = settings(Some(1), false, true);
+        assert_eq!(r, Ok(false));
+        assert!(calls.iter().any(|c| c.starts_with("gh issue list")));
+        assert!(!calls.iter().any(|c| c.starts_with("gh issue create")));
+        for code in [Some(2), Some(64), None] {
+            assert!(settings(code, false, false).0.is_err(), "{code:?}");
+        }
+        let (r, calls) = settings(Some(1), true, false);
+        assert_eq!(r, Ok(true));
+        assert!(calls.is_empty(), "{calls:?}");
     }
 
     #[test]
