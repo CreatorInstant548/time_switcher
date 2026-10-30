@@ -465,6 +465,32 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | Consigne T5 (noyau, première partie ; V et S) | `scratchpad/…/consigne-T5.md` du responsable développement | **Validé avec corrections K1 à K10** (§9.9) ; chemins sensibles `rng/` et `build_profile.rs` validés ; deux PR (T5a, puis T5b pour l'aléa en XChaCha8) ; travail en parallèle de T3a accepté, fusion après T3a |
 | 30/10 | **PR #20 (T5a, noyau : temps, identifiants, argent), fusion** | SHA de tête `bbe2c76d144f58f3f977b99ad53baba003cd0ae2`, `ci-ok` vert ; `review-ok` du relecteur neuf | **`archsec-ok: bbe2c76d144f58f3f977b99ad53baba003cd0ae2`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/20#issuecomment-6517813891)) : SEC0-20, K7, K9 et AS-22 (phase 0) conformes ; peut être fusionnée avant T3a par `merge-pr.ps1`, qui exige désormais `ci-ok` et les deux approbations ; non bloquant pour la phase 1 : `Default` de `SimDay`, glissement en fin de journée |
 | 30/10 | **PR #24 (T5b, aléa à clé), fusion** | SHA de tête `e5af3b3a191095a888a472c59621ab6e556b0080`, `ci-ok` vert ; deux `review-ok` indépendants (vecteurs recalculés en Python ; modèle de menace) | **`archsec-ok: e5af3b3a191095a888a472c59621ab6e556b0080`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/24#issuecomment-6518935742)) : SEC0-22, AS-12, M27 et K2 à K6 conformes ; K10 accepté avec la sonde `cl.exe` (AS-24) ; [#26](https://github.com/CreatorInstant548/time_switcher/issues/26) bloquante avant le premier tirage d'un système de règles (`DrawSite`) |
+| 30/10 | Consigne T6 (noyau, deuxième partie ; V) | `scratchpad/…/consigne-T6.md` du responsable développement | **Validé avec corrections L1 à L8** (§9.10) ; `bevy_ecs` en version exacte, avec `std` et `multi_threaded` seulement ; marqueur `LodComplete` dans le noyau, réexporté par `ts_model` ; empreinte d'état non sensible ; clé du monde hors de l'instantané |
+
+### 9.10 Consigne T6 : noyau, deuxième partie (30/10)
+
+Avis **validé avec corrections L1 à L8**, toutes décidées.
+
+- **L1. `bevy_ecs` : version et fonctionnalités.**
+  - **Version :** la dernière version stable publiée depuis au moins deux semaines, épinglée en version exacte (`=0.x.y`) dans `[workspace.dependencies]`. *Pourquoi :* chez Bevy, chaque version mineure change l'API ; sa montée doit être une PR délibérée, jamais une simple mise à jour de `Cargo.lock`. Dependabot peut la proposer, et la PR est alors sensible (AS-23, point 4, et `Cargo.lock` qui ajoute des crates).
+  - **Fonctionnalités :** `default-features = false`, avec seulement `std` et `multi_threaded` (nécessaire à `par_iter` et au test sur 4 fils).
+  - **Refusées :** `bevy_reflect`, `serialize`, `trace`, `detailed_trace`, `track_location` et tout ce qui tire `bevy_app`. *Pourquoi :* la réflexion donne un accès dynamique aux composants, contraire à la vue filtrée et inutile au cœur. `serialize` serait inutile, puisque l'instantané a son propre codec (T8). Les traces sont un coût.
+  - **Justification dans la PR :** la liste des crates ajoutées à `Cargo.lock`, et les macros procédurales et `build.rs` du graphe (`bevy_ecs_macros`, `bevy_macro_utils` et leurs dépendances). `cargo deny check` reste vert, sans aucune exception de licence.
+- **L2. Le marqueur « simulation complète » : la frontière est acceptée.**
+  - **Origine :** le marqueur est défini **une seule fois**, dans le noyau, sous le nom de l'architecture (`LodComplete`, §6.5). `ts_model` le réexporte et ne le redéfinit jamais.
+  - **Rôle dans le noyau :** il sert seulement à décider du saut de temps, et le noyau ne lui donne aucune autre sémantique.
+  - **Marqueurs voisins :** `LodSimplified` et `LodStatistical` restent dans `ts_model`, puisque le noyau n'en a pas besoin.
+- **L3. L'empreinte d'état n'est pas un chemin sensible.** Elle ne protège aucun secret. Elle sert au déterminisme, à la reprise et aux comparaisons, tandis que l'intégrité des fichiers reste l'affaire des empreintes BLAKE3 des parts dans `ts_persist`, qui est sensible. Son encodage canonique est en revanche **figé par des vecteurs de référence** dans les tests : en changer, c'est changer toutes les empreintes dorées, et cela se signale dans la PR.
+- **L4. La clé du monde n'entre jamais dans l'état sauvegardé, ni dans l'empreinte.**
+  - `restore(snap, cfg, rules, world_key: &WorldKey)` reçoit la clé de l'hôte. Les `StreamKeys` sont **dérivées de nouveau** à la restauration.
+  - Aucune clé n'est `StateHash` ni comprise dans `Snapshot`. Un test vérifie que les octets d'un instantané de test ne contiennent pas la clé.
+  - *Pourquoi (P25) :* un instantané circule davantage que la clé, en sauvegarde, en rapport de bogue ou en relecture. L'en-tête du monde (architecture §12.1) ne portera en ligne qu'une **référence** à la clé, pas sa valeur. C'est à préciser dans T8 et en phase 4.
+- **L5. `restore` vérifie l'empreinte de règles.** Une empreinte différente de celle de l'instantané est refusée par une erreur typée, sauf si une migration déclarée existe (§12.5). `DayOrigin` et les compteurs, `StableIdAllocator` et `seq`, font partie de l'état.
+- **L6. Le test « 1 fil contre 4 » doit vraiment changer le nombre de fils.** Le `ComputeTaskPool` de `bevy_tasks` est global et ne s'initialise qu'une fois par processus. Chaque configuration tourne donc dans un **processus distinct** : un test qui relance l'exécutable de test avec une variable, ou deux tests `#[ignore]` lancés séparément par `xtask`. Le test vérifie, par une assertion, le nombre de fils effectif.
+- **L7. Ambiguïtés en erreur.** `ScheduleBuildSettings { ambiguity_detection: LogLevel::Error, .. }` s'applique à chaque `Schedule` de phase. Un test montre qu'il refuse deux systèmes de test qui écrivent la même ressource sans ordre.
+- **L8. Découpage.** Au-delà d'environ 600 lignes, on fait deux PR : d'abord l'ordonnanceur, les phases, les greffons et la boucle, ensuite l'empreinte, l'instantané, `WorkBudget` et le test sur plusieurs fils.
+
+**Revue.** T6 ne touche aucun chemin sensible : `/code-review` et un relecteur neuf suffisent. Mon `archsec-ok` reste exigé par `merge`, parce que `Cargo.lock` ajoute des crates. Critères bloquants : L1, L4, L5 et L6, plus SEC0-19, aucun `unsafe` de notre côté.
 
 ### 9.9 Consigne T5 : noyau, première partie (30/10)
 
