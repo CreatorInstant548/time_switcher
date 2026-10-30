@@ -18,8 +18,8 @@ use serde_json::Value;
 use crate::github::{Repo, approved, is_sha, same_path};
 use crate::{build_inputs, hooks, sensitive, verify_main, workflows};
 
-/// Empreinte des entrées de construction, inscrite par `build.rs` (J2, AS-23 point 1).
-const BUILT_FROM: &str = env!("XTASK_INPUTS_SHA256");
+use crate::BUILT_FROM;
+
 const TYPES: [&str; 9] = [
     "feat", "fix", "refactor", "perf", "test", "docs", "build", "ci", "chore",
 ];
@@ -357,7 +357,7 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
         "2",
         "verify-main (SEC0-17, réglages GitHub AS-30 R5) et hooks verify (SEC0-35)",
     );
-    let history = verify_main::verify_or_report(repo)?;
+    let history = verify_main::verify_or_report(repo, true)?;
     let hooks_ok = hooks::verify_or_report(repo)?;
     let suspended = (!history || !hooks_ok).then(|| {
         refuse(

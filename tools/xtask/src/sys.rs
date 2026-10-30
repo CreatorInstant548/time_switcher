@@ -39,6 +39,16 @@ pub fn age(path: &Path) -> Option<Duration> {
     SystemTime::now().duration_since(modified).ok()
 }
 
+/// Pause before retrying a GitHub read (V4).
+pub fn sleep(d: Duration) {
+    std::thread::sleep(d);
+}
+
+/// Atomic replacement of a file (`verify-main` cache).
+pub fn rename(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::rename(from, to).map_err(|e| format!("{} -> {} : {e}", from.display(), to.display()))
+}
+
 pub fn ts_cache() -> PathBuf {
     PathBuf::from(env("TS_CACHE").unwrap_or_else(|| "C:/Dev/ts-cache".to_owned()))
 }
