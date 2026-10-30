@@ -6,7 +6,7 @@
 //! touches a sensitive path is still the squash of a merged PR (J3), with `ci-ok` green on its head
 //! (G3), `review-ok` and `archsec-ok` on that head or carried over (AS-40), cross-checked with §9
 //! of the architecture lead's log (J4), all read from GitHub on every run (V5, AS-39).
-//! `--origin` (AS-42, nightly job) adds J3 alone, one read per commit, for the non-sensitive
+//! `--origin` (AS-42, AS-44, nightly job) adds J3 (one read), plus G3 on `<n>d`, for the non-sensitive
 //! commits of the window ([`Origin`]): a ruleset disabled for a while, then restored, cannot hide a
 //! commit pushed without a PR. An anomaly opens an issue and suspends merges until it is listed in
 //! [`ACKNOWLEDGED`] (J5). In CI mode, no `git fetch`: the refs come from the checkout (`refresh`).
@@ -69,14 +69,16 @@ fn pull_of(repo: &Repo, sha: &str) -> Result<Result<Value, String>, String> {
     let s = &repo.slug;
     let list = repo.api_all(&format!("repos/{s}/commits/{sha}/pulls?per_page=100"))?;
     let n = match judge_squash(&list, sha) {
-        Ok(n) => n,
+        Ok((n, _)) => n,
         Err(why) => return Ok(Err(why)),
     };
     let pr = repo.api(&format!("repos/{s}/pulls/{n}"))?;
     let ok = pr["merged"].as_bool() == Some(true)
         && pr["merge_commit_sha"].as_str() == Some(sha)
         && pr["base"]["ref"].as_str() == Some("main")
-        && pr["head"]["sha"].as_str().is_some_and(is_sha);
+        && pr["head"]["sha"]
+            .as_str()
+            .is_some_and(|h| is_sha(h) && h != sha);
     Ok(if ok {
         Ok(pr)
     } else {
@@ -92,9 +94,18 @@ pub enum Origin {
     /// Every commit after the base (weekly run).
     All,
     /// From the tip down to the first commit committed before this Unix time that passes its
-    /// check, included. Committer dates are set by the pusher: backdated commits pushed without a
-    /// PR fail J3, so the walk goes on through them until a real squash.
+    /// check (J3 and G3), included (AS-44 AA3). Committer dates are set by the pusher: backdated
+    /// commits pushed without a PR fail J3, so the walk goes on through them until a real squash.
     Since(i64),
+}
+
+/// What `--origin` adds to a non-sensitive commit: nothing, J3 (`all`), or J3 and G3 (`<n>d`,
+/// AS-44 AA2; `all` stays J3 alone for the API quota, #55).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Extra {
+    Nothing,
+    J3,
+    J3G3,
 }
 
 impl Origin {
@@ -131,9 +142,13 @@ fn dates(log: &str) -> Result<BTreeMap<&str, i64>, String> {
 }
 
 /// J3: `commits/<sha>/pulls` must list exactly one PR whose `merge_commit_sha` is `sha`, merged
-/// (`merged_at` set) into `main`. Its number, or the anomaly. Alone for a non-sensitive commit with
-/// `--origin` (AS-42); [`pull_of`] reads `pulls/<n>` after it for a sensitive one.
-pub fn judge_squash(pulls: &[Value], sha: &str) -> Result<u64, String> {
+/// (`merged_at` set) into `main`, and whose head is another commit. Its number and head, or the
+/// anomaly. For a non-sensitive commit with `--origin` (AS-42); [`pull_of`] reads `pulls/<n>`
+/// after it for a sensitive one.
+///
+/// Head != `sha` (AS-44 AA1): a PR head pushed straight to `main`, ruleset off, is marked merged
+/// by GitHub with `merge_commit_sha` set to that very commit; a squash is always a new commit.
+pub fn judge_squash(pulls: &[Value], sha: &str) -> Result<(u64, String), String> {
     let found: Vec<&Value> = pulls
         .iter()
         .filter(|p| p["merge_commit_sha"].as_str() == Some(sha))
@@ -145,11 +160,18 @@ pub fn judge_squash(pulls: &[Value], sha: &str) -> Result<u64, String> {
         ));
     };
     let n = pr["number"].as_u64().unwrap_or_default();
-    if pr["merged_at"].as_str().is_some_and(|d| !d.is_empty())
+    let head = pr["head"]["sha"].as_str().unwrap_or_default();
+    if head == sha {
+        return Err(format!(
+            "commit égal à la tête de la PR #{n} : poussé tel quel, pas un squash (J3)"
+        ));
+    }
+    if is_sha(head)
+        && pr["merged_at"].as_str().is_some_and(|d| !d.is_empty())
         && pr["base"]["ref"].as_str() == Some("main")
         && n > 0
     {
-        Ok(n)
+        Ok((n, head.to_owned()))
     } else {
         Err(format!(
             "PR #{n} non fusionnée dans main par ce commit (J3)"
@@ -160,7 +182,8 @@ pub fn judge_squash(pulls: &[Value], sha: &str) -> Result<u64, String> {
 /// Anomalies d'un commit (vide si conforme), avec une note pour l'affichage.
 ///
 /// T3e-2 (AS-31 E3): a non-sensitive commit makes no GitHub read; its PR and `ci-ok` are enforced
-/// by the ruleset of `main`. With `origin` (AS-42), it makes exactly one: J3 by [`judge_squash`].
+/// by the ruleset of `main`. With `--origin` (AS-42), J3 by [`judge_squash`] in one read; on the
+/// `<n>d` window, G3 too, by the same [`Repo::ci_ok`] as a sensitive commit (AS-44 AA2).
 /// It must still have exactly one parent: sensitivity is computed against that parent, so a commit
 /// with none or several could not be classified (and `required_linear_history` forbids it anyway).
 ///
@@ -171,7 +194,7 @@ fn check_commit(
     rules: &sensitive::Rules,
     section: &str,
     sha: &str,
-    origin: bool,
+    origin: Extra,
 ) -> Result<(Vec<String>, String), String> {
     let parents = repo.git(&["rev-list", "--parents", "-n", "1", sha])?;
     let parent = match parents.split_whitespace().collect::<Vec<_>>()[..] {
@@ -190,18 +213,26 @@ fn check_commit(
         .map(str::to_owned)
         .collect();
     let hits = sensitive::hits(repo, rules, &parent, sha, &files)?;
-    if hits.is_empty() && origin {
+    if hits.is_empty() && origin != Extra::Nothing {
         let pulls = repo.api_all(&format!(
             "repos/{}/commits/{sha}/pulls?per_page=100",
             repo.slug
         ))?;
-        return Ok(match judge_squash(&pulls, sha) {
-            Ok(n) => (
-                Vec::new(),
-                format!("non sensible, squash de la PR #{n} (AS-42)"),
-            ),
-            Err(why) => (vec![why], String::new()),
-        });
+        let (n, head) = match judge_squash(&pulls, sha) {
+            Ok(pr) => pr,
+            Err(why) => return Ok((vec![why], String::new())),
+        };
+        let mut note = format!("non sensible, squash de la PR #{n} (AS-42)");
+        if origin == Extra::J3G3 {
+            if PRE_CI.contains(&(n, sha)) {
+                note.push_str(", avant la CI");
+            } else if let Some(why) = repo.ci_ok(&head)? {
+                return Ok((vec![why], note));
+            } else {
+                note.push_str(", ci-ok vert");
+            }
+        }
+        return Ok((Vec::new(), note));
     }
     if hits.is_empty() {
         return Ok((
@@ -293,15 +324,22 @@ pub fn check(repo: &Repo, origin: Option<Origin>) -> Result<Anomalies, String> {
     };
     let dates = dates(&log)?;
     // Tip first, for the window of `Since`; shown oldest first.
-    let mut j3 = origin.is_some();
+    let mut extra = match origin {
+        None => Extra::Nothing,
+        Some(Origin::All) => Extra::J3,
+        Some(Origin::Since(_)) => Extra::J3G3,
+    };
     let mut verdicts = Vec::new();
     for &sha in history.iter().rev().filter(|s| !BASE.contains(*s)) {
-        let (bad, note) = check_commit(repo, &rules, &section, sha, j3)?;
+        let (bad, note) = check_commit(repo, &rules, &section, sha, extra)?;
         if let Some(Origin::Since(cutoff)) = origin {
             let date = *dates
                 .get(sha)
                 .ok_or_else(|| format!("{sha} absent de git log"))?;
-            j3 &= !(date < cutoff && bad.is_empty());
+            // AS-44 AA3: only an old commit that passed J3 and G3 closes the window.
+            if extra == Extra::J3G3 && date < cutoff && bad.is_empty() {
+                extra = Extra::Nothing;
+            }
         }
         verdicts.push((sha, bad, note));
     }
@@ -523,7 +561,9 @@ pub fn main(args: &[String]) -> ExitCode {
         match origin {
             Some(Origin::All) => println!("  --origin all: J3 on every commit (AS-42)"),
             Some(Origin::Since(t)) => {
-                println!("  --origin: J3 on every commit since Unix time {t} (AS-42)");
+                println!(
+                    "  --origin: J3 and G3 on every commit since Unix time {t} (AS-42, AS-44)"
+                );
             }
             None => {}
         }
@@ -824,7 +864,8 @@ mod tests {
             (
                 format!("{s}/commits/{COMMIT}/pulls"),
                 json!([{"number": 7, "merge_commit_sha": COMMIT,
-                        "merged_at": "2026-10-30T10:00:00Z", "base": {"ref": "main"}}])
+                        "merged_at": "2026-10-30T10:00:00Z", "base": {"ref": "main"},
+                        "head": {"sha": HEAD}}])
                 .to_string(),
             ),
             (
@@ -916,7 +957,8 @@ mod tests {
 
     /// AS-42: with `--origin`, a non-sensitive commit must be the squash of a PR merged into
     /// `main`, read with a single request. No PR, an unmerged PR, another merge commit, another
-    /// base or two PRs is an anomaly. A sensitive commit keeps its full check (V5).
+    /// base, two PRs, or a commit that is the PR head itself is an anomaly. A sensitive commit
+    /// keeps its full check (V5).
     #[test]
     fn origin_needs_a_merged_squash_in_one_read() {
         let all = Some(Origin::All);
@@ -924,12 +966,17 @@ mod tests {
         assert_eq!(r, Ok(vec![]), "{calls:#?}");
         assert_eq!(gh_calls(&calls), 1, "{calls:#?}");
         let merged = json!({"number": 7, "merge_commit_sha": COMMIT,
-                            "merged_at": "2026-10-30T10:00:00Z", "base": {"ref": "main"}});
+                            "merged_at": "2026-10-30T10:00:00Z", "base": {"ref": "main"},
+                            "head": {"sha": HEAD}});
         let mut cases = vec![json!([]), json!([merged.clone(), merged.clone()])];
+        // Review of #73: a PR head pushed as is to main, which GitHub then marks merged with
+        // merge_commit_sha set to it; and a head that cannot be read.
         for (k, v) in [
             ("merged_at", Value::Null),
             ("merge_commit_sha", json!(HEAD)),
             ("base", json!({"ref": "dev"})),
+            ("head", json!({"sha": COMMIT})),
+            ("head", Value::Null),
         ] {
             let mut p = merged.clone();
             p[k] = v;
@@ -945,9 +992,46 @@ mod tests {
         assert_eq!(r, Ok(vec![]));
     }
 
-    /// Non-sensitive history after the base, oldest first: (commit digit, committer date, PR whose
-    /// squash it is, if any). Returns the anomalous digits and the GitHub reads.
-    fn chain(commits: &[(char, i64, Option<u64>)], origin: Origin) -> (Vec<char>, usize) {
+    /// AS-44: on the `<n>d` window, a non-sensitive squash also needs `ci-ok` green on its head
+    /// (AA2, same `ci_ok` as a sensitive commit), and a PR head pushed as is to `main` fails J3
+    /// (AA1).
+    #[test]
+    fn window_needs_ci_ok_and_a_new_commit() {
+        let week = Some(Origin::Since(1000));
+        let (r, calls) = origin_check("docs/a.md", false, week, &[]);
+        assert_eq!(r, Ok(vec![]), "{calls:#?}");
+        assert!(
+            calls.iter().any(|c| c.contains("/check-runs")),
+            "{calls:#?}"
+        );
+        let no_ci = &no_pr_no_ci()[1..];
+        let (r, _) = origin_check("docs/a.md", false, week, no_ci);
+        assert!(r.as_ref().is_ok_and(|a| a.len() == 1), "{r:?}");
+        assert!(reasons(&r).contains("ci-ok absent"), "{r:?}");
+        let pushed = json!([{"number": 7, "merge_commit_sha": COMMIT, "merged_at": "x",
+                             "base": {"ref": "main"}, "head": {"sha": COMMIT}}]);
+        let (r, calls) = origin_check("docs/a.md", false, week, &pulls(&pushed));
+        assert!(reasons(&r).contains("poussé tel quel"), "{r:?}");
+        assert_eq!(gh_calls(&calls), 1, "{calls:#?}");
+    }
+
+    /// How a commit of [`chain`] came to `main`.
+    #[derive(Clone, Copy)]
+    enum Via {
+        /// Pushed without a PR.
+        Push,
+        /// Squash of a merged PR, `ci-ok` green on its head.
+        Squash,
+        /// Squash of a merged PR whose head has no `ci-ok` (admin merge, ruleset off).
+        NoCi,
+    }
+
+    /// Head without `ci-ok` in [`chain`].
+    const NO_CI: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+    /// Non-sensitive history after the base, oldest first: (commit digit, committer date, how it
+    /// came). Returns the anomalous digits and the digits whose PR was read.
+    fn chain(commits: &[(char, i64, Via)], origin: Origin) -> (Vec<char>, Vec<char>) {
         let sha = |d: char| d.to_string().repeat(40);
         let mut log: Vec<String> = commits
             .iter()
@@ -964,46 +1048,83 @@ mod tests {
                 "git log --format=%H %ct origin/main".to_owned(),
                 log.join("\n"),
             ),
+            (
+                format!("gh api --paginate repos/o/r/commits/{NO_CI}/check-runs"),
+                json!({"check_runs": []}).to_string(),
+            ),
         ];
-        for &(d, _, pr) in commits {
+        for (n, &(d, _, via)) in (1u64..).zip(commits) {
             let s = sha(d);
-            let v = pr.map_or(json!([]), |n| {
-                json!([{"number": n, "merge_commit_sha": s, "merged_at": "x", "base": {"ref": "main"}}])
-            });
+            let pr = |head: &str| {
+                json!([{"number": n, "merge_commit_sha": s, "merged_at": "x",
+                        "base": {"ref": "main"}, "head": {"sha": head}}])
+            };
+            let v = match via {
+                Via::Push => json!([]),
+                Via::Squash => pr(HEAD),
+                Via::NoCi => pr(NO_CI),
+            };
             over.push((
                 format!("gh api --paginate repos/o/r/commits/{s}/pulls"),
                 v.to_string(),
             ));
         }
         let (r, calls) = origin_check("docs/a.md", false, Some(origin), &over);
-        let bad = r
-            .unwrap()
+        let first = |s: &str| s.chars().next().unwrap();
+        let bad = r.unwrap().iter().map(|(s, _)| first(s)).collect();
+        let read = commits
             .iter()
-            .map(|(s, _)| s.chars().next().unwrap())
+            .filter(|c| {
+                calls
+                    .iter()
+                    .any(|l| l.contains(&format!("{}/pulls", sha(c.0))))
+            })
+            .map(|c| c.0)
             .collect();
-        (bad, gh_calls(&calls))
+        (bad, read)
     }
 
-    /// AS-42: `--origin <n>d` reads from the tip down to the first commit dated before the limit
-    /// that passes, included; older ones are left to `all`. Backdated commits pushed without a PR
-    /// all fail, so the walk goes through them, a backdated tip included.
+    /// AS-42, AS-44 AA3: `--origin <n>d` reads from the tip down to the first commit dated before
+    /// the limit that passes J3 and G3, included; older ones are left to `all`. Backdated commits
+    /// pushed without a PR, or squashed without `ci-ok`, all fail, so the walk goes through them,
+    /// a backdated tip included.
     #[test]
     fn origin_window_is_respected() {
+        use Via::{NoCi, Push, Squash};
         let since = Origin::Since(3000);
         // 2 is the first old commit and passes: 1, without a PR, is not read.
-        let ok = [('1', 900, None), ('2', 1000, Some(2)), ('3', 5000, Some(3))];
-        assert_eq!(chain(&ok, since), (vec![], 2));
-        assert_eq!(chain(&ok, Origin::All), (vec!['1'], 3));
+        let ok = [('1', 900, Push), ('2', 1000, Squash), ('3', 5000, Squash)];
+        assert_eq!(chain(&ok, since), (vec![], vec!['2', '3']));
+        assert_eq!(chain(&ok, Origin::All), (vec!['1'], vec!['1', '2', '3']));
         // 4 and 3 were pushed backdated without a PR, under a fresh squash 5.
         let forged = [
-            ('1', 700, None),
-            ('2', 800, Some(2)),
-            ('3', 900, None),
-            ('4', 1000, None),
-            ('5', 5000, Some(5)),
+            ('1', 700, Push),
+            ('2', 800, Squash),
+            ('3', 900, Push),
+            ('4', 1000, Push),
+            ('5', 5000, Squash),
         ];
-        assert_eq!(chain(&forged, since), (vec!['3', '4'], 4));
-        assert_eq!(chain(&forged[..4], since), (vec!['3', '4'], 3));
+        assert_eq!(
+            chain(&forged, since),
+            (vec!['3', '4'], vec!['2', '3', '4', '5'])
+        );
+        assert_eq!(
+            chain(&forged[..4], since),
+            (vec!['3', '4'], vec!['2', '3', '4'])
+        );
+        // AA3: 3, old and squashed without ci-ok, does not close the window; 2 does.
+        let no_ci = [
+            ('1', 700, Push),
+            ('2', 800, Squash),
+            ('3', 900, NoCi),
+            ('4', 5000, Squash),
+        ];
+        assert_eq!(chain(&no_ci, since), (vec!['3'], vec!['2', '3', '4']));
+        // `all` stays J3 alone (#55): 3 passes there.
+        assert_eq!(
+            chain(&no_ci, Origin::All),
+            (vec!['1'], vec!['1', '2', '3', '4'])
+        );
         assert_eq!(Origin::parse("7d", 1_000_000), Some(Origin::Since(395_200)));
         assert_eq!(Origin::parse("all", 0), Some(Origin::All));
         for bad in ["0d", "367d", "7", "d", "-1d", "+7d", "07d", "7h", ""] {
@@ -1142,7 +1263,7 @@ mod tests {
             (
                 format!("{s}/commits/{x}/pulls"),
                 json!([{"number": 7, "merge_commit_sha": x, "merged_at": "x",
-                        "base": {"ref": "main"}}])
+                        "base": {"ref": "main"}, "head": {"sha": h}}])
                 .to_string(),
             ),
             (
@@ -1168,7 +1289,7 @@ mod tests {
         let rules = sensitive::Rules::parse("tools/xtask/\n").unwrap();
         let j4 = if j4_on_a { &c.a } else { &c.h };
         let section = format!("## 9. Avis\narchsec-ok: {j4}\n");
-        let (bad, note) = check_commit(&repo, &rules, &section, &x, false).unwrap();
+        let (bad, note) = check_commit(&repo, &rules, &section, &x, Extra::Nothing).unwrap();
         if bad.is_empty() {
             let a = &c.a[..7];
             assert!(
