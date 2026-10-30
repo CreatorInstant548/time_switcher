@@ -459,6 +459,41 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | Consigne T4 (`xtask spec-map` ; S) | `scratchpad/…/consigne-T4.md` du responsable développement | **Validé avec corrections H1 à H8** (§9.7) ; §7 révisé (grammaire, carnets, identifiants, RON), `spec-map-spec.md` à recopier ; lancement après la fusion de la PR #11 |
 | 30/10 | **PR #15 (T4, `spec-map`), fusion** | SHA de tête `516ff46871adf07b6e2e7bc56db8b76ddf116f82` ; `review-ok` du relecteur neuf | **`archsec-ok: 516ff46871adf07b6e2e7bc56db8b76ddf116f82`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/15#issuecomment-6516391405)) : H3 à H6, SEC0-26, AS-19 et AS-20 conformes ; `known_bad.txt` vide ; non bloquant : [#18](https://github.com/CreatorInstant548/time_switcher/issues/18) |
 | 30/10 | **PR #14 (T13, CI), contenu** | SHA de tête `5a474134fcd1e3243d23c2bbf72caaed6fc350ce`, `ci-ok` vert ; `review-ok` du relecteur neuf | **`archsec-ok: 5a474134fcd1e3243d23c2bbf72caaed6fc350ce`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/14#issuecomment-6516392004)) : SEC0-29 à 32, G1, G2, G4 à G11, AS-21 et A2 conformes ; non bloquant : [#17](https://github.com/CreatorInstant548/time_switcher/issues/17) (`concurrency`), [#6](https://github.com/CreatorInstant548/time_switcher/issues/6) (T3-a, T3-b, G3) ; **nouvel avis à donner sur le SHA après la mise à jour depuis `main`** |
+| 30/10 | Consigne T3a (`xtask merge`, `verify-main`, `hooks` ; V et S) | `scratchpad/…/consigne-T3a.md` du responsable développement | **Validé avec corrections J1 à J8** (§9.8) ; `merge-pr.ps1` et `install-hooks.ps1` supprimés ; deux relecteurs neufs ; lancement après la fusion des PR #16 et #14 |
+
+### 9.8 Consigne T3a : `xtask merge`, `verify-main` et `hooks` (30/10)
+
+Avis **validé avec corrections J1 à J8**, toutes décidées. Lancement après la fusion de la PR #16, puis de la PR #14. Le découpage T3a / T3b est validé. La suppression de `merge-pr.ps1` dans la PR de T3a remplit la condition du §9.3 : un seul chemin de fusion. La PR de T3a est la dernière fusionnée par `merge-pr.ps1`.
+
+- **J1. Contrôle des workflows rejoué (T3-a) : en mémoire, sans worktree.**
+  - `merge` récupère la tête de la PR par `git fetch origin pull/<n>/head`.
+  - Il lit chaque `.github/workflows/*` par `git show <sha>:<chemin>` et appelle directement `workflows::check_workflow` : c'est le code de `main`, puisque `merge` tourne depuis la copie principale.
+  - *Pourquoi :* le résultat est le même, sans worktree temporaire à créer, à nettoyer et à garder hors de `worktree list`.
+- **J2. `merge` ne tourne que depuis la copie principale.** L'alias `cargo xtask` compile la crate `xtask` de la copie où on le lance. Lancé depuis un worktree, `merge` exécuterait donc le code de la branche, qui pourrait sauter ses propres contrôles. Deux barrières :
+  - **`guard-git`** permet `cargo xtask merge` seulement si le dossier courant est la racine de la copie principale. Il refuse aussi `cargo run … -p xtask … merge`, et toute autre forme qui lance la fusion depuis ailleurs.
+  - **`merge`** vérifie, en plus, que l'exécutable a été compilé dans `<copie principale>\target`, et qu'il a été compilé après le dernier commit de `main`.
+- **J3. Lien entre un commit de `main` et sa PR (`verify-main`).** Il passe par l'API, jamais par le titre du commit, qui se falsifie :
+  - `gh api repos/{o}/{r}/commits/<sha>/pulls` donne la PR ;
+  - il faut `merged = true` et `merge_commit_sha == <sha>` ;
+  - le `ci-ok` (G3) et les deux approbations portent sur le `head.sha` de cette PR.
+- **J4. Recoupement avec le §9 du carnet.** La ligne cherchée contient littéralement `archsec-ok: <40 caractères hexadécimaux>`. Elle est lue par `git show origin/pilotage:architecture-securite.md`, entre le titre `## 9.` et le titre suivant de même niveau. Si `origin/pilotage` est absente, `verify-main` échoue.
+- **J5. Comment lever une anomalie de `verify-main`.** Une anomalie de l'historique ne disparaît pas : un commit poussé hors fusion reste dans `main`, et l'on ne force jamais la poussée. Mécanisme :
+  - **La liste :** une liste fermée `ACKNOWLEDGED` dans le code de `xtask` donne, pour chaque anomalie, le SHA, la raison et l'*issue* `role:architecture`.
+  - **L'ajout :** il passe par une PR de chemin sensible, avec mon `archsec-ok`.
+  - **La suspension des fusions :** tant qu'une anomalie n'est pas dans la liste, `merge` refuse.
+  - **L'*issue* :** `verify-main` réutilise l'*issue* ouverte qui porte déjà le même SHA, sans créer de doublon.
+- **J6. `hooks verify`, contrôles en plus.**
+  - Lecture seule des réglages **utilisateur** `~/.claude/settings.json` : échec si `disableAllHooks` y est vrai, puisqu'il désactiverait aussi les crochets du projet. *Pourquoi : c'est le seul endroit qu'aucun garde du dépôt ne protège. On le lit sans jamais l'écrire, conformément à la décision C4 de l'orchestrateur.*
+  - Le `.claude/settings.json` de chaque copie de travail est comparé à `git show HEAD:.claude/settings.json` de cette copie, et à `origin/main` pour la copie principale.
+- **J7. Installation des crochets.** La comparaison avec `origin/main` porte sur le contenu, octet pour octet, de chaque fichier de `tools/dev/hooks/` et de `tools/dev/tools.lock`, lus par `git show`. L'empreinte du jeu se calcule comme dans `install-hooks.ps1` (liste triée « nom NUL sha256 LF »), pour que les installations actuelles restent reconnues. `install-hooks.ps1` est **supprimé**, et non réduit à un renvoi : un seul chemin d'installation.
+- **J8. Actions épinglées (T3-b).**
+  - Une ligne `uses:` sans étiquette en commentaire (`# vX.Y.Z`) est refusée.
+  - La comparaison se fait entre le SHA épinglé et `gh api repos/<o>/<r>/commits/<étiquette>` → `sha`. Elle couvre les commits « imposteurs » venus d'un *fork*, car l'étiquette est résolue dans le dépôt officiel.
+  - Si l'API ne répond pas, `merge` refuse.
+
+**Risque résiduel, sans changement : R-ARCH-05.** Le §9 de ce carnet et les commentaires de PR sont écrits par le même compte GitHub. Le recoupement J4 prouve la **cohérence** entre deux traces, pas l'auteur. Le risque est accepté.
+
+**Revue de la PR de T3a :** chemins sensibles `tools/xtask/` et `tools/dev/`, donc `/security-review`, deux relecteurs neufs successifs, puis mon `archsec-ok`. *Pourquoi deux relecteurs : c'est désormais l'unique barrière de fusion.* Critères bloquants : SEC0-12, 15, 17, 35, G3, G8, T3-a, T3-b et J1 à J8.
 
 ### 9.7 Consigne T4 : `cargo xtask spec-map` (30/10)
 
