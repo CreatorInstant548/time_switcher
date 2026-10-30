@@ -3,6 +3,8 @@
 
 use std::collections::BTreeMap;
 
+use serde_json::json;
+
 use super::diff::{check_rev, render_diff};
 use super::doc::{self, Doc};
 use super::refs::{self, Hit, IdSpec, Item};
@@ -149,6 +151,85 @@ fn handles_ambiguous_titles() {
     assert!(m.cites[0].errors[0].contains("ambiguë"));
     let m2 = model(&[("a.rs", rust("spec: combat.md §1"))]);
     assert!(m2.cites[0].errors.is_empty());
+}
+
+#[test]
+fn numbered_points_are_subsections() {
+    let d = doc::parse(&text(&[
+        "## 2. Choix",
+        "1. **Premier** point",
+        "2. Deuxième",
+        "   1. imbriqué, en retrait",
+        "3. **P7 — Troisième** (décidé)",
+        "   suite du paragraphe, en retrait",
+        "### Phase 0 — sans numéro",
+        "4. Quatrième, sous un titre sans numéro",
+        "## 3. Autre",
+        "1. seul",
+        "## 4. Conflit",
+        "1. point un",
+        "### 4.1 Vrai sous-titre",
+        "2. point deux",
+        "## 5. Deux listes",
+        "1. a",
+        "",
+        "Du texte.",
+        "1. b",
+        "### 5.3 bis Suffixe",
+        "1. ignoré sous une clé à suffixe",
+    ]));
+    let keys: Vec<&str> = d.sections.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        [
+            "2", "2.1", "2.2", "2.3", "2.4", "3", "3.1", "4", "4.1", "4.1.2", "5", "5.1", "5.3 bis"
+        ]
+    );
+    assert_eq!(d.sections["2.1"].title, "Premier point");
+    // Pas de point « 2.1 » en double pour la ligne en retrait.
+    assert!(!d.dups.contains("2.1") && d.sections["2.2"].body.contains("imbriqué"));
+    // Le point est une section : son texte, et les identifiants qu'il définit.
+    assert!(d.sections["2.3"].body.contains("suite du paragraphe"));
+    assert!(d.defines("P7", Some("2.3")) && d.defines("P7", Some("2")));
+    assert!(!d.defines("P7", Some("2.2")));
+    // Le vrai sous-titre prime, sans doublon ; le point sous ce sous-titre est la section 4.1.2.
+    assert_eq!(d.sections["4.1"].title, "Vrai sous-titre");
+    assert!(!d.dups.contains("4.1"));
+    // Deux listes sous la même section rendent le numéro ambigu.
+    assert!(d.dups.contains("5.1"));
+    let mut twice = BTreeMap::new();
+    twice.insert(
+        "docs/conception/05-architecture.md".to_owned(),
+        doc::parse(&text(&[
+            "## 5. Deux listes",
+            "1. a",
+            "",
+            "Du texte.",
+            "1. b",
+        ])),
+    );
+    let amb = build(
+        twice,
+        &[("a.rs".to_owned(), rust("spec: 05-architecture.md §5.1"))],
+        &fetch,
+    );
+    assert!(amb.cites[0].errors[0].contains("ambiguë"));
+    let mut docs = BTreeMap::new();
+    docs.insert("docs/conception/05-architecture.md".to_owned(), d);
+    let m = build(
+        docs,
+        &[
+            (
+                "a.rs".to_owned(),
+                rust("spec: 05-architecture.md §2.3 ; §2.9"),
+            ),
+            ("b.rs".to_owned(), rust("spec: 05-architecture.md §2.3 P7")),
+        ],
+        &fetch,
+    );
+    assert_eq!(m.cites[0].errors.len(), 1);
+    assert!(m.cites[0].errors[0].contains("§2.9 introuvable"));
+    assert!(m.cites[1].errors.is_empty());
 }
 
 #[test]
@@ -417,6 +498,33 @@ fn known_bad_list_is_closed_and_cannot_go_stale() {
         parse_known("tools/xtask/src/a.rs | 1 | t | r | #1").1.len(),
         1
     );
+}
+
+#[test]
+fn report_flags_identifiers_defined_twice() {
+    let mut docs = BTreeMap::new();
+    docs.insert(
+        SECURITE.to_owned(),
+        doc::parse(&text(&[
+            "## 4. X",
+            "### 4.3 Y",
+            "- **S8 — a**",
+            "## 6. Décisions",
+            "| S8 | b |",
+            "| S9 | c |",
+        ])),
+    );
+    let sources = [("a.rs".to_owned(), rust("spec: securite.md S8"))];
+    let m = build(docs, &sources, &fetch);
+    // Toujours valide : check reste vert.
+    assert_eq!(evaluate(&m, "").0, Vec::<String>::new());
+    let v = report(&m, None);
+    let twice = v["identifiers_defined_twice"].as_array().unwrap();
+    assert_eq!(twice.len(), 1);
+    assert_eq!(twice[0]["id"], "S8");
+    assert_eq!(twice[0]["sections"], json!(["4.3", "6"]));
+    assert!(markdown(&v).contains("Identifiants définis plusieurs fois (1)"));
+    assert!(markdown(&v).contains("securite.md S8 : §4.3, §6"));
 }
 
 #[test]

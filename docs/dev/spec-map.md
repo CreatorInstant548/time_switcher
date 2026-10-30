@@ -35,6 +35,8 @@ Un renvoi est un commentaire **seul sur sa ligne** dont le texte commence par `s
 
 **Sections.** Un titre Markdown (hors blocs de code) dont le premier mot est un numéro `n(.m)*`, avec un point final facultatif et un suffixe facultatif (`bis`, `ter` ou une lettre minuscule) : `## 2. Titre` donne `2`, `### 5.3 bis Titre` donne `5.3 bis`. Un titre sans numéro (`### Phase 0 — …`) reste dans la section numérotée au-dessus.
 
+**Points numérotés (AS-19).** La conception cite les points d'une liste comme des sous-sections : `05-architecture.md §2.3` est le point `3. ` de la section `## 2`. Un élément de liste numérotée de **premier niveau** (`N. ` en début de ligne, sans retrait), placé directement sous un titre de numéro `k` (un titre sans numéro compte pour le dernier titre numéroté), définit la section `§k.N`. Les lignes en retrait qui suivent appartiennent au point ; une liste en retrait n'en crée pas. Si le titre a déjà un vrai sous-titre `k.N`, le sous-titre prime, sans doublon. Si deux listes sous le même titre définissent le même `§k.N`, un renvoi vers `§k.N` est **ambigu** et `check` échoue. Un titre dont la clé porte un suffixe (`5.3 bis`) ne porte pas de points.
+
 **Identifiants.** Forme `[A-Z][A-Z0-9]*(-[A-Z0-9]+)*-?\d+` (`S8`, `M28`, `SEC0-35`, `AS-12`, `R-ARCH-04`, `T0-06`, `F3`). Un identifiant est **défini dans le fichier cible** s'il est la première cellule d'une ligne de tableau, ou en gras en tête d'élément de liste (`- **X**`, `- **X.**`, `- **X — titre**`, `- [ ] **X**`, `1. **X**`) ou de ligne. Si le renvoi donne une section avant l'identifiant, celui-ci doit être défini dans cette section ou dans une de ses sous-sections.
 
 ## 3. Grammaire d'un renvoi
@@ -76,6 +78,7 @@ Version 1. Les tableaux sont triés (fichier puis ligne ; documents puis section
   "identifiers": [ { "doc": "…", "id": "S8", "code": [ { "file": "…", "line": 1 } ] } ],
   "sections_without_code": [ { "doc": "…", "section": "3.1", "title": "…" } ],
   "identifiers_without_code": 123,
+  "identifiers_defined_twice": [ { "doc": "…", "id": "S8", "sections": [ "4.3", "6" ] } ],
   "provisional": [ { "file": "…", "line": 1, "issue": 12 | null, "text": "…" } ]
 }
 ```
@@ -84,6 +87,7 @@ Version 1. Les tableaux sont triés (fichier puis ligne ; documents puis section
 - `references` : un renvoi vers un fichier seul a `section` et `id` nuls. Un renvoi à un identifiant situé dans une section compte pour l'identifiant **et** pour la section.
 - `sections_without_code` ne couvre que `docs/conception/` ; une section est « avec code » si un renvoi la cite directement (pas par un parent ni un enfant).
 - `provisional` : `issue` est nul si la marque n'a pas de numéro (`check` échoue alors).
-- `--file` filtre `references`, `sections`, `identifiers`, `sections_without_code` et `identifiers_without_code` ; `provisional` reste complet.
+- `identifiers_defined_twice` signale (AS-20) les identifiants définis plusieurs fois dans un même fichier, avec les sections concernées : ils restent valides et `check` reste vert.
+- `--file` filtre `references`, `sections`, `identifiers`, `sections_without_code`, `identifiers_without_code` et `identifiers_defined_twice` ; `provisional` reste complet.
 
 Le tableau du responsable qualité (organisation §3.1 point 4) lit ce JSON.

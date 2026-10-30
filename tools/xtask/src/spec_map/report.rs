@@ -88,6 +88,19 @@ pub(super) fn report(m: &Model, only: Option<&str>) -> Value {
             .filter(|id| !ids.contains_key(&(path.clone(), (*id).clone())))
             .count();
     }
+    // Identifiant défini plusieurs fois dans un fichier : valide, mais signalé (AS-20).
+    let mut multiple = Vec::new();
+    for (path, d) in m
+        .docs
+        .iter()
+        .filter(|(p, _)| only.is_none_or(|o| o == p.as_str()))
+    {
+        for (id, defs) in d.ids.iter().filter(|(_, defs)| defs.len() > 1) {
+            let mut at: Vec<&str> = defs.iter().map(|x| x.section.as_str()).collect();
+            at.sort_by_key(|k| natural(k));
+            multiple.push(json!({"doc": path, "id": id, "sections": at}));
+        }
+    }
     let provisional: Vec<Value> = m
         .marks
         .iter()
@@ -100,6 +113,7 @@ pub(super) fn report(m: &Model, only: Option<&str>) -> Value {
         "identifiers": identifiers,
         "sections_without_code": bare,
         "identifiers_without_code": ids_bare,
+        "identifiers_defined_twice": multiple,
         "provisional": provisional,
     })
 }
@@ -155,6 +169,24 @@ pub(super) fn markdown(v: &Value) -> String {
         "\nIdentifiants sans code : {}\n",
         v["identifiers_without_code"]
     );
+    let twice = list("identifiers_defined_twice");
+    out += &format!(
+        "\n## Identifiants définis plusieurs fois ({})\n\n",
+        twice.len()
+    );
+    for t in &twice {
+        let at: Vec<String> = t["sections"].as_array().map_or(Vec::new(), |a| {
+            a.iter()
+                .map(|s| format!("§{}", s.as_str().unwrap_or_default()))
+                .collect()
+        });
+        out += &format!(
+            "- {} {} : {}\n",
+            t["doc"].as_str().unwrap_or_default(),
+            t["id"].as_str().unwrap_or_default(),
+            at.join(", ")
+        );
+    }
     let marks = list("provisional");
     out += &format!("\n## PROVISOIRE ({})\n\n", marks.len());
     for k in &marks {

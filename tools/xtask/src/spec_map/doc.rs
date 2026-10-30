@@ -63,12 +63,17 @@ impl Doc {
 pub fn parse(text: &str) -> Doc {
     let mut doc = Doc::default();
     let (mut fence, mut current) = (false, String::new());
+    // Points numérotés de premier niveau, cités comme des sous-sections `k.N` (voir `point`).
+    let mut points: BTreeMap<String, Section> = BTreeMap::new();
+    let (mut open, mut point_dups) = (None::<String>, BTreeSet::new());
     for line in text.lines() {
         let t = line.trim_start();
+        let mut id_section = open.clone().unwrap_or_else(|| current.clone());
         if t.starts_with("```") || t.starts_with("~~~") {
             fence = !fence;
         } else if !fence {
             if let Some(title) = heading(line) {
+                open = None;
                 if let Some(key) = section_key(title) {
                     // Le titre garde son texte, sans le numéro (et le suffixe) déjà dans la clé.
                     let words = key.split(' ').count();
@@ -82,12 +87,35 @@ pub fn parse(text: &str) -> Doc {
                     });
                     current = key;
                 }
-            } else if let Some(id) = defined_id(line) {
-                doc.ids.entry(id).or_default().push(IdDef {
-                    section: current.clone(),
-                    text: line.trim().to_owned(),
-                });
+            } else {
+                if let Some((n, title)) = point(line)
+                    && !current.is_empty()
+                    && !current.contains(' ')
+                {
+                    let key = format!("{current}.{n}");
+                    if points.contains_key(&key) {
+                        point_dups.insert(key.clone());
+                    }
+                    points.entry(key.clone()).or_insert_with(|| Section {
+                        title,
+                        body: String::new(),
+                    });
+                    id_section = key.clone();
+                    open = Some(key);
+                } else if !line.trim().is_empty() && !line.starts_with([' ', '\t']) {
+                    open = None;
+                }
+                if let Some(id) = defined_id(line) {
+                    doc.ids.entry(id).or_default().push(IdDef {
+                        section: id_section,
+                        text: line.trim().to_owned(),
+                    });
+                }
             }
+        }
+        if let Some(p) = open.as_ref().and_then(|k| points.get_mut(k)) {
+            p.body.push_str(line);
+            p.body.push('\n');
         }
         // Un titre sans numéro (« Phase 0 ») reste dans la section numérotée au-dessus.
         if let Some(s) = doc.sections.get_mut(&current) {
@@ -95,7 +123,27 @@ pub fn parse(text: &str) -> Doc {
             s.body.push('\n');
         }
     }
+    // Un vrai sous-titre `k.N` prime sur le point numéroté du même numéro, sans doublon.
+    for (key, section) in points {
+        if !doc.sections.contains_key(&key) {
+            if point_dups.contains(&key) {
+                doc.dups.insert(key.clone());
+            }
+            doc.sections.insert(key, section);
+        }
+    }
     doc
+}
+
+/// Point numéroté de premier niveau (`3. Texte`, sans retrait) : numéro et début du texte. La
+/// conception cite ces points comme des sous-sections (`§2.3` pour le point 3 de la section 2).
+fn point(line: &str) -> Option<(String, String)> {
+    let n = line.bytes().take_while(u8::is_ascii_digit).count();
+    let rest = line[n..]
+        .strip_prefix(". ")
+        .filter(|_| (1..=4).contains(&n))?;
+    let title: String = rest.replace("**", "").trim().chars().take(80).collect();
+    Some((line[..n].to_owned(), title))
 }
 
 fn heading(line: &str) -> Option<&str> {

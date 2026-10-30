@@ -1,5 +1,4 @@
 # Renvois « spec: » faux hors de tools/xtask/, tolérés le temps de les corriger (H3).
 # Une entrée par ligne : fichier | ligne | texte du renvoi | raison | #issue (role:dev)
 # La liste ne peut que diminuer : une entrée dont le renvoi est corrigé ou a disparu fait échouer
-# spec-map check. Elle doit être vide à la fin de la phase 0.
-crates/ts_kernel/src/lib.rs | 1 | 05-architecture.md §2.3 ; securite.md S8 ; attendus-mesurables.md M28 | 05-architecture.md n'a pas de §2.3 (son §2 est une liste numérotée sans sous-titres) | #13
+# spec-map check. Elle doit être vide à la fin de la phase 0. Vide à ce jour.
