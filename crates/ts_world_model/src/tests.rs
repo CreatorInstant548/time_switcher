@@ -385,6 +385,7 @@ fn public_types_are_client_shippable() {
     fn ship<T: ClientShippable>() {}
     ship::<PublicPlace>();
     ship::<PublicMap>();
+    ship::<CandidateSpot>();
 }
 
 // --- Canonical encoding: reference vectors ------------------------------------------------------

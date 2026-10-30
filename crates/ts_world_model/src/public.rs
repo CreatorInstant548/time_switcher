@@ -2,10 +2,13 @@
 //!
 //! Everything in this module is public by construction: it is identical for all worlds and
 //! reveals nothing about a given world (S33). The sealed marker [`ClientShippable`] is
-//! implemented here and nowhere else.
+//! implemented here and nowhere else: for the types of this module and for the generic
+//! candidates of `candidates` (A13, AS-32), which stay a separate module. Only the per-world
+//! `server` part is excluded.
 
 use ts_kernel::StableId;
 
+use crate::candidates::CandidateSpot;
 use crate::canonical::{Canonical, CanonicalWriter, tag};
 use crate::{GeometryError, HeightRange, Level, Polygon2, map_id};
 
@@ -45,17 +48,17 @@ mod sealed {
 /// ```
 ///
 /// Inside the crate, `candidates` and `server` cannot name `public::sealed` (module privacy),
-/// which a doctest cannot test.
+/// which a doctest cannot test: the candidates are shippable only because `public.rs`
+/// implements the marker for them (A13, AS-32), and `server` has no such impl.
 ///
-/// The two examples below only show that the candidate and server types do **not** implement
-/// the marker today. They prove nothing about whether they could: the guarantee is the seal
-/// above.
-///
-/// ```compile_fail
+/// ```
 /// use ts_world_model::{ClientShippable, candidates::CandidateSpot};
 /// fn ship<T: ClientShippable>() {}
 /// ship::<CandidateSpot>();
 /// ```
+///
+/// The next example only shows that the server type does **not** implement the marker today.
+/// It proves nothing about whether it could: the guarantee is the seal above.
 ///
 /// ```compile_fail
 /// use ts_world_model::{ClientShippable, server::ServerPart};
@@ -158,3 +161,8 @@ impl sealed::Sealed for PublicPlace {}
 impl sealed::Sealed for PublicMap {}
 impl ClientShippable for PublicPlace {}
 impl ClientShippable for PublicMap {}
+
+// A13, AS-32: the generic candidates are public by design. They live in `candidates`, but only
+// this module can name the seal, so the impl is here.
+impl sealed::Sealed for CandidateSpot {}
+impl ClientShippable for CandidateSpot {}

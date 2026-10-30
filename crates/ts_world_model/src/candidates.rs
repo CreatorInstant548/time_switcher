@@ -1,9 +1,16 @@
 //! Generic candidates for the server part (camera spots, vault and cache sites, alarm sites).
 //!
 //! Candidates exist everywhere and reveal nothing by themselves; what is really placed is
-//! drawn per world in the `server` part. They are **not** [`ClientShippable`](crate::ClientShippable)
-//! for now: whether the client package carries them is a design decision still to be taken
-//! (see the PR description), and the marker is sealed to the `public` module.
+//! drawn per world in the `server` part. They are [`ClientShippable`](crate::ClientShippable)
+//! (design arbitration A13 on issue #34, architecture and security AS-32): the client package
+//! carries them, and the solo host needs them to draw the server part. The module stays
+//! separate from `public`; the marker is implemented in `public.rs`, the only place that can
+//! name the seal.
+//!
+//! **Condition C1 (AS-32), for the future generator (V12).** The function that produces the
+//! candidates must be a function of the public geometry and the content package alone: it
+//! receives no `WorldKey`, no `StreamKeys` and no datum from the per-world draw (W2), and its
+//! signature must say so. A candidate that depended on W2 would reveal the real placement.
 
 use ts_kernel::StableId;
 
@@ -24,7 +31,6 @@ pub enum CandidateKind {
     Alarm,
 }
 
-// PROVISOIRE(conception #34): candidates are not ClientShippable until the design decides (V12).
 // spec: revues/generation.md P12, V12
 /// A generic candidate position on one level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
