@@ -549,6 +549,7 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
   - **Usage futur :** tout futur empaqueteur du paquet client exigera ce trait.
   - **Parts fermées :** les parts `candidates` et `server` ne peuvent pas l'implémenter hors de la crate, et un test `compile_fail` le montre.
   - *Pourquoi :* une documentation seule ne suffit pas. Le paquet client est public, et y laisser filer la part serveur révélerait serrures, caméras et coffres.
+  - **Révisé le 30/10 (AS-32, *issue* #34, arbitrage A13 de la conception) : `candidates` est aussi `ClientShippable`,** dans un module séparé de `public`. Seule la part **serveur tirée par monde** (W2) reste non livrable. Ma première rédaction était trop large : les candidats sont publics par conception (V12, §8.1, P30), et l'hôte solo en a besoin pour tirer W2.
 - **N4. Identités de la carte.** Les entités de la carte utilisent `StableId::map(index)` (P28), jamais l'allocateur du monde.
 
 ### 9.10 Consigne T6 : noyau, deuxième partie (30/10)
