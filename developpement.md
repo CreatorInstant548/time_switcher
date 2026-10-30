@@ -252,3 +252,11 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - un nouveau constat ne bloque que s'il relève de la liste fermée, sinon il devient une issue ;
   - un relecteur neuf par PR, Opus pour les chemins sensibles et Sonnet pour le reste ;
   - aucun relecteur pour une PR de documentation seule.
+- 30/10 : **correction de l'utilisateur** : après la #29, faire **autant de tours de relecture que nécessaire** ; il n'y a plus de plafond de tours. Ce qui reste en vigueur :
+  - une PR ne se fusionne pas tant qu'un relecteur relève un constat bloquant ou important ;
+  - les mineurs deviennent des issues ;
+  - un relecteur neuf par PR (Opus pour les chemins sensibles, Sonnet ailleurs), deux pour les plus critiques ;
+  - un seul lot de corrections par tour ;
+  - la consigne de relecture demande de traiter les causes plutôt que les cas.
+
+  Remplace la règle « un seul tour » notée plus haut.
