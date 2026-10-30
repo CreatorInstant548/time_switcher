@@ -545,6 +545,11 @@ $cases = @(
   @('Bash', 'main', 'm=-Apply; pwsh tools/dev/repo-settings.ps1 $m', 'D'),
   @('Bash', 'main', 'pwsh tools/dev/repo-settings.ps1 "$M"', 'D'),
   @('PowerShell', 'main', 'pwsh tools/dev/repo-settings.ps1 -Check:$false', 'D'),
+  # AS-38 : -Check -SourceCommit <sha> est réservé à cargo xtask merge (processus enfant), refusé aux sessions.
+  @('PowerShell', 'main', 'pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check -SourceCommit 0123456789abcdef0123456789abcdef01234567', 'D'),
+  @('Bash', 'main', 'pwsh tools/dev/repo-settings.ps1 -Check -SourceCommit 0123456789abcdef0123456789abcdef01234567', 'D'),
+  @('PowerShell', 'main', 'pwsh -NoProfile -NonInteractive -File tools/dev/repo-settings.ps1 -Check -SourceCommit 0123456789abcdef0123456789abcdef01234567', 'D'),
+  @('Bash', 'wt', 'pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check -SourceCommit 0123456789abcdef0123456789abcdef01234567', 'D'),
   # B1 : nom court 8.3, motif dans tools/, nom fabriqué par concaténation.
   @('Bash', 'main', 'pwsh tools/dev/REPO-S~1.PS1 -Apply', 'D'),
   @('PowerShell', 'main', 'pwsh -NoProfile -File tools\dev\repo-s~1.ps1 -Apply', 'D'),

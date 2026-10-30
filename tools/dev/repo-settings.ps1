@@ -1,13 +1,16 @@
 # tools/dev/repo-settings.ps1 : réglages GitHub du dépôt, décrits dans tools/ci/repo-settings.json (T3d).
-# Mode d'emploi : docs/dev/outillage.md §6. Deux modes exclusifs, sans autre argument :
+# Mode d'emploi : docs/dev/outillage.md §6. Trois formes exclusives, sans autre argument :
 #   -Check : lecture seule (GET) ; tout écart avec le fichier d'origin/main est affiché (code 1) ;
-#   -Apply : crée ou remplace les rulesets, règle le dépôt et les Actions selon ce fichier, puis -Check.
-# Les valeurs sont lues sur origin/main (git show), jamais sur le disque : une branche ne peut pas faire
-# appliquer les siennes. Lancé depuis la racine de la copie principale, propre, sur main, à jour
+#   -Apply : crée ou remplace les rulesets, règle le dépôt et les Actions selon ce fichier, puis -Check ;
+#   -Check -SourceCommit <sha> (AS-38) : -Check avec le fichier du commit <sha> (40 caractères
+#     hexadécimaux minuscules, présent après git fetch). Réservé à cargo xtask merge, qui le lance en
+#     processus enfant pour la tête d'une PR de réparation ; le garde le refuse aux sessions.
+# Les valeurs sont lues par git show (origin/main, ou <sha>), jamais sur le disque : une branche ne peut
+# pas faire appliquer les siennes. Lancé depuis la racine de la copie principale, propre, sur main, à jour
 # d'origin/main, et le script lancé doit être celui de cette copie (S4). Les invariants sont codés ici
 # (S2) : affaiblir les règles demande de modifier aussi ce script.
 # Codes de sortie : 0 conforme ; 1 écart, fichier refusé ou écriture refusée ; 2 usage, préalable ou erreur.
-# Conditions suivies : AS-30 R1 à R5, AS-31 E4 et E5, §9.12 S1 à S5.
+# Conditions suivies : AS-30 R1 à R5, AS-31 E4 et E5, AS-38, §9.12 S1 à S5.
 # spec: carnet architecture-securite.md SEC0-30 ; §9.12 S1, S2, S3, S4, S5
 $ErrorActionPreference = 'Stop'
 trap { [Console]::Error.WriteLine("repo-settings : erreur interne ($($_.Exception.Message))"); exit 2 }
@@ -220,11 +223,26 @@ function Invoke-Write([string]$Method, [string]$Path, $Body) {
   Write-Host "  $Method repos/$Slug$Path : fait"
 }
 
+# Fichier de valeurs du commit $Rev, lu par git show, jamais sur le disque ; $null si le JSON est
+# illisible. Un git show qui échoue arrête le script (Stop-With, code 2) : vérifier le chemin avant.
+function Read-Config([string]$Rev) {
+  try { $c = ConvertFrom-Json (@(Invoke-Git show "${Rev}:$File") -join "`n") -AsHashtable -Depth 50 -NoEnumerate } catch { return $null }
+  return , $c   # une liste JSON reste une liste, refusée par Get-Invalid
+}
+
 if ($MyInvocation.InvocationName -eq '.') { return }   # chargé par tools/dev/test-repo-settings.ps1
 
 # --- Arguments et préalables ---
-if ($args.Count -ne 1 -or $args[0] -cnotin '-Check', '-Apply') { Stop-With 2 'usage : pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check|-Apply' }
+$forms = ($args.Count -eq 1 -and $args[0] -cin '-Check', '-Apply') -or ($args.Count -eq 3 -and $args[0] -ceq '-Check' -and $args[1] -ceq '-SourceCommit')
+if (-not $forms) { Stop-With 2 'usage : pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check|-Apply (-Check -SourceCommit <sha> : réservé à cargo xtask merge)' }
 $Apply = $args[0] -ceq '-Apply'
+# AS-38 : SHA complet, en hexadécimal minuscule, sans rien d'autre (\z : pas de saut de ligne final).
+$Source = 'origin/main'
+if ($args.Count -eq 3) {
+  if ("$($args[2])" -cnotmatch '^[0-9a-f]{40}\z') { Stop-With 2 '-SourceCommit : SHA complet attendu (40 caractères hexadécimaux minuscules)' }
+  $Source = "$($args[2])"
+}
+$From = if ($Source -ceq 'origin/main') { "d'origin/main" } else { "du commit $Source" }
 # S4 d'abord, puis le fichier d'origin/main, puis le distant : chaque refus a son message (testés par
 # tools/dev/test-repo-settings.ps1 dans un dépôt jetable dont origin est local, sans appel à GitHub).
 $common = "$(Invoke-Git rev-parse --path-format=absolute --git-common-dir)".Trim()
@@ -238,12 +256,17 @@ Invoke-Git fetch --quiet origin | Out-Null
 if ("$(Invoke-Git rev-parse HEAD)".Trim() -cne "$(Invoke-Git rev-parse origin/main)".Trim()) { Stop-With 2 'la copie principale n''est pas à jour d''origin/main : git pull --ff-only' }
 & git cat-file -e "origin/main:$File" 2>$null
 if ($LASTEXITCODE) { Stop-With 2 "$File absent d'origin/main : réglages pas encore fusionnés, rien à comparer ni à appliquer" }
+if ($Source -cne 'origin/main') {
+  & git cat-file -e "$($Source)^{commit}" 2>$null
+  if ($LASTEXITCODE) { Stop-With 2 "-SourceCommit : commit $Source introuvable après git fetch" }
+  & git cat-file -e "$($Source):$File" 2>$null
+  if ($LASTEXITCODE) { Stop-With 2 "$File absent $From : rien à comparer" }
+}
 $url = "$(Invoke-Git config --get remote.origin.url)".Trim()
 if ($url -notmatch '^(https://github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(\.git)?$') { Stop-With 2 "distant origin hors de github.com : $url" }
 $Slug = $Matches[2]
 
-$cfg = $null
-try { $cfg = ConvertFrom-Json (@(Invoke-Git show "origin/main:$File") -join "`n") -AsHashtable -Depth 50 } catch { $cfg = $null }
+$cfg = Read-Config $Source
 $invalid = if ($null -eq $cfg) { [Collections.Generic.List[string]]@("$File : JSON illisible") } else { Get-Invalid $cfg }
 foreach ($x in $invalid) { Write-Host "  REFUS du fichier : $x" }
 
@@ -264,6 +287,6 @@ if ($Apply) {
 $drift = if ($invalid.Count) { @($invalid) } else { @(Get-Drift $cfg) }
 foreach ($d in $drift) { Write-Host "  ÉCART : $d" }
 $mode = if ($Apply) { '-Apply puis -Check' } else { '-Check' }
-if (@($drift).Count) { Write-Host "repo-settings $mode : $(@($drift).Count) écart(s) avec $File d'origin/main"; exit 1 }
-Write-Host "repo-settings $mode : conforme à $File d'origin/main ($Slug)"
+if (@($drift).Count) { Write-Host "repo-settings $mode : $(@($drift).Count) écart(s) avec $File $From"; exit 1 }
+Write-Host "repo-settings $mode : conforme à $File $From ($Slug)"
 exit 0

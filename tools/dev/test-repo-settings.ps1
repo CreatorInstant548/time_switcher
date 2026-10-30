@@ -1,5 +1,6 @@
 # tools/dev/test-repo-settings.ps1 : tests de repo-settings.ps1, sans appel à GitHub.
-# Invariants du fichier (S2), comparaison des réponses, motifs de ref (S3), arguments et préalables.
+# Invariants du fichier (S2), comparaison des réponses, motifs de ref (S3), arguments et préalables,
+# forme -Check -SourceCommit <sha> (AS-38) et lecture du fichier dans ce commit.
 # Lit tools/ci/repo-settings.json de la copie de travail et les workflows d'origin/main. Sortie 1 si un cas échoue.
 $dev = $PSScriptRoot
 . (Join-Path $dev 'repo-settings.ps1')
@@ -138,7 +139,37 @@ G -C $M commit -q --allow-empty -m 'docs(essai): en avance'
 Expect 'copie principale en avance d''origin/main' (Run-Settings $M $S @('-Check')) 'n''est pas à jour d''origin/main'
 G -C $M push -q origin main; G -C $M reset -q --hard HEAD~1
 Expect 'copie principale en retard d''origin/main' (Run-Settings $M $S @('-Apply')) 'n''est pas à jour d''origin/main'
-G -C $M pull -q --ff-only; G -C $M rm -q tools/ci/repo-settings.json; G -C $M commit -q -m 'docs(essai): sans fichier'; G -C $M push -q origin main
+G -C $M pull -q --ff-only
+# AS-38 : -Check -SourceCommit <sha>, forme réservée à cargo xtask merge ; les préalables S4 restent.
+$head = "$(& git -C $M rev-parse HEAD)".Trim()
+foreach ($a in @(@('-Check', '-SourceCommit'), @('-Apply', '-SourceCommit', $head), @('-SourceCommit', $head, '-Check'),
+                 @('-Check', '-SourceCommit', $head, 'x'), @('-Check', '-sourcecommit', $head), @('-Check', '-Source', $head))) {
+  Expect "arguments refusés : $($a -join ' ')" (Run-Settings $M $S $a) 'usage :'
+}
+foreach ($x in $head.Substring(0, 39), $head.ToUpperInvariant(), "${head}0", ('g' * 40), 'HEAD', 'origin/main') {
+  Expect "-SourceCommit refusé : $x" (Run-Settings $M $S @('-Check', '-SourceCommit', $x)) '-SourceCommit : SHA complet'
+}
+Expect '-SourceCommit : commit absent' (Run-Settings $M $S @('-Check', '-SourceCommit', ('0' * 40))) 'introuvable après git fetch'
+Expect '-SourceCommit atteint le dernier préalable' (Run-Settings $M $S @('-Check', '-SourceCommit', $head)) 'distant origin hors de github\.com'
+Expect '-SourceCommit hors de la racine' (Run-Settings (Join-Path $M 'sub') $S @('-Check', '-SourceCommit', $head)) 'pas depuis la racine de la copie principale'
+Expect '-SourceCommit depuis un worktree' (Run-Settings $W (Join-Path $W 'tools/dev/repo-settings.ps1') @('-Check', '-SourceCommit', $head)) 'pas depuis la racine de la copie principale'
+# Le fichier est lu dans le commit source (la tête d'une PR), ni sur le disque ni sur origin/main.
+G -C $M switch -q -c marque
+Set-Content (Join-Path $M 'tools/ci/repo-settings.json') '{"marque": 1}'
+G -C $M commit -q -am 'docs(essai): marque'
+$mark = "$(& git -C $M rev-parse HEAD)".Trim()
+G -C $M rm -q tools/ci/repo-settings.json; G -C $M commit -q -m 'docs(essai): sans fichier dans la branche'
+$nofile = "$(& git -C $M rev-parse HEAD)".Trim()
+G -C $M switch -q main
+Set-Content (Join-Path $M 'tools/ci/repo-settings.json') '{"disque": 1}'
+Push-Location $M
+try { $r = Read-Config $mark; $o = Read-Config 'origin/main' } finally { Pop-Location }
+Check 'Read-Config lit le commit source, pas le disque' ($r -is [Collections.IDictionary] -and $r['marque'] -eq 1 -and -not $r.Contains('disque'))
+Check 'Read-Config d''origin/main' ($o -is [Collections.IDictionary] -and $o.Contains('ruleset_main') -and -not $o.Contains('marque'))
+G -C $M checkout -q -- tools/ci/repo-settings.json
+Expect '-SourceCommit d''un commit hors de main' (Run-Settings $M $S @('-Check', '-SourceCommit', $mark)) 'distant origin hors de github\.com'
+Expect '-SourceCommit d''un commit sans le fichier' (Run-Settings $M $S @('-Check', '-SourceCommit', $nofile)) "absent du commit $nofile"
+G -C $M rm -q tools/ci/repo-settings.json; G -C $M commit -q -m 'docs(essai): sans fichier'; G -C $M push -q origin main
 Expect 'fichier absent d''origin/main' (Run-Settings $M $S @('-Check')) 'absent d''origin/main'
 Remove-Item -LiteralPath $tmp -Recurse -Force
 
