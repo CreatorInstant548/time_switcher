@@ -419,6 +419,7 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | Crochet Claude Code dans les réglages du projet (T1, T3) | Message du responsable développement | **Favorable**, avec SEC0-35 : point 1 dans T1, points 2 à 4 dans T3 (`hooks verify`) |
 | 30/10 | PR #5 (T1) : décisions I4 et I2 du responsable développement | Message du responsable développement ; PR non encore soumise | **Favorable avec conditions** (§9.3) ; mon avis sur le SHA de tête reste à donner |
 | 30/10 | Consigne T2a (espace de travail Cargo, V et S) | `side-session-notes/…/consigne-T2a.md` | **Validé avec corrections E1 à E9** (§9.4) ; lancement permis après la fusion de la PR #5 |
+| 30/10 | **PR #5 (T1), fusion** | SHA de tête `92ecc11915c3ba6ae49a589621a87467ed89f843` ; `review-ok` de la troisième relecture neuve | **`archsec-ok: 92ecc11915c3ba6ae49a589621a87467ed89f843`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/5#issuecomment-6514007221)) : aucun défaut bloquant au sens d'AS-16 ; conditions du §9.3 remplies ; non bloquant : m7 à m15 et [#6](https://github.com/CreatorInstant548/time_switcher/issues/6) (T3), bloquants pour la fin de la phase 0 ; R-ARCH-05 |
 
 ### 9.4 Consigne T2a : espace de travail Cargo (30/10)
 
@@ -611,6 +612,7 @@ Il est confronté à la grille du §6 (V0-01 à V0-14) et aux exigences du §3. 
 | R-ARCH-02 | Le fuzzing de repli, sans guidage par la couverture, trouve moins | **Sans objet** depuis le 30/10 : fuzzing guidé en CI |
 | R-ARCH-03 | Pas de *ruleset* : une poussée sur `main` hors de Claude Code est seulement détectée après coup | SEC0-17 ; à revoir si l'offre change (décision de l'utilisateur, jamais demandée) |
 | R-ARCH-04 | Une session peut retirer le crochet de son worktree entre deux fusions | Les crochets Git épinglés hors du dépôt bloquent encore le commit et la poussée vers `main` ; SEC0-35 détecte l'écart à la fusion suivante ; `ci-ok` et `origin-check` restent en place |
+| R-ARCH-05 | Un script écrit puis exécuté par une session (`bash x.sh`, `pwsh x.ps1`) échappe à `guard-git` et peut lancer `git push --no-verify` vers `main` ; et les approbations `archsec-ok` / `review-ok` ne sont pas authentifiées (un seul compte GitHub) | Aucun garde PreToolUse ne voit l'intérieur d'un script : détection après coup par `origin-check` (SEC0-17), qui recoupe aussi chaque `archsec-ok` avec une ligne du §9 de ce carnet ([#6](https://github.com/CreatorInstant548/time_switcher/issues/6)) ; T3 prioritaire |
 
 ## 11. Demandes envoyées
 
