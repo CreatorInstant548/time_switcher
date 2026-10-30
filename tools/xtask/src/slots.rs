@@ -1,7 +1,8 @@
 //! `cargo xtask slots` : état des emplacements de compilation, en **lecture seule**. L'attribution
 //! reste à `tools/dev/session-start.ps1 -Acquire|-Release` ; ce module en reprend la règle des baux.
 //! Il porte aussi les lectures communes avec `disk` : baux, tailles sans suivre les liens, site.
-//! spec: developpement-agents.md §6.1, §9.2 ; docs/dev/outillage.md §1
+//! Mode d'emploi des baux : docs/dev/outillage.md, section 1.
+//! spec: developpement-agents.md §6.1, §9.2
 
 use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
