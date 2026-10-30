@@ -9,8 +9,20 @@ gitleaks.archive_sha256 = "d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f451309
 gitleaks.path = "C:/Dev/tools/gitleaks/gitleaks.exe"
 gitleaks.sha256 = "17157e2ee8b76fc8b1d8bee607a250e34b8a8023c8bc81822d4b5ee4d78fcb7c"
 
+# Linux, pour la CI (G6) : même version ; archive contrôlée contre son empreinte publiée ;
+# gitleaks.linux.path est relatif à TS_CACHE (installé par tools/ci/install-tools.sh).
+gitleaks.linux.version = "8.30.1"
+gitleaks.linux.source = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz"
+gitleaks.linux.archive_sha256 = "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+gitleaks.linux.path = "ci/gitleaks/gitleaks"
+gitleaks.linux.sha256 = ""
+
 cargo-deny.version = "0.20.2"
 cargo-deny.source = "crates.io (cargo install --locked --version 0.20.2 cargo-deny)"
+# Linux, pour la CI (G6) : binaire officiel, archive contrôlée par son SHA-256.
+cargo-deny.linux.version = "0.20.2"
+cargo-deny.linux.source = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz"
+cargo-deny.linux.archive_sha256 = "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
 
 cargo-audit.version = "0.22.2"
 cargo-audit.source = "crates.io (cargo install --locked --version 0.22.2 cargo-audit)"

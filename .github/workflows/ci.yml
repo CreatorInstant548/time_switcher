@@ -1,0 +1,251 @@
+# .github/workflows/ci.yml : intégration continue de chaque PR et de main. Mode d'emploi : docs/dev/ci.md.
+# Contrôlé par cargo xtask check --only workflows (SEC0-29 à 31, G7).
+# spec: carnet architecture-securite.md SEC0-29 à SEC0-32 ; §9.6 G1 à G10
+name: ci
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Profil ci (Cargo.toml) appliqué au profil dev : xtask check ne prend pas encore de profil.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  changes:
+    name: changes
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+      - name: Zones touchées
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash tools/ci/changes.sh --summary
+
+  pr-title:
+    name: pr-title
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Format du titre
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          re='^(feat|fix|refactor|perf|test|docs|build|ci|chore)\([A-Za-z0-9_./-]+\)!?: [^ ].*'
+          if printf '%s\n' "$TITLE" | grep -Eq "$re"; then
+            echo "Titre conforme."
+          else
+            echo "::error::Titre attendu : type(portée): description, type parmi feat fix refactor perf test docs build ci chore."
+            exit 1
+          fi
+
+  security:
+    name: security
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+      - name: Zones touchées
+        id: zones
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          bash tools/ci/changes.sh
+          echo "TS_CACHE=$RUNNER_TEMP/ts-cache" >> "$GITHUB_ENV"
+      - name: Configuration de gitleaks ou tools.lock modifiés (G5)
+        if: steps.zones.outputs.gitleaks_config == 'true'
+        run: |
+          msg="Cette PR modifie tools/dev/hooks/gitleaks.toml ou tools/dev/tools.lock : la CI analyse avec la configuration d'origin/main ; relecture d'archi-sécu requise."
+          echo "::warning::$msg"
+          printf '### Attention (G5)\n\n%s\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
+      - name: Chaîne Rust
+        run: bash tools/ci/install-tools.sh rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: gitleaks épinglé
+        run: bash tools/ci/install-tools.sh gitleaks
+      - name: Auto-test de gitleaks (G4)
+        run: bash tools/ci/install-tools.sh gitleaks-selftest
+      - name: cargo-deny épinglé
+        run: bash tools/ci/install-tools.sh cargo-deny
+      - name: Version de cargo-audit
+        id: audit
+        if: steps.zones.outputs.lock == 'true'
+        run: bash tools/ci/install-tools.sh version cargo-audit
+      - name: Cache de cargo-audit
+        id: audit-cache
+        if: steps.zones.outputs.lock == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/ts-tools/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ steps.audit.outputs.version }}
+      - name: cargo-audit épinglé
+        if: steps.zones.outputs.lock == 'true'
+        run: bash tools/ci/install-tools.sh cargo-audit
+      - name: Enregistrement du cache de cargo-audit (main seulement)
+        if: steps.zones.outputs.lock == 'true' && github.ref == 'refs/heads/main' && steps.audit-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/ts-tools/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ steps.audit.outputs.version }}
+      - name: xtask check, étapes de sécurité
+        env:
+          LOCK_CHANGED: ${{ steps.zones.outputs.lock }}
+        run: |
+          only=workflows,gitleaks,deny
+          [ "$LOCK_CHANGED" = true ] && only="$only,audit"
+          cargo xtask check --only "$only"
+
+  rust-linux:
+    name: rust-linux
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+      - name: Zones touchées
+        id: zones
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash tools/ci/changes.sh
+      - name: Décision
+        id: gate
+        env:
+          RUST: ${{ steps.zones.outputs.rust }}
+          CI_ZONE: ${{ steps.zones.outputs.ci }}
+        run: |
+          if [ "$RUST" = true ] || [ "$CI_ZONE" = true ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Ni la zone rust ni la zone ci ne sont touchées : rien à compiler."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Branche pilotage (spec-map)
+        if: steps.gate.outputs.go == 'true'
+        run: git rev-parse --verify --quiet refs/remotes/origin/pilotage
+      - name: Chaîne Rust
+        if: steps.gate.outputs.go == 'true'
+        run: bash tools/ci/install-tools.sh rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: steps.gate.outputs.go == 'true'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: xtask check --all (hors étapes du travail security)
+        if: steps.gate.outputs.go == 'true'
+        run: cargo xtask check --all --only fmt,clippy,test,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map
+
+  rust-windows:
+    name: rust-windows
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+      - name: Zones touchées
+        id: zones
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash tools/ci/changes.sh
+      - name: Décision
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:windows') }}
+          SENSITIVE: ${{ steps.zones.outputs.sensitive }}
+        run: |
+          if [ "$EVENT" = push ] || [ "$LABELED" = true ] || [ "$SENSITIVE" = true ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Ni main, ni étiquette ci:windows, ni chemin sensible : Windows non lancé."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Branche pilotage (spec-map)
+        if: steps.gate.outputs.go == 'true'
+        run: git rev-parse --verify --quiet refs/remotes/origin/pilotage
+      - name: Chaîne Rust
+        if: steps.gate.outputs.go == 'true'
+        run: bash tools/ci/install-tools.sh rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: steps.gate.outputs.go == 'true'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: xtask check --all (sans fmt ni étapes du travail security)
+        if: steps.gate.outputs.go == 'true'
+        run: cargo xtask check --all --only clippy,test,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map
+
+  ci-ok:
+    name: ci-ok
+    if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    needs: [changes, pr-title, security, rust-linux, rust-windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Résultat des travaux (G2)
+        env:
+          EVENT: ${{ github.event_name }}
+          R_CHANGES: ${{ needs.changes.result }}
+          R_PR_TITLE: ${{ needs.pr-title.result }}
+          R_SECURITY: ${{ needs.security.result }}
+          R_RUST_LINUX: ${{ needs.rust-linux.result }}
+          R_RUST_WINDOWS: ${{ needs.rust-windows.result }}
+        run: |
+          bad=0
+          need() { # need <travail> <résultat> <résultats permis…>
+            local job=$1 got=$2 ok; shift 2
+            for ok in "$@"; do [ "$got" = "$ok" ] && { echo "$job : $got"; return; }; done
+            echo "::error::$job : $got (attendu : $*)"; bad=1
+          }
+          need changes "$R_CHANGES" success
+          need security "$R_SECURITY" success
+          if [ "$EVENT" = pull_request ]; then
+            need pr-title "$R_PR_TITLE" success
+          else
+            need pr-title "$R_PR_TITLE" success skipped
+          fi
+          need rust-linux "$R_RUST_LINUX" success skipped
+          need rust-windows "$R_RUST_WINDOWS" success skipped
+          exit "$bad"

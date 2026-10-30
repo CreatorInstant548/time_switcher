@@ -375,18 +375,109 @@ pub fn audit(cx: &Ctx) -> Outcome {
     }
 }
 
-/// gitleaks épinglé (SHA-256 vérifié), configuration épinglée, `--redact` (F2, SEC0-08).
+/// gitleaks à lancer : binaire, empreinte attendue, configuration et dossier d'exceptions.
+struct GitleaksSetup {
+    bin: PathBuf,
+    sha256: String,
+    config: PathBuf,
+    ignore_dir: PathBuf,
+}
+
+/// Mode CI (A2) : `CI=true` et `GITHUB_ACTIONS=true`. Un exécuteur n'a pas de copie épinglée des
+/// crochets ; le mode CI n'est pas plus permissif : binaire vérifié, configuration de `main`.
+fn ci_mode() -> bool {
+    let is_true = |v: &str| sys::env(v).as_deref() == Some("true");
+    is_true("CI") && is_true("GITHUB_ACTIONS")
+}
+
+/// Poste local : binaire, empreinte et configuration de la copie épinglée (F2).
+fn gitleaks_local(cx: &Ctx) -> Result<GitleaksSetup, String> {
+    let (dir, lock) = pinned_lock(cx)?;
+    Ok(GitleaksSetup {
+        bin: PathBuf::from(lock_value(&lock, "gitleaks.path")?),
+        sha256: lock_value(&lock, "gitleaks.sha256")?,
+        config: dir.join("gitleaks.toml"),
+        ignore_dir: dir,
+    })
+}
+
+/// Chemin relatif sans `..`, ni racine, ni préfixe de lecteur, quel que soit le système.
+fn plain_relative(rel: &str) -> bool {
+    let chars = rel
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"._/-".contains(&b));
+    !rel.is_empty()
+        && chars
+        && Path::new(rel)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// Mode CI (A2, G5, G6) : binaire Linux décrit par les clés `gitleaks.linux.*` du `tools.lock`
+/// du dépôt, à la même version que sous Windows, sous `TS_CACHE`. La configuration, placée à
+/// côté par `tools/ci/install-tools.sh`, doit être octet pour octet celle d'`origin/main`
+/// (`git show`) : une PR ne peut pas s'ajouter d'exception.
+fn gitleaks_ci(cx: &Ctx) -> Result<GitleaksSetup, String> {
+    let lock = sys::read_text(&cx.root.join("tools/dev/tools.lock"))?;
+    let (linux, windows) = (
+        lock_value(&lock, "gitleaks.linux.version")?,
+        lock_value(&lock, "gitleaks.version")?,
+    );
+    if linux != windows {
+        return Err(format!(
+            "gitleaks.linux.version {linux} différente de gitleaks.version {windows} (G6)"
+        ));
+    }
+    let rel = lock_value(&lock, "gitleaks.linux.path")?;
+    if !plain_relative(&rel) {
+        return Err("gitleaks.linux.path doit être relatif à TS_CACHE, sans ..".to_owned());
+    }
+    let bin = sys::ts_cache().join(&rel);
+    let dir = bin
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or("gitleaks.linux.path sans dossier")?;
+    let config = dir.join("gitleaks.toml");
+    let main = cx.git(&["show", "origin/main:tools/dev/hooks/gitleaks.toml"])?;
+    if sys::read_text(&config)? != main {
+        return Err(format!(
+            "{} diffère de tools/dev/hooks/gitleaks.toml d'origin/main (G5)",
+            config.display()
+        ));
+    }
+    if dir.join(".gitleaksignore").exists() {
+        return Err(".gitleaksignore à côté de gitleaks en CI refusé (SEC0-08)".to_owned());
+    }
+    Ok(GitleaksSetup {
+        bin,
+        sha256: lock_value(&lock, "gitleaks.linux.sha256")?,
+        config,
+        ignore_dir: dir,
+    })
+}
+
+/// gitleaks épinglé (SHA-256 vérifié), configuration épinglée, `--redact` (F2, SEC0-08). En CI
+/// (A2), binaire et configuration viennent de [`gitleaks_ci`] ; le reste est identique.
 pub fn gitleaks(cx: &Ctx) -> Outcome {
-    let (dir, lock) = tri!(pinned_lock(cx));
-    let bin = PathBuf::from(tri!(lock_value(&lock, "gitleaks.path")));
-    let expected = tri!(lock_value(&lock, "gitleaks.sha256")).to_ascii_lowercase();
+    let setup = tri!(if ci_mode() {
+        println!("  Mode CI : gitleaks.linux.* de tools.lock, configuration d'origin/main.");
+        gitleaks_ci(cx)
+    } else {
+        gitleaks_local(cx)
+    });
+    let GitleaksSetup {
+        bin,
+        sha256,
+        config,
+        ignore_dir: dir,
+    } = setup;
+    let expected = sha256.to_ascii_lowercase();
     if !bin.is_file() || tri!(sys::sha256(&cx.root, &bin)) != expected {
         return Outcome::Fail(format!(
             "gitleaks absent ou d'empreinte inattendue ({})",
             bin.display()
         ));
     }
-    let config = dir.join("gitleaks.toml");
     if !config.is_file() {
         return Outcome::Fail("gitleaks.toml absent de la copie épinglée".to_owned());
     }
@@ -662,6 +753,21 @@ mod tests {
         );
         assert!(super::lock_value(lock, "x.version").is_err());
         assert!(super::lock_value(lock, "cargo-audit.version").is_err());
+    }
+
+    /// A2 : le binaire Linux de la CI reste sous `TS_CACHE`.
+    #[test]
+    fn ci_gitleaks_path_is_plain_relative() {
+        assert!(super::plain_relative("ci/gitleaks/gitleaks"));
+        for bad in [
+            "",
+            "/usr/bin/gitleaks",
+            "../gitleaks",
+            "ci/../../x",
+            "C:/x/gitleaks",
+        ] {
+            assert!(!super::plain_relative(bad), "{bad}");
+        }
     }
 
     /// v8 : le code sous `#[cfg(feature = "dev-…")]` est vu par une passe de clippy par
