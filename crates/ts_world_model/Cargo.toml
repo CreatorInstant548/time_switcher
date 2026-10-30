@@ -1,0 +1,15 @@
+[package]
+name = "ts_world_model"
+version = "0.0.0"
+description = "Modèle de la carte de time_switcher : géométrie en centimètres entiers et parts de la carte."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# Seule dépendance : le noyau (pour `StableId`). Le lien vers `ts_model` attend T7a.
+[dependencies]
+ts_kernel = { path = "../ts_kernel" }
+
+[lints]
+workspace = true
