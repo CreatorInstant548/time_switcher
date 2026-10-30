@@ -93,7 +93,7 @@ Les valeurs viennent de `tools/dev/tools.lock` (clés `*.linux.*`, même version
 
 **Origine des commits (AS-42, R-ARCH-05)** : le *ruleset* `main` impose la PR, mais `-Check` n'atteste que l'état présent. Un script lancé avec le jeton d'administration pourrait désactiver la règle, pousser un commit, puis la rétablir. Avec `--origin`, chaque commit non sensible de la fenêtre doit être le squash d'une PR fusionnée dans `main` (J3 seul, sans G3) :
 - **une seule requête** par commit, `commits/<sha>/pulls` : exactement une PR dont `merge_commit_sha` est le commit, avec `merged_at` renseigné et la base `main` ;
-- **fenêtre `7d`** : du sommet de `main` jusqu'au **premier** commit daté (date du *committer*) d'avant la limite, **inclus**. Un commit poussé directement et antidaté est donc lu quand même : il est soit sous un squash récent, donc dans la fenêtre, soit le premier commit ancien. Le passage `all` du dimanche couvre le reste ;
+- **fenêtre `7d`** : du sommet de `main` jusqu'au premier commit daté (date du *committer*) d'avant la limite **et conforme**, inclus. La date d'un commit est choisie par celui qui le pousse : des commits poussés directement et antidatés échouent à J3, et la lecture continue à travers eux jusqu'à un vrai squash. Le passage `all` du dimanche couvre le reste ;
 - un commit sans PR fusionnée est une **anomalie** : le travail échoue, et `report` ouvre `nightly-failure` ;
 - les commits sensibles gardent leur contrôle complet (V5), qui comprend déjà J3.
 
@@ -104,7 +104,7 @@ Les valeurs viennent de `tools/dev/tools.lock` (clés `*.linux.*`, même version
 - G3 sur la tête ;
 - `review-ok` et `archsec-ok` sur la tête ;
 
-puis il fait J4 avec ces faits frais. Un commit non sensible ne lit rien sur GitHub depuis T3e-2 : le *ruleset* `main` impose la PR et `ci-ok`.
+puis il fait J4 avec ces faits frais. Sans `--origin` (`cargo xtask merge`), un commit non sensible ne lit rien sur GitHub depuis T3e-2 : le *ruleset* `main` impose la PR et `ci-ok`. La tâche de nuit lui ajoute le contrôle d'origine ci-dessus.
 
 **Travail `verify-main`** :
 - **Droits** : `actions`, `checks`, `contents`, `issues` et `pull-requests` en lecture, rien en écriture. `GH_TOKEN` vaut le jeton du travail.
@@ -153,7 +153,7 @@ Offre GitHub Pro (depuis le 30/10/2026) : **3 000 min par mois** (M36). Un trava
 | PR Rust, cache chaud | 1 | 1 | 3 | 4 à 6 | 2 | 1 | ≈ 12 à 14 |
 | PR sur un chemin sensible | 1 | 1 | 3 | 4 à 6 | 2 × (8 à 15) | 1 | ≈ 26 à 42 |
 
-Tâche périodique : `advisories` ≈ 2 min par nuit (≈ 60 par mois) ; `verify-main` ≈ 2 à 4 min par nuit, compilation de `xtask`, lecture sur l'API des commits sensibles de l'historique et une requête par commit non sensible de la fenêtre (≈ 60 à 120 par mois) ; le dimanche, si `main` a changé, Windows 2 × (8 à 15), gitleaks 1 à 2, fuzzing 61 à 62 (une fois `fuzz/` créé), déterminisme complet 3 à 6 (compilation comprise) : ≈ 85 à 100 min par semaine. En mode minimal, le travail `determinism` s'arrête avec les autres travaux du dimanche ; la version courte reste dans `rust-linux`.
+Tâche périodique : `advisories` ≈ 2 min par nuit (≈ 60 par mois) ; `verify-main` ≈ 2 à 4 min par nuit, compilation de `xtask`, lecture sur l'API des commits sensibles de l'historique et une requête par commit non sensible de la fenêtre, de tout l'historique le dimanche (≈ 60 à 120 par mois). Le 30/10, pour 40 commits, le passage `all` fait environ 200 lectures de l'API (estimation : 6 à 8 par commit sensible, une par commit non sensible) ; le jeton du travail en permet 1 000 par heure. L'objectif d'AS-39 (mécanisme incrémental avant 150 commits, alerte sous 20 % de quota) reste suivi à part ; le dimanche, si `main` a changé, Windows 2 × (8 à 15), gitleaks 1 à 2, fuzzing 61 à 62 (une fois `fuzz/` créé), déterminisme complet 3 à 6 (compilation comprise) : ≈ 85 à 100 min par semaine. En mode minimal, le travail `determinism` s'arrête avec les autres travaux du dimanche ; la version courte reste dans `rust-linux`.
 
 **Version courte du déterminisme dans `rust-linux`**, relevé de la PR T9c (exécution 41124769723, cache chaud) : l'étape dure **10 s**, dont environ 9 s pour recompiler les tests de `ts_toy` avec `-p ts_toy` (les fonctionnalités unifiées diffèrent de celles de `--workspace` dans l'étape `test`) et 1 s pour les deux processus (0,2 s à 1 fil, 0,8 s à 4 fils). `rust-linux` a duré 1 min 46 s en tout. Coût négligeable dans le budget.
 

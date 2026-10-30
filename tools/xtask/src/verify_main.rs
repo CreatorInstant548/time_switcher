@@ -13,6 +13,7 @@
 //! spec: carnet architecture-securite.md SEC0-17 ; §9.6 G3 ; §9.8 J3, J4, J5
 //! Voir aussi l'issue #6, point 2.
 
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 use serde_json::Value;
@@ -67,16 +68,9 @@ pub fn carnet_approves(section: &str, sha: &str) -> bool {
 fn pull_of(repo: &Repo, sha: &str) -> Result<Result<Value, String>, String> {
     let s = &repo.slug;
     let list = repo.api_all(&format!("repos/{s}/commits/{sha}/pulls?per_page=100"))?;
-    let found: Vec<u64> = list
-        .iter()
-        .filter(|p| p["merge_commit_sha"].as_str() == Some(sha))
-        .filter_map(|p| p["number"].as_u64())
-        .collect();
-    let [n] = found[..] else {
-        return Ok(Err(format!(
-            "{} PR dont ce commit est le squash, attendu une (J3)",
-            found.len()
-        )));
+    let n = match judge_squash(&list, sha) {
+        Ok(n) => n,
+        Err(why) => return Ok(Err(why)),
     };
     let pr = repo.api(&format!("repos/{s}/pulls/{n}"))?;
     let ok = pr["merged"].as_bool() == Some(true)
@@ -97,46 +91,48 @@ fn pull_of(repo: &Repo, sha: &str) -> Result<Result<Value, String>, String> {
 pub enum Origin {
     /// Every commit after the base (weekly run).
     All,
-    /// From the tip down to, and including, the first commit whose committer date is before this
-    /// Unix time. A backdated commit pushed directly is thus still checked: it is either above a
-    /// recent squash, so in the window, or the first old one.
+    /// From the tip down to the first commit committed before this Unix time that passes its
+    /// check, included. Committer dates are set by the pusher: backdated commits pushed without a
+    /// PR fail J3, so the walk goes on through them until a real squash.
     Since(i64),
 }
 
 impl Origin {
-    /// `all`, or `<n>d` with `n` in 1..=366, counted back from `now` (Unix seconds).
+    /// `all`, or `<n>d` with `n` in 1..=366 (digits only, no sign nor leading zero), counted back
+    /// from `now` (Unix seconds).
     pub fn parse(s: &str, now: i64) -> Option<Self> {
         if s == "all" {
             return Some(Self::All);
         }
-        let days: i64 = s.strip_suffix('d')?.parse().ok()?;
+        let n = s.strip_suffix('d')?;
+        if n.starts_with('0') || !n.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let days: i64 = n.parse().ok()?;
         (1..=366)
             .contains(&days)
             .then_some(Self::Since(now - days * 86_400))
     }
 }
 
-/// Commits of the window, from `git log --format=%H %ct` (tip first): every line down to, and
-/// including, the first one dated before `cutoff`.
-pub fn window(log: &str, cutoff: i64) -> Result<Vec<String>, String> {
-    let mut out = Vec::new();
-    for line in log.lines() {
-        let (sha, date) = line
-            .split_once(' ')
-            .ok_or_else(|| format!("unreadable git log line: {line}"))?;
-        let date: i64 = date
-            .parse()
-            .map_err(|_| format!("unreadable commit date: {line}"))?;
-        out.push(sha.to_owned());
-        if date < cutoff {
-            break;
-        }
-    }
-    Ok(out)
+/// Committer dates of `git log --format=%H %ct`, by commit.
+fn dates(log: &str) -> Result<BTreeMap<&str, i64>, String> {
+    log.lines()
+        .map(|line| {
+            let (sha, date) = line
+                .split_once(' ')
+                .ok_or_else(|| format!("unreadable git log line: {line}"))?;
+            let date = date
+                .parse()
+                .map_err(|_| format!("unreadable commit date: {line}"))?;
+            Ok((sha, date))
+        })
+        .collect()
 }
 
-/// AS-42 (J3 without G3): `commits/<sha>/pulls` must list exactly one PR whose
-/// `merge_commit_sha` is `sha`, merged (`merged_at` set) into `main`. Its number, or the anomaly.
+/// J3: `commits/<sha>/pulls` must list exactly one PR whose `merge_commit_sha` is `sha`, merged
+/// (`merged_at` set) into `main`. Its number, or the anomaly. Alone for a non-sensitive commit with
+/// `--origin` (AS-42); [`pull_of`] reads `pulls/<n>` after it for a sensitive one.
 pub fn judge_squash(pulls: &[Value], sha: &str) -> Result<u64, String> {
     let found: Vec<&Value> = pulls
         .iter()
@@ -144,7 +140,7 @@ pub fn judge_squash(pulls: &[Value], sha: &str) -> Result<u64, String> {
         .collect();
     let [pr] = found[..] else {
         return Err(format!(
-            "{} PR dont ce commit est le squash, attendu une (J3, AS-42)",
+            "{} PR dont ce commit est le squash, attendu une (J3)",
             found.len()
         ));
     };
@@ -156,7 +152,7 @@ pub fn judge_squash(pulls: &[Value], sha: &str) -> Result<u64, String> {
         Ok(n)
     } else {
         Err(format!(
-            "PR #{n} non fusionnée dans main par ce commit (J3, AS-42)"
+            "PR #{n} non fusionnée dans main par ce commit (J3)"
         ))
     }
 }
@@ -291,24 +287,29 @@ pub fn check(repo: &Repo, origin: Option<Origin>) -> Result<Anomalies, String> {
             "commit de base {b} absent d'origin/main : historique réécrit"
         ));
     }
-    let in_window = match origin {
-        Some(Origin::Since(cutoff)) => Some(window(
-            &repo.git(&["log", "--format=%H %ct", "origin/main"])?,
-            cutoff,
-        )?),
-        _ => None,
+    let log = match origin {
+        Some(Origin::Since(_)) => repo.git(&["log", "--format=%H %ct", "origin/main"])?,
+        _ => String::new(),
     };
-    let mut anomalies = Vec::new();
-    for sha in history {
-        if BASE.contains(&sha) {
-            println!("  {} base", &sha[..7]);
-            continue;
-        }
-        let j3 = match &in_window {
-            Some(w) => w.iter().any(|s| s == sha),
-            None => origin.is_some(),
-        };
+    let dates = dates(&log)?;
+    // Tip first, for the window of `Since`; shown oldest first.
+    let mut j3 = origin.is_some();
+    let mut verdicts = Vec::new();
+    for &sha in history.iter().rev().filter(|s| !BASE.contains(*s)) {
         let (bad, note) = check_commit(repo, &rules, &section, sha, j3)?;
+        if let Some(Origin::Since(cutoff)) = origin {
+            let date = *dates
+                .get(sha)
+                .ok_or_else(|| format!("{sha} absent de git log"))?;
+            j3 &= !(date < cutoff && bad.is_empty());
+        }
+        verdicts.push((sha, bad, note));
+    }
+    let mut anomalies = Vec::new();
+    for b in history.iter().filter(|s| BASE.contains(*s)) {
+        println!("  {} base", &b[..7]);
+    }
+    for (sha, bad, note) in verdicts.into_iter().rev() {
         if bad.is_empty() {
             println!("  {} conforme ({note})", &sha[..7]);
         } else if let Some((_, why, issue)) = ACKNOWLEDGED.iter().find(|a| a.0 == sha) {
@@ -492,9 +493,8 @@ fn refresh(repo: &Repo) -> Result<(), String> {
 
 /// Wall clock in Unix seconds, for the `--origin <n>d` limit only. Not the tip's date, which a
 /// pusher could set.
-#[allow(clippy::disallowed_methods)] // outil : limite de la fenêtre d'AS-42.
 fn unix_now() -> i64 {
-    std::time::SystemTime::now()
+    crate::slots::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
@@ -938,42 +938,78 @@ mod tests {
         for c in &cases {
             let (r, calls) = origin_check("docs/a.md", false, all, &pulls(c));
             assert!(r.as_ref().is_ok_and(|a| a.len() == 1), "{c}: {r:?}");
-            assert!(reasons(&r).contains("(J3, AS-42)"), "{c}: {r:?}");
+            assert!(reasons(&r).contains("(J3)"), "{c}: {r:?}");
             assert_eq!(gh_calls(&calls), 1, "{calls:#?}");
         }
         let (r, _) = origin_check("tools/xtask/src/x.rs", true, all, &[]);
         assert_eq!(r, Ok(vec![]));
     }
 
-    /// AS-42: `--origin <n>d` checks from the tip down to, and including, the first commit dated
-    /// before the limit (so a backdated tip is still checked); older ones are left to `all`.
+    /// Non-sensitive history after the base, oldest first: (commit digit, committer date, PR whose
+    /// squash it is, if any). Returns the anomalous digits and the GitHub reads.
+    fn chain(commits: &[(char, i64, Option<u64>)], origin: Origin) -> (Vec<char>, usize) {
+        let sha = |d: char| d.to_string().repeat(40);
+        let mut log: Vec<String> = commits
+            .iter()
+            .map(|&(d, t, _)| format!("{} {t}", sha(d)))
+            .collect();
+        log.reverse();
+        let list: Vec<String> = commits.iter().map(|c| sha(c.0)).collect();
+        let mut over = vec![
+            (
+                "git rev-list --reverse origin/main".to_owned(),
+                format!("{}\n{PARENT}\n{}\n", BASE[0], list.join("\n")),
+            ),
+            (
+                "git log --format=%H %ct origin/main".to_owned(),
+                log.join("\n"),
+            ),
+        ];
+        for &(d, _, pr) in commits {
+            let s = sha(d);
+            let v = pr.map_or(json!([]), |n| {
+                json!([{"number": n, "merge_commit_sha": s, "merged_at": "x", "base": {"ref": "main"}}])
+            });
+            over.push((
+                format!("gh api --paginate repos/o/r/commits/{s}/pulls"),
+                v.to_string(),
+            ));
+        }
+        let (r, calls) = origin_check("docs/a.md", false, Some(origin), &over);
+        let bad = r
+            .unwrap()
+            .iter()
+            .map(|(s, _)| s.chars().next().unwrap())
+            .collect();
+        (bad, gh_calls(&calls))
+    }
+
+    /// AS-42: `--origin <n>d` reads from the tip down to the first commit dated before the limit
+    /// that passes, included; older ones are left to `all`. Backdated commits pushed without a PR
+    /// all fail, so the walk goes through them, a backdated tip included.
     #[test]
     fn origin_window_is_respected() {
-        let no_pr = pulls(&json!([]));
-        for cutoff in [1500, 3000] {
-            let (r, _) = origin_check("docs/a.md", false, Some(Origin::Since(cutoff)), &no_pr);
-            assert!(r.as_ref().is_ok_and(|a| a.len() == 1), "{cutoff}: {r:?}");
-        }
-        // A commit already before the limit lies above COMMIT: COMMIT is not read.
-        let mut over = no_pr;
-        over.push((
-            "git log --format=%H %ct origin/main".to_owned(),
-            format!("{} 2500\n{COMMIT} 2000\n", "a".repeat(40)),
-        ));
-        let (r, calls) = origin_check("docs/a.md", false, Some(Origin::Since(3000)), &over);
-        assert_eq!(r, Ok(vec![]));
-        assert_eq!(gh_calls(&calls), 0, "{calls:#?}");
-        assert_eq!(
-            window("a 50\nb 40\nc 10\nd 5\n", 30).unwrap(),
-            ["a", "b", "c"]
-        );
-        assert_eq!(window("a 10\nb 40\n", 30).unwrap(), ["a"]);
-        assert!(window("a x\n", 30).is_err() && window("a\n", 30).is_err());
+        let since = Origin::Since(3000);
+        // 2 is the first old commit and passes: 1, without a PR, is not read.
+        let ok = [('1', 900, None), ('2', 1000, Some(2)), ('3', 5000, Some(3))];
+        assert_eq!(chain(&ok, since), (vec![], 2));
+        assert_eq!(chain(&ok, Origin::All), (vec!['1'], 3));
+        // 4 and 3 were pushed backdated without a PR, under a fresh squash 5.
+        let forged = [
+            ('1', 700, None),
+            ('2', 800, Some(2)),
+            ('3', 900, None),
+            ('4', 1000, None),
+            ('5', 5000, Some(5)),
+        ];
+        assert_eq!(chain(&forged, since), (vec!['3', '4'], 4));
+        assert_eq!(chain(&forged[..4], since), (vec!['3', '4'], 3));
         assert_eq!(Origin::parse("7d", 1_000_000), Some(Origin::Since(395_200)));
         assert_eq!(Origin::parse("all", 0), Some(Origin::All));
-        for bad in ["0d", "367d", "7", "d", "-1d", "7h", ""] {
+        for bad in ["0d", "367d", "7", "d", "-1d", "+7d", "07d", "7h", ""] {
             assert_eq!(Origin::parse(bad, 0), None, "{bad}");
         }
+        assert!(dates("a x\n").is_err() && dates("a\n").is_err());
     }
 
     /// `--no-cache` is gone (AS-42); `--origin` takes one value.
@@ -1105,7 +1141,9 @@ mod tests {
         answers.extend([
             (
                 format!("{s}/commits/{x}/pulls"),
-                json!([{"number": 7, "merge_commit_sha": x}]).to_string(),
+                json!([{"number": 7, "merge_commit_sha": x, "merged_at": "x",
+                        "base": {"ref": "main"}}])
+                .to_string(),
             ),
             (
                 "gh api repos/o/r/pulls/7".to_owned(),
