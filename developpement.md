@@ -335,3 +335,9 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - **T3i** (report des approbations, AS-40 W1 à W7) lancée, empilée sur la #54.
   - Issues ouvertes : **#55** (quota de l'API, objectifs d'AS-39), **#56** (artefacts périmés dans les emplacements partagés, trois cas).
   - 17:34 UTC : **incident GitHub Actions**. La CI est en file d'attente et les fusions attendent.
+- 30/10 : fusions **#52** (fb16df8, cache de `verify-main` et reprises bornées) et **#54** (e31938c, `verify-main --no-cache` chaque nuit, V5).
+  - **#57** (T8b) : I1 corrigé à la cause, toutes les valeurs décodées bornées. `review-ok` A et B, et `archsec-ok`, sur 2512136. Reste une mise à jour depuis `main`.
+  - **#62** (T3e-1) : `review-ok` et `archsec-ok` sur 69b86a1. Mineurs dans l'issue #7.
+  - **#60** (T3i) : relecture du contenu sans constat bloquant. Lot de mineurs en cours : m1 base(H) égale au `main` de référence, m2 arbres lus en local dans `merge`.
+  - **Décidé** : la #60 est fusionnée en premier, et les approbations de la #57 et de la #62 seront reportées automatiquement (W1 à W7).
+  - Issues : #58 et #59 (suites de T8b), #61 (délai de `ci-ok`) ; #56, quatre cas d'artefacts périmés.
