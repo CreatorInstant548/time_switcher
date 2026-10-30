@@ -15,15 +15,11 @@ use serde_json::Value;
 use crate::github::{Repo, approved, is_sha, same_path};
 use crate::{hooks, sensitive, sys, workflows};
 
-/// Entrées de la compilation de `xtask` : un binaire plus ancien que leur dernier commit n'a pas
-/// été compilé depuis le code de `main` (J2).
-const XTASK_INPUTS: [&str; 5] = [
-    "tools/xtask",
-    "Cargo.toml",
-    "Cargo.lock",
-    ".cargo",
-    "rust-toolchain.toml",
-];
+/// Entrées dont tout changement fait recompiler `xtask` : ses sources et la chaîne de compilation.
+/// Un binaire plus ancien que leur dernier commit n'a pas été compilé depuis le code de `main`
+/// (J2). `Cargo.lock` et `Cargo.toml` n'y sont pas : cargo ne recompile `xtask` que si le
+/// changement le concerne, et la règle refuserait alors toutes les fusions suivantes.
+const XTASK_INPUTS: [&str; 2] = ["tools/xtask", "rust-toolchain.toml"];
 const TYPES: [&str; 9] = [
     "feat", "fix", "refactor", "perf", "test", "docs", "build", "ci", "chore",
 ];
@@ -107,7 +103,7 @@ fn binary_check(repo: &Repo) -> Result<(), String> {
     if built <= UNIX_EPOCH + Duration::from_secs(ct) {
         return Err(refuse(
             "binaire compilé avant le dernier commit de main qui touche xtask",
-            "relancer cargo xtask merge <PR> (cargo recompile depuis main)",
+            "relancer cargo xtask merge <PR> (cargo recompile depuis main) ; si le refus persiste, vérifier l'horloge du poste",
         ));
     }
     Ok(())
@@ -132,7 +128,13 @@ fn main_copy(repo: &Repo) -> Result<(), String> {
     if !repo.dry_run {
         repo.git(&["pull", "--ff-only", "--quiet"])?;
     }
-    if repo.git(&["rev-parse", "HEAD"])? != repo.git(&["rev-parse", "origin/main"])? {
+    let behind = repo.git(&["rev-parse", "HEAD"])? != repo.git(&["rev-parse", "origin/main"])?;
+    if behind && repo.dry_run {
+        // La vraie fusion fait git pull --ff-only ; les contrôles suivants lisent origin/main.
+        println!(
+            "  AVERTISSEMENT (--dry-run) : copie principale en retard d'origin/main ({pull})."
+        );
+    } else if behind {
         return Err(refuse(
             "la copie principale n'est pas à jour d'origin/main",
             pull,
@@ -272,9 +274,21 @@ fn workflows_at(repo: &Repo, sha: &str) -> Result<(), String> {
     }
     if errors.is_empty() {
         for ((action, tag), uses) in &pins {
+            // `refs/tags/` : l'étiquette est résolue comme étiquette du dépôt officiel, jamais
+            // comme branche ni comme SHA (un SHA de *fork* se résoudrait en lui-même).
+            if tag.len() >= 7 && tag.bytes().all(|b| b.is_ascii_hexdigit()) {
+                errors.push(format!(
+                    "{action}@{tag} : l'étiquette ressemble à un SHA (J8)"
+                ));
+                continue;
+            }
             let c = repo
-                .api(&format!("repos/{action}/commits/{tag}"))
-                .map_err(|e| format!("{action}@{tag} : l'API ne répond pas ({e}) : refus (J8)"))?;
+                .api(&format!("repos/{action}/commits/refs/tags/{tag}"))
+                .map_err(|e| {
+                    format!(
+                        "{action}@{tag} : étiquette introuvable ou API muette ({e}) : refus (J8)"
+                    )
+                })?;
             let want = c["sha"].as_str().unwrap_or_default();
             for (path, line, sha) in uses {
                 if !is_sha(want) || sha != want {
@@ -436,11 +450,38 @@ fn run(repo: &Repo, pr: u64) -> Result<(), String> {
             &sha,
         ],
     )
-    .map_err(|e| {
-        refuse(
-            format!("gh pr merge a échoué ({e})"),
-            &format!("gh pr view {pr}"),
-        )
+    .or_else(|e| {
+        // gh sort en erreur si la fusion distante a réussi mais pas la suppression de la branche
+        // locale (tenue par un worktree) : l'état de la PR fait foi.
+        let view = sys::stdout_of(
+            &repo.main,
+            "gh",
+            &[
+                "pr",
+                "view",
+                &n,
+                "-R",
+                &repo.slug,
+                "--json",
+                "state,mergeCommit",
+            ],
+        );
+        let v: Value = view
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        match v["state"].as_str() {
+            Some("MERGED") => {
+                println!(
+                    "  AVERTISSEMENT : gh pr merge a signalé une erreur après la fusion ({e})."
+                );
+                Ok(String::new())
+            }
+            _ => Err(refuse(
+                format!("gh pr merge a échoué ({e})"),
+                &format!("gh pr view {pr}"),
+            )),
+        }
     })?;
     repo.git(&["pull", "--ff-only", "--quiet"])?;
     println!(

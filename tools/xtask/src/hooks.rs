@@ -130,10 +130,10 @@ fn lock_value(set: &Set, key: &str) -> Result<String, String> {
 }
 
 /// gitleaks présent et d'empreinte attendue (SEC0-06).
-fn gitleaks(repo: &Repo, set: &Set) -> Result<(), String> {
+fn gitleaks(set: &Set) -> Result<(), String> {
     let path = PathBuf::from(lock_value(set, "gitleaks.path")?);
     let want = lock_value(set, "gitleaks.sha256")?.to_ascii_lowercase();
-    if !path.is_file() || sys::sha256(&repo.main, &path)? != want {
+    if !path.is_file() || sha256::hex(&sys::read(&path)?) != want {
         return Err(format!(
             "gitleaks absent ou d'empreinte inattendue ({})",
             path.display()
@@ -144,6 +144,37 @@ fn gitleaks(repo: &Repo, set: &Set) -> Result<(), String> {
 
 fn pinned_root() -> PathBuf {
     sys::ts_cache().join("hooks")
+}
+
+/// Jeu écrit dans un dossier d'attente, fichiers en lecture seule.
+fn stage_set(stage: &Path, set: &Set) -> Result<(), String> {
+    std::fs::create_dir_all(stage).map_err(|e| format!("{} : {e}", stage.display()))?;
+    for (name, bytes) in set {
+        let f = stage.join(name);
+        sys::write(&f, bytes)?;
+        let mut perm = std::fs::metadata(&f)
+            .map_err(|e| e.to_string())?
+            .permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&f, perm).map_err(|e| format!("{} : {e}", f.display()))?;
+    }
+    Ok(())
+}
+
+/// Retire un dossier d'attente créé ici (fichiers ordinaires seulement), après un échec.
+fn remove_stage(stage: &Path) {
+    for (name, file) in sys::entries(stage).unwrap_or_default() {
+        let f = stage.join(name);
+        if let (true, Ok(m)) = (file, std::fs::metadata(&f)) {
+            let mut perm = m.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            // dossier d'attente créé par cette commande
+            perm.set_readonly(false);
+            let _ = std::fs::set_permissions(&f, perm);
+            let _ = std::fs::remove_file(&f);
+        }
+    }
+    let _ = std::fs::remove_dir(stage);
 }
 
 pub fn install(repo: &Repo) -> Result<String, String> {
@@ -167,7 +198,7 @@ pub fn install(repo: &Repo) -> Result<String, String> {
             errors.join(" ; ")
         ));
     }
-    gitleaks(repo, &want)?;
+    gitleaks(&want)?;
     let hash = set_hash(&want)?;
     let root = pinned_root();
     let dest = root.join(&hash);
@@ -181,17 +212,13 @@ pub fn install(repo: &Repo) -> Result<String, String> {
         }
     } else {
         let stage = root.join(format!("staging-{}", std::process::id()));
-        std::fs::create_dir_all(&stage).map_err(|e| format!("{} : {e}", stage.display()))?;
-        for (name, bytes) in &want {
-            let f = stage.join(name);
-            sys::write(&f, bytes)?;
-            let mut perm = std::fs::metadata(&f)
-                .map_err(|e| e.to_string())?
-                .permissions();
-            perm.set_readonly(true);
-            std::fs::set_permissions(&f, perm).map_err(|e| format!("{} : {e}", f.display()))?;
+        let staged = stage_set(&stage, &want).and_then(|()| {
+            std::fs::rename(&stage, &dest).map_err(|e| format!("{} : {e}", dest.display()))
+        });
+        if let Err(e) = staged {
+            remove_stage(&stage);
+            return Err(e);
         }
-        std::fs::rename(&stage, &dest).map_err(|e| format!("{} : {e}", dest.display()))?;
     }
     let value = dest.to_string_lossy().replace('\\', "/");
     repo.git(&["config", "--local", "core.hooksPath", &value])?;
@@ -230,6 +257,38 @@ pub fn user_settings_errors(text: &str) -> Vec<String> {
     }
 }
 
+/// Lecture illisible de la configuration de Git : code autre que 0 (trouvé) et 1 (absent), ou
+/// avertissement d'accès sur la sortie d'erreur. Elle n'est jamais confondue avec « 0 valeur ».
+pub fn config_unreadable(code: Option<i32>, stderr: &str) -> bool {
+    let e = stderr.to_ascii_lowercase();
+    !matches!(code, Some(0 | 1))
+        || e.contains("unable to access")
+        || e.contains("permission denied")
+}
+
+/// `git config --show-origin --get-all core.hooksPath` d'une copie de travail. Une lecture
+/// illisible (accès concurrent passager d'une autre session) est relancée une fois après 1 s ;
+/// si elle le reste, refus clair.
+fn read_hooks_path(wt: &Path) -> Result<String, String> {
+    let args = ["config", "--show-origin", "--get-all", "core.hooksPath"];
+    for attempt in 0..2 {
+        let (code, out, err) = sys::outputs(wt, "git", &args)?;
+        if !config_unreadable(code, &err) {
+            return Ok(if code == Some(0) { out } else { String::new() });
+        }
+        if attempt == 0 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        } else {
+            return Err(format!(
+                "{} : configuration de Git illisible ({}) : relancer la commande",
+                wt.display(),
+                err.trim()
+            ));
+        }
+    }
+    unreachable!("deux essais au plus")
+}
+
 /// Une copie de travail : `core.hooksPath` effectif et réglages de Claude Code.
 fn check_worktree(
     repo: &Repo,
@@ -239,12 +298,7 @@ fn check_worktree(
     errors: &mut Vec<String>,
 ) -> Result<(), String> {
     let w = wt.display();
-    let lines = sys::stdout_of(
-        wt,
-        "git",
-        &["config", "--show-origin", "--get-all", "core.hooksPath"],
-    )
-    .unwrap_or_default();
+    let lines = read_hooks_path(wt)?;
     let lines: Vec<&str> = lines.lines().collect();
     match lines.as_slice() {
         [one] => {
@@ -270,7 +324,18 @@ fn check_worktree(
     let settings = ".claude/settings.json";
     let disk = wt.join(settings);
     let disk = disk.is_file().then(|| sys::read(&disk)).transpose()?;
-    if disk != repo.blob(wt, "HEAD", settings)? {
+    // Branche sans commit (orpheline) : aucun réglage attendu.
+    let born = sys::succeeds(
+        wt,
+        "git",
+        &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    )?;
+    let head = if born {
+        repo.blob(wt, "HEAD", settings)?
+    } else {
+        None
+    };
+    if disk != head {
         errors.push(format!("{w} : {settings} diffère de celui de HEAD"));
     }
     if same_path(wt, &repo.main) && disk != repo.blob(&repo.main, "origin/main", settings)? {
@@ -314,7 +379,7 @@ pub fn verify(repo: &Repo) -> Result<(String, Vec<String>), String> {
             current.trim()
         ));
     }
-    if let Err(e) = gitleaks(repo, &want) {
+    if let Err(e) = gitleaks(&want) {
         errors.push(e);
     }
     let common = repo.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
@@ -428,6 +493,17 @@ mod tests {
         ];
         assert_eq!(diff(&set, &changed, "x").len(), 1);
         assert_eq!(diff(&set, &set[..1].to_vec(), "x").len(), 1);
+    }
+
+    /// Message constaté le 30/10 lors d'un accès concurrent : jamais lu comme « 0 valeur ».
+    #[test]
+    fn unreadable_config_is_not_absent() {
+        assert!(!config_unreadable(Some(0), ""));
+        assert!(!config_unreadable(Some(1), ""));
+        let denied = "warning: unable to access 'C:/x/.git/config': Permission denied\n";
+        assert!(config_unreadable(Some(1), denied));
+        assert!(config_unreadable(Some(3), "error: invalid config file"));
+        assert!(config_unreadable(None, ""));
     }
 
     #[test]

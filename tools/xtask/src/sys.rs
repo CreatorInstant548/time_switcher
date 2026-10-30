@@ -100,6 +100,23 @@ pub fn bytes_of(root: &Path, prog: &str, args: &[&str]) -> Result<Vec<u8>, Strin
     Ok(out.stdout)
 }
 
+/// Code de sortie (`None` si tué), sortie standard et sortie d'erreur, séparées.
+pub fn outputs(
+    root: &Path,
+    prog: &str,
+    args: &[&str],
+) -> Result<(Option<i32>, String, String), String> {
+    let out = command(root, prog, args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("{prog} introuvable ou impossible à lancer : {e}"))?;
+    Ok((
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
 /// Code de sortie seul, sorties tues : `git cat-file -e` et autres tests de présence.
 pub fn succeeds(root: &Path, prog: &str, args: &[&str]) -> Result<bool, String> {
     let status = command(root, prog, args)
