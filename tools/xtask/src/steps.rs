@@ -18,7 +18,7 @@ pub enum Outcome {
 }
 
 /// Fichiers de la racine dont la modification vaut `--all` (F7).
-const ROOT_FILES: [&str; 7] = [
+pub(crate) const ROOT_FILES: [&str; 7] = [
     "Cargo.toml",
     "Cargo.lock",
     "clippy.toml",
@@ -54,7 +54,7 @@ impl Ctx {
         }
     }
 
-    fn meta(&self) -> Result<&Metadata, String> {
+    pub(crate) fn meta(&self) -> Result<&Metadata, String> {
         self.meta
             .get_or_init(|| metadata::load(&self.root))
             .as_ref()
@@ -106,7 +106,7 @@ impl Ctx {
     }
 
     /// Fichiers modifiés depuis `origin/main`, commités ou non (F7).
-    fn changed(&self) -> Result<&[String], String> {
+    pub(crate) fn changed(&self) -> Result<&[String], String> {
         let init = || {
             // Sans renommage, un déplacement compte ses deux chemins ; -z : noms jamais cités.
             let diff = ["diff", "--name-only", "-z", "--no-renames"];

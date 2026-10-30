@@ -26,6 +26,7 @@ C'est la vérification à lancer avant toute PR ; elle remplace la liste du §1 
 | `fmt` | `cargo fmt --all --check` | |
 | `clippy` | `cargo clippy --workspace --all-targets --locked -- -D warnings`, puis la même passe sur le **graphe livré** seul avec `--features ts_kernel/public` : `ts_kernel`, les hôtes présents et leurs dépendances normales de l'espace de travail, sans `--workspace` ni `--all-targets`. Enfin, une passe `--all-targets` sur les crates de cœur par fonctionnalité de développement, l'une après l'autre (`--features ts_kernel/dev-commands`, puis les trois autres) : le code sous `#[cfg(feature = "dev-…")]` est vu aussi. Jamais `--all-features` | F1, I2 |
 | `test` | `cargo test --locked` sur les crates touchées **et leurs dépendants**, directs ou non. Une modification de `Cargo.toml` racine, `Cargo.lock`, `clippy.toml`, `deny.toml`, `rustfmt.toml`, `rust-toolchain.toml` ou `.cargo/` vaut `--all`. Ignorée si aucune crate n'est touchée | F7 |
+| `determinism` | version courte de `cargo xtask determinism` (§7), lancée avec `--all`, si `ts_toy` ou l'une de ses dépendances est touchée, si `data/golden/` change, ou sur un fichier racine qui vaut `--all`. Ignorée sinon | V0-09, L6, Y5 |
 | `deny` | version de `cargo-deny` comparée au `tools/dev/tools.lock` du dépôt (lisible en CI), puis `cargo deny --locked check`, à chaque exécution | SEC0-03, F9 |
 | `audit` | version de `cargo-audit` comparée à `tools.lock`, puis `cargo audit`. Lancé avec `--all`, si `Cargo.lock` change, ou si la base RustSec locale a plus de 7 jours ; ignoré sinon. Si la mise à jour de la base échoue, un second essai `--no-fetch` n'est permis qu'avec une base de moins de 7 jours | SEC0-03, F9 |
 | `gitleaks` | binaire et empreinte SHA-256 lus dans le `tools.lock` de la **copie épinglée** désignée par `core.hooksPath`, qui doit être `TS_CACHE/hooks/<current.sha256>` ; configuration de cette même copie, jamais celle de la copie de travail ; `.gitleaksignore` à la racine refusé ; `--redact`. Arbre : `git ls-files -co --exclude-standard`, extrait dans `TS_CACHE\tmp`, sans `target/` ni lien. Commits : `origin/main..HEAD`, avec `--text --no-ext-diff --no-textconv` | SEC0-06, SEC0-08, F2 |
@@ -161,3 +162,21 @@ Si une seule condition échoue, l'approbation doit être **reposée sur `H`**. C
 - Au plus 5 SHA candidats sont examinés, du plus récent au plus ancien, après avoir écarté ceux qui ne sont pas dans la PR.
 - Tout est relu sur GitHub à chaque exécution. Un commit sensible n'utilise jamais le cache de `verify-main` (V5).
 - Une lecture qui échoue fait échouer le candidat, jamais l'inverse.
+
+## 7. `cargo xtask determinism [--full] [--bless]`
+
+```
+cargo xtask determinism            # version courte : 14 jours simulés (étape de check)
+cargo xtask determinism --full     # plus l'an complet : 365 jours (chaque semaine en CI, Y5)
+cargo xtask determinism --bless    # réécrit les valeurs dorées produites ; à signaler dans la PR
+```
+
+Preuve du critère de fin de la phase 0 (V0-09) sur le monde-jouet de `crates/ts_toy` : 1 000 résidents qui vont chaque jour de leur maison à leur travail, par événements datés, donc en saut de temps ; trois d'entre eux passent 30 s en simulation complète chaque semaine, pour exercer le mode tick par tick. Toutes les durées et tailles sont des **paramètres de test**, jamais des valeurs de jeu (D-DEV-02).
+
+1. Les deux exécutables de test de `ts_toy`, `one_thread` (1 fil) et `four_threads` (4 fils), tournent chacun dans **son propre processus** (L6), avec `--nocapture --test-threads=1`, et `--include-ignored` pour `--full`.
+2. Chaque processus fait, pour chaque version : une exécution avec un instantané en route (un jour de promenade, à 12:00:10, donc avec des entités en `LodComplete`), encodé puis décodé par `ts_persist`, restauré, puis mené à la fin ; une seconde exécution d'une traite. Les trois empreintes finales doivent être égales. Il lance aussi le générateur-jouet sur le groupe de fils et en ligne, qui doivent donner la même ville.
+3. Chaque processus écrit ses résultats sur des lignes `ts-toy-result <clé> <valeur>`. La commande vérifie que les deux processus donnent les mêmes valeurs (sauf `process.threads`), puis les compare à `data/golden/ts_toy.json` : chaque version contre ses propres valeurs (`short.*`, `year.*`, `generator`). Un résultat sans valeur dorée, ou une valeur dorée sans résultat, est un écart.
+4. Elle affiche la durée de chaque processus.
+
+`--bless` réécrit seulement l'objet `results` du fichier doré, et seulement si les processus sont d'accord. Le manifeste du même fichier ne contient aucun chemin local (SEC0-26).
+
