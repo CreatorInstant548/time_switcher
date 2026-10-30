@@ -2,13 +2,15 @@
 
 use core::fmt;
 
+use ts_kernel::{StateHash, StateWriter};
+
 // spec: securite.md S12 ; carnet architecture-securite.md SEC0-21, §9.11 M2
 /// Pseudonym of a player in **one** world: 128 bits, `HMAC(world secret key, account id)`
 /// truncated, computed by the host. The account mapping exists only in `ts_accounts`, so a
 /// leaked world database links to no account and two worlds do not cross-match (S12).
 ///
 /// It is not personal data in itself, so it may enter the state hash and the snapshots
-/// through [`PlayerId::canonical_bytes`]. On purpose, it has:
+/// through [`PlayerId::canonical_bytes`] and its [`StateHash`] encoding. On purpose, it has:
 /// - a single constructor, [`PlayerId::from_pseudonym_bytes`], fed by the host;
 /// - no `From`/`Into` from or to an integer, a string or bytes, no `FromStr`, no `Default`;
 /// - no `Display` and no `Serialize`: it is never shown nor sent as an account identifier;
@@ -68,6 +70,16 @@ impl PlayerId {
     }
 }
 
+// spec: carnet architecture-securite.md §9.11 M2, §9.10 L3
+/// State hash encoding: the 16 [`PlayerId::canonical_bytes`], fixed width, so self-delimiting.
+impl StateHash for PlayerId {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
+        for &b in &self.0 {
+            w.u8(b);
+        }
+    }
+}
+
 impl fmt::Debug for PlayerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("PlayerId(")?;
@@ -102,6 +114,49 @@ mod tests {
             PlayerId::from_pseudonym_bytes([0xff; 16]).canonical_bytes(),
             &[0xff; 16]
         );
+    }
+
+    /// The `StateHash` encoding is the 16 bytes, in order, inside the canonical snapshot.
+    #[test]
+    fn state_hash_encoding_is_the_sixteen_bytes() {
+        use ts_kernel::bevy_ecs;
+        use ts_kernel::bevy_ecs::resource::Resource;
+        use ts_kernel::rng::WorldKey;
+        use ts_kernel::{MemorySnapshot, Plugin, Sim, SimBuilder, SimConfig, SnapshotScope};
+
+        #[derive(Resource, Clone)]
+        struct Holder(PlayerId);
+        impl StateHash for Holder {
+            fn hash_state(&self, w: &mut StateWriter<'_>) {
+                self.0.hash_state(w);
+            }
+        }
+        struct Probe([u8; 16]);
+        impl Plugin for Probe {
+            fn name(&self) -> &'static str {
+                "probe"
+            }
+            fn version(&self) -> u32 {
+                1
+            }
+            fn build(&self, b: &mut SimBuilder) {
+                b.insert_resource(Holder(PlayerId::from_pseudonym_bytes(self.0)));
+                b.state_resource::<Holder>("probe");
+            }
+        }
+        let build = |bytes| {
+            let rules: Vec<Box<dyn Plugin>> = vec![Box::new(Probe(bytes))];
+            Sim::build(SimConfig::default(), &rules, &WorldKey::from_bytes([3; 16])).unwrap()
+        };
+        let sim = build(BYTES);
+        let snap: MemorySnapshot = sim.snapshot(SnapshotScope::Full);
+        assert!(snap.canonical_bytes().windows(16).any(|w| w == BYTES));
+        let mut other = BYTES;
+        other[15] = 0;
+        let a = sim.state_hash();
+        let b = build(other).state_hash();
+        assert_ne!(a.family("probe"), b.family("probe"));
+        assert_eq!(a.family("kernel"), b.family("kernel"));
     }
 
     #[test]
