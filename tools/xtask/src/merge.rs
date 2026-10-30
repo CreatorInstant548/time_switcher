@@ -419,7 +419,7 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
         "2",
         "verify-main (SEC0-17, réglages GitHub AS-30 R5) et hooks verify (SEC0-35)",
     );
-    let health = verify_main::verify_parts(repo, true)?;
+    let health = verify_main::verify_parts(repo)?;
     let hooks_ok = hooks::verify_or_report(repo)?;
     // AS-38, condition 3: a settings drift alone leaves one way through, a repair PR (step 6a).
     let repair = health.history && hooks_ok && health.settings == Some(false);

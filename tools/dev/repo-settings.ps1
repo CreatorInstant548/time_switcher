@@ -10,7 +10,8 @@
 # d'origin/main, et le script lancé doit être celui de cette copie (S4). Les invariants sont codés ici
 # (S2) : affaiblir les règles demande de modifier aussi ce script.
 # Codes de sortie : 0 conforme ; 1 écart, fichier refusé ou écriture refusée ; 2 usage, préalable ou erreur.
-# Conditions suivies : AS-30 R1 à R5, AS-31 E4 et E5, AS-38, §9.12 S1 à S5.
+# Conditions suivies : AS-30 R1 à R5, AS-31 E4 et E5 (et l'attestation qui remplace R6.4), AS-38, AS-41,
+# §9.12 S1 à S5.
 # spec: carnet architecture-securite.md SEC0-30 ; §9.12 S1, S2, S3, S4, S5
 $ErrorActionPreference = 'Stop'
 trap { [Console]::Error.WriteLine("repo-settings : erreur interne ($($_.Exception.Message))"); exit 2 }
@@ -105,6 +106,16 @@ function Add-Diff($Want, $Got, [string]$Path, $Out) {
     }
     $Out.Add("$p : présent sur GitHub ($(J $Got[$k])), absent du fichier")
   }
+}
+
+# Attestation de GitHub, qui remplace l'essai de poussée R6.4 (AS-31, T3e-2) : le compte des sessions
+# ne peut jamais contourner le ruleset main, et GitHub applique bien à main les cinq règles effectives.
+$EffectiveMain = 'deletion', 'non_fast_forward', 'required_linear_history', 'pull_request', 'required_status_checks'
+function Add-Attestation($Ruleset, $Effective, $Out) {
+  $bypass = if ($Ruleset -is [Collections.IDictionary]) { $Ruleset['current_user_can_bypass'] } else { $null }
+  if ($bypass -isnot [string] -or $bypass -cne 'never') { $Out.Add("ruleset_main.current_user_can_bypass : attendu ""never"", lu $(J $bypass) (AS-31, R6.4)") }
+  $types = @(@($Effective) | Where-Object { $_ -is [Collections.IDictionary] } | ForEach-Object { "$($_['type'])" })
+  foreach ($t in $EffectiveMain) { if ($t -cnotin $types) { $Out.Add("rules/branches/main : règle effective $t absente (AS-31, R6.4)") } }
 }
 
 # Ruleset comparable : règles indexées par type (une règle en double ressort comme écart).
@@ -223,7 +234,9 @@ function Get-Drift($C) {
   foreach ($key in 'ruleset_main', 'ruleset_pilotage') {
     $want = $C[$key]; $hits = @($list | Where-Object { $_['name'] -ceq $want['name'] })
     if ($hits.Count -ne 1) { $out.Add("$key : $($hits.Count) ruleset(s) nommé(s) « $($want['name']) » sur GitHub, attendu 1"); continue }
-    Add-Diff (ConvertTo-Comparable $want) (ConvertTo-Comparable (Get-Api "/rulesets/$($hits[0]['id'])").Json) $key $out
+    $full = (Get-Api "/rulesets/$($hits[0]['id'])").Json
+    Add-Diff (ConvertTo-Comparable $want) (ConvertTo-Comparable $full) $key $out
+    if ($key -ceq 'ruleset_main') { Add-Attestation $full (Get-Api '/rules/branches/main?per_page=100').Json $out }
   }
   foreach ($r in $list | Where-Object { $_['name'] -cnotin $ours }) {
     $full = (Get-Api "/rulesets/$($r['id'])").Json

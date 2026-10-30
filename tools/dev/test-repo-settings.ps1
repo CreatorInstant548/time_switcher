@@ -147,6 +147,37 @@ foreach ($c in @(@('~ALL', 'pilotage', $true), @('~DEFAULT_BRANCH', 'main', $tru
   Check "motif $($c[0]) sur $($c[1])" ((Test-RefPattern $c[0] $c[1] 'main') -eq $c[2])
 }
 
+# Attestation qui remplace R6.4 (AS-31, T3e-2) : Get-Drift complet, sur des réponses de l'API simulées.
+# Get-Api est redéfinie ici, après le chargement du script : Get-Drift appelle donc cette simulation.
+function Copy-Json($V) { return ConvertFrom-Json (ConvertTo-Json -InputObject $V -Depth 30) -AsHashtable -Depth 50 -NoEnumerate }
+$cfg = New-Cfg
+function New-Fake {
+  $f = @{ '' = (Copy-Json $cfg.repo) + @{ default_branch = 'main' }; '/branches?protected=true&per_page=100' = @()
+    '/rulesets?includes_parents=true&per_page=100' = @(@{ id = 9; name = $cfg.ruleset_main['name'] }, @{ id = 10; name = $cfg.ruleset_pilotage['name'] })
+    '/rulesets/9' = (Copy-Json $cfg.ruleset_main) + @{ id = 9; current_user_can_bypass = 'never' }
+    '/rulesets/10' = (Copy-Json $cfg.ruleset_pilotage) + @{ id = 10; current_user_can_bypass = 'never' }
+    '/rules/branches/main?per_page=100' = @($EffectiveMain | ForEach-Object { @{ type = $_; ruleset_source_type = 'Repository'; ruleset_id = 9 } }) }
+  foreach ($k in $ActionsApi.Keys) { $f[$ActionsApi[$k]] = Copy-Json $cfg.actions[$k] }
+  return $f
+}
+function Get-Api([string]$Path, [int[]]$Allow = @()) {
+  if (-not $script:Fake.ContainsKey($Path)) { throw "appel inattendu : GET $Path" }
+  return @{ Status = 200; Json = $script:Fake[$Path] }
+}
+function Test-Drift([string]$Name, [scriptblock]$Change, [int]$Count, [string]$Pattern) {
+  $script:Fake = New-Fake; & $Change $script:Fake
+  $d = try { @(Get-Drift $cfg) } catch { @("exception : $($_.Exception.Message)") }
+  Check "$Name : $Count écart(s), lu $($d.Count) ($($d -join ' ; '))" ($d.Count -eq $Count -and (-not $Pattern -or ($d -join "`n") -match $Pattern))
+}
+Test-Drift 'GitHub conforme, attestation comprise' { param($f) } 0 ''
+Test-Drift 'contournement possible (always)' { param($f) $f['/rulesets/9']['current_user_can_bypass'] = 'always' } 1 'current_user_can_bypass'
+Test-Drift 'contournement possible (pull_requests_only)' { param($f) $f['/rulesets/9']['current_user_can_bypass'] = 'pull_requests_only' } 1 'current_user_can_bypass'
+Test-Drift 'current_user_can_bypass absent' { param($f) $f['/rulesets/9'].Remove('current_user_can_bypass') } 1 'current_user_can_bypass'
+foreach ($t in $EffectiveMain) {
+  Test-Drift "règle effective $t absente" { param($f) $f['/rules/branches/main?per_page=100'] = @($f['/rules/branches/main?per_page=100'] | Where-Object { $_['type'] -cne $t }) }.GetNewClosure() 1 "règle effective $t absente"
+}
+Test-Drift 'aucune règle effective sur main' { param($f) $f['/rules/branches/main?per_page=100'] = @() } 5 'rules/branches/main'
+
 # Arguments et préalables S4, dans un dépôt jetable : copie « principale » clonée d'un dépôt nu local.
 # Son origin n'est jamais github.com : le dernier préalable refuse avant tout appel à GitHub, d'où
 # qu'on lance ce test. Chaque refus est reconnu à son message, pas au seul code 2.
