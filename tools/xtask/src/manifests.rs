@@ -102,6 +102,33 @@ pub fn check_lints_section(manifest: &str) -> Result<(), String> {
     }
 }
 
+/// E7, AS-23 point 4 : aucune section `[patch]` ni `[replace]`, ni clé de racine `patch.` ou
+/// `replace.` (forme pointée). Rend les lignes fautives.
+pub fn patch_sections(manifest: &str) -> Vec<String> {
+    let mut root = true;
+    let mut out = Vec::new();
+    for line in manifest.lines() {
+        let squashed: String = line
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+            .collect();
+        let header = squashed.trim_start_matches('[');
+        if squashed.starts_with('[') {
+            root = false;
+            if header.starts_with("patch") || header.starts_with("replace") {
+                out.push(line.trim().to_owned());
+            }
+        } else if root && (squashed.starts_with("patch") || squashed.starts_with("replace")) {
+            // Root keys: dotted (`patch.crates-io…`) or inline table (`patch = { … }`).
+            out.push(line.trim().to_owned());
+        }
+    }
+    out
+}
+
 /// Fonctionnalités dans les manifestes (F4) et règle D-DEV-02. Rend la liste des écarts.
 pub fn check_features(meta: &Metadata) -> Vec<String> {
     let mut errors = Vec::new();
@@ -180,6 +207,24 @@ pub fn tree_dev_features(tree: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::metadata::{parse, tests::sample};
+
+    /// E7, AS-23 point 4.
+    #[test]
+    fn refuses_patch_and_replace() {
+        let ok =
+            "[package]\nname = \"a\"\n\n[dependencies]\npatchwork = \"1\"\nreplace-me = \"1\"\n";
+        assert!(patch_sections(ok).is_empty());
+        for bad in [
+            "[patch.crates-io]\nserde = { path = \"x\" }\n",
+            "[ patch . \"crates-io\" ]\n",
+            "[replace]\n\"serde:1.0.0\" = { path = \"x\" }\n",
+            "patch.crates-io.serde = { path = \"x\" }\n[package]\n",
+            "replace = {}\n",
+            "patch = { crates-io = { serde = { path = \"x\" } } }\n[package]\n",
+        ] {
+            assert_eq!(patch_sections(bad).len(), 1, "{bad}");
+        }
+    }
 
     #[test]
     fn unsafe_roots() {

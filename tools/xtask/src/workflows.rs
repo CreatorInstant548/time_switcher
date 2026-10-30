@@ -203,6 +203,47 @@ fn check_uses(lines: &[&str], i: usize, l: &Line, errors: &mut Vec<String>) {
     }
 }
 
+/// Action épinglée d'une ligne `uses:` : dépôt `propriétaire/nom`, SHA et étiquette du commentaire.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Pin {
+    pub line: usize,
+    pub repo: String,
+    pub sha: String,
+    pub tag: Option<String>,
+}
+
+/// Lignes `uses:` d'un workflow déjà accepté par [`check_workflow`] (T3-b, J8). L'étiquette est
+/// le premier mot du commentaire (`# v7.0.1`), en caractères sûrs pour une adresse de l'API.
+pub fn pinned_uses(text: &str) -> Vec<Pin> {
+    let safe = |s: &str| {
+        !s.is_empty()
+            && !s.starts_with(['.', '-'])
+            && !s.contains("..")
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    };
+    let mut out = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let Some(l) = parse(raw).filter(|l| l.key.as_deref() == Some("uses")) else {
+            continue;
+        };
+        let v = strip_comment(l.value).trim_matches(['"', '\'']);
+        let (path, sha) = v.split_once('@').unwrap_or((v, ""));
+        let repo = path.splitn(3, '/').take(2).collect::<Vec<_>>().join("/");
+        let tag = l
+            .value
+            .find(" #")
+            .and_then(|c| l.value[c + 2..].split_whitespace().next());
+        out.push(Pin {
+            line: i + 1,
+            repo,
+            sha: sha.to_owned(),
+            tag: tag.filter(|t| safe(t)).map(str::to_owned),
+        });
+    }
+    out
+}
+
 /// Écarts d'un workflow, chacun avec son numéro de ligne.
 pub fn check_workflow(text: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
@@ -416,6 +457,33 @@ mod tests {
         let inline = good().replace("run: |", "run: echo ${{ github.event.issue.title }}");
         assert!(!check_workflow(&inline).is_empty());
         assert!(!check_workflow(&good().replace("permissions: {}\n", "")).is_empty());
+    }
+
+    #[test]
+    fn reads_pins() {
+        let text = good().replace(
+            "      - name: t",
+            &format!("      - uses: actions/cache/restore@{SHA}\n      - uses: \"Swatinem/rust-cache@{SHA}\" # ../x\n      - name: t"),
+        );
+        let pins = pinned_uses(&text);
+        assert_eq!(pins.len(), 3);
+        assert_eq!(
+            pins[0],
+            Pin {
+                line: 9,
+                repo: "actions/checkout".into(),
+                sha: SHA.into(),
+                tag: Some("v4".into())
+            }
+        );
+        assert_eq!(
+            (pins[1].repo.as_str(), pins[1].tag.as_deref()),
+            ("actions/cache", None)
+        );
+        assert_eq!(
+            (pins[2].repo.as_str(), pins[2].tag.as_deref()),
+            ("Swatinem/rust-cache", None)
+        );
     }
 
     #[test]
