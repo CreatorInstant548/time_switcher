@@ -118,6 +118,9 @@ is_sensitive() { # is_sensitive <fichier>
 tree=$(git ls-tree -r -z --name-only --full-tree "$head" | tr '\0' '\n')
 dups=$(printf '%s\n' "$tree" | tr 'A-Z' 'a-z' | sort | uniq -d)
 [ -z "$dups" ] || fail "chemins égaux à la casse près dans la tête : $(printf '%s ' $dups)"
+# Windows 8.3 short names (CARGO~1 = .cargo): refused on every path component.
+short=$(printf '%s\n' "$tree" | grep -E '(^|/)[^/]*~[0-9]' || true)
+[ -z "$short" ] || fail "path component looks like a Windows 8.3 short name (~<digit>): $(printf '%s ' $short)"
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   if printf '%s' "$f" | LC_ALL=C grep -q '[^ -~]' && is_sensitive "$f"; then

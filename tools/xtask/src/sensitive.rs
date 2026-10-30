@@ -23,15 +23,26 @@ pub struct Rules {
 
 /// Fragments qui, dans une ligne ajoutée ou retirée d'un `Cargo.toml` (espaces retirés), rendent
 /// la PR sensible : remplacement de dépendance ou source hors crates.io.
-const SOURCE_MARKS: [&str; 7] = [
+const SOURCE_MARKS: [&str; 9] = [
     "[patch",
     "[replace",
+    "patch=",
+    "replace=",
     "git=",
     "registry=",
     "branch=",
     "tag=",
     "rev=",
 ];
+
+/// Path component with `~` followed by a digit: a Windows 8.3 alias (`CARGO~1`, `CARGO~1.TOM`)
+/// that NTFS resolves to another name (`.cargo`, `Cargo.toml`) at checkout.
+pub fn short_name(component: &str) -> bool {
+    component
+        .as_bytes()
+        .windows(2)
+        .any(|w| w[0] == b'~' && w[1].is_ascii_digit())
+}
 
 /// Chemin comparable : `/`, sans `./` de tête, en minuscules ASCII.
 pub fn norm(path: &str) -> String {
@@ -112,6 +123,12 @@ impl Rules {
         let mut seen = std::collections::BTreeMap::new();
         let mut out = Vec::new();
         for p in tree {
+            // Windows 8.3 short names (CARGO~1 = .cargo): refused on every path, sensitive or not.
+            if p.split('/').any(short_name) {
+                out.push(format!(
+                    "« {p} » : path component looks like a Windows 8.3 short name (~<digit>)"
+                ));
+            }
             if let Some(first) = seen.insert(p.to_lowercase(), p) {
                 out.push(format!(
                     "« {first} » et « {p} » ne diffèrent que par la casse"
@@ -314,6 +331,19 @@ mod tests {
         .to_vec();
         let errors = r.tree_errors(&tree);
         assert_eq!(errors.len(), 2, "{errors:?}");
+        // Windows 8.3 short names, on any path.
+        for p in [
+            "CARGO~1/config",
+            "claude~1/settings.local.json",
+            "GITHUB~1/workflows/x.yml",
+            "CARGO~1.TOM",
+            "docs/NOTES~2.MD",
+        ] {
+            assert_eq!(r.tree_errors(&[p.to_owned()]).len(), 1, "{p}");
+        }
+        for p in ["docs/a~b.md", "x~/y", "~.txt"] {
+            assert!(r.tree_errors(&[p.to_owned()]).is_empty(), "{p}");
+        }
         assert!(
             r.tree_errors(&["docs/é.md".to_owned(), "a".to_owned()])
                 .is_empty()

@@ -361,6 +361,38 @@ fn check_worktree(
     Ok(())
 }
 
+/// Untracked or ignored file under `.cargo/` or `.claude/` that cargo or Claude Code could read.
+/// Allowed: `.claude/settings.local.json` (checked on its own) and the session worktrees.
+pub fn extra_config_file(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    (p.starts_with(".cargo/") || p.starts_with(".claude/"))
+        && p != ".claude/settings.local.json"
+        && !p.starts_with(".claude/worktrees/")
+}
+
+/// Defense in depth for 8.3 short names (B1): in the main copy, no untracked or ignored file
+/// under `.cargo/` or `.claude/`, and no `.cargo/config` without extension (cargo prefers it).
+fn main_copy_extras(repo: &Repo) -> Result<Vec<String>, String> {
+    let others = repo.git(&["ls-files", "-z", "--others", "--", ".cargo", ".claude"])?;
+    let mut out: Vec<String> = others
+        .split('\0')
+        .filter(|f| extra_config_file(f))
+        .map(|f| {
+            format!(
+                "{} : untracked file {f} in the main copy (cargo or Claude Code may read it)",
+                repo.main.display()
+            )
+        })
+        .collect();
+    if repo.main.join(".cargo").join("config").exists() {
+        out.push(format!(
+            "{} : .cargo/config exists (without extension, cargo prefers it to config.toml)",
+            repo.main.display()
+        ));
+    }
+    Ok(out)
+}
+
 /// Empreinte attendue et écarts constatés ; `Err` si un contrôle n'a pas pu se faire.
 pub fn verify(repo: &Repo) -> Result<(String, Vec<String>), String> {
     let want = origin_set(repo)?;
@@ -405,6 +437,7 @@ pub fn verify(repo: &Repo) -> Result<(String, Vec<String>), String> {
         check_worktree(repo, wt, &pinned, &common_cfg, &mut errors)?;
         n += 1;
     }
+    errors.extend(main_copy_extras(repo)?);
     match repo
         .home
         .as_ref()
@@ -504,6 +537,26 @@ mod tests {
         ];
         assert_eq!(diff(&set, &changed, "x").len(), 1);
         assert_eq!(diff(&set, &set[..1].to_vec(), "x").len(), 1);
+    }
+
+    #[test]
+    fn extra_config_files() {
+        for bad in [
+            ".cargo/config",
+            ".CARGO/config.json",
+            ".claude/settings.LOCAL.json.bak",
+            ".claude/x.json",
+        ] {
+            assert!(extra_config_file(bad), "{bad}");
+        }
+        for ok in [
+            "",
+            ".claude/settings.local.json",
+            ".claude/worktrees/agent-x/",
+            "docs/.cargo",
+        ] {
+            assert!(!extra_config_file(ok), "{ok}");
+        }
     }
 
     /// Message constaté le 30/10 lors d'un accès concurrent : jamais lu comme « 0 valeur ».
