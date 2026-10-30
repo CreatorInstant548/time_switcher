@@ -63,6 +63,8 @@ impl Money {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct BasisPoints(i64);
 
+crate::assert_size!(BasisPoints, 8);
+
 impl BasisPoints {
     /// Points de base pour 100 %.
     pub const DENOMINATOR: i64 = 10_000;

@@ -13,7 +13,7 @@
 /// ts_kernel::assert_size!(u32, 4);
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0080
 /// ts_kernel::assert_size!(u32, 8);
 /// ```
 #[macro_export]
