@@ -101,7 +101,7 @@
 | 30/10 | Utilisateur (dans cette session) | « Relancer les auditeurs de sécurité, d'équilibrage et d'architecture à la fin pour tout valider ? » | Oui (décidé) : revues de clôture sur le delta, après la dernière vague |
 | 30/10 | Utilisateur (dans cette session) | Boucle : tant que les trois revues ne sont pas satisfaites, la conception n'est pas finie et la phase 0 ne commence pas | Oui (décidé), avec une borne de 3 tours ; README, point 6 |
 | 30/10 | Orchestrateur | Tableau « Attendus mesurables » avant la fin de la conception | Fait : `docs/conception/attendus-mesurables.md` (M1 à M36) |
-| 30/10 | Responsable architecture et sécurité | Réponse à direction-artistique §12.9 (`architecture-securite.md` §8) : avis favorable, conditions techniques ; contrainte : la déclaration des contenus produits par IA reste globale (S7) | Accepté (décidé) ; direction-artistique v0.4.2 en [PR #4](https://github.com/CreatorInstant548/time_switcher/pull/4), relue et conforme, signalée au responsable développement pour la fusion |
+| 30/10 | Responsable architecture et sécurité | Réponse à direction-artistique §12.9 (`architecture-securite.md` §8) : avis favorable, conditions techniques ; contrainte : la déclaration des contenus produits par IA reste globale (S7) | Accepté (décidé) ; direction-artistique v0.4.2 en [PR #4](https://github.com/CreatorInstant548/time_switcher/pull/4), relue et conforme ; **fusionnée** (de84d92), worktree et branche locale supprimés par la session |
 | 30/10 | Orchestrateur | Sur `pilotage`, ne commiter que son fichier (`git commit -- conception.md`) ; PR #4 fusionnée sans `ci-ok` par le responsable développement (règle de démarrage) | Appliqué |
 
 ## Sessions pilotées
