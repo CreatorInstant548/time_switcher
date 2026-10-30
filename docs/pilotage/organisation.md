@@ -43,7 +43,8 @@ Partage des décisions : les règles de jeu reviennent à la conception, les dé
 
 - **Les messages entre sessions ne sont qu'une sonnette.** Ils ne sont pas garantis : un message peut être retenu ou perdu, et rien ne confirme sa lecture. La trace fait foi :
   - **avant Git** : l'expéditeur note la demande, avec son état, dans la section « Demandes envoyées » de son carnet ; le destinataire la reporte dans « Demandes reçues » du sien. Sans réponse à son tour suivant, l'expéditeur relance ;
-  - **dès le dépôt GitHub** : toute demande entre rôles est une *issue*, avec une étiquette par rôle (`role:conception`, `role:architecture`, `role:dev`, `role:qualite`, `role:contenus`) et un tableau GitHub Project ; le message ne contient que le lien.
+  - **dès le dépôt GitHub** : toute demande entre rôles est une *issue*, avec une étiquette par rôle (`role:design`, `role:architecture`, `role:dev`, `role:qa`, `role:content`) et un tableau GitHub Project ; le message ne contient que le lien.
+- **Langue (décidé par l'utilisateur le 30/10)** : le code, les commits (branche `pilotage` comprise), les PR, les *issues* et leurs commentaires sont en anglais. La documentation, les carnets, les messages entre sessions et la communication avec l'utilisateur restent en français. Les anciennes étiquettes `role:conception`, `role:qualite`, `role:contenus` et `ecart` sont renommées en `role:design`, `role:qa`, `role:content` et `deviation`.
 - **Chaque responsable tient un carnet** court, `<rôle>.md`, sur la branche `pilotage` : état, décisions en cours, demandes envoyées et reçues, sessions actives. L'orchestrateur tient le sien, `orchestrateur.md`.
 - **Branche `pilotage` (décidé le 30/10)**.
   - **Contenu** : les fichiers vivants de pilotage, c'est-à-dire les carnets, `feuille-de-route.md` et `a-relire.md`. Ce fichier-ci reste sur `main`.
@@ -66,7 +67,7 @@ Partage des décisions : les règles de jeu reviennent à la conception, les dé
 
 Une session peut voir un problème de conception sans le reconnaître comme tel. Le risque est qu'elle le règle en silence dans le code, et la conception ne correspondrait plus au jeu réel. Les remontées ne dépendent donc pas du jugement de chacun : elles sont déclenchées par des signaux précis, aidées par des outils et vérifiées à heure fixe.
 
-**1. Signaux qui obligent à remonter.** Toute session qui rencontre l'un de ces signaux ouvre une remontée vers la conception, avec l'étiquette `role:conception` et le type `ecart`. Avant Git, la remontée passait par la section « Demandes envoyées » du carnet ; depuis le dépôt GitHub, c'est une *issue*.
+**1. Signaux qui obligent à remonter.** Toute session qui rencontre l'un de ces signaux ouvre une remontée vers la conception, avec l'étiquette `role:design` et le type `deviation`. Avant Git, la remontée passait par la section « Demandes envoyées » du carnet ; depuis le dépôt GitHub, c'est une *issue*.
 
 | Signal | Qui le voit d'habitude |
 |---|---|
@@ -82,10 +83,10 @@ Une session peut voir un problème de conception sans le reconnaître comme tel.
 
 **2. Aucune règle de jeu inventée en silence.** Une session de code qui a besoin d'une règle absente ne la crée pas comme si elle était définitive. Elle procède ainsi :
 - elle prend la valeur la plus prudente, c'est-à-dire la plus simple et la plus facile à changer ;
-- elle la marque `// PROVISOIRE(conception #<issue>)` dans le code ;
+- elle la marque `// PROVISIONAL(design #<issue>)` dans le code (l'ancienne forme `PROVISOIRE(conception #<issue>)` reste reconnue jusqu'à sa traduction) ;
 - elle ouvre la remontée et continue son travail sans attendre.
 
-Le responsable développement refuse toute PR qui ajoute une règle de jeu sans référence à la conception ni marque `PROVISOIRE`.
+Le responsable développement refuse toute PR qui ajoute une règle de jeu sans référence à la conception ni marque `PROVISIONAL`.
 
 **3. Traçabilité entre la conception et le code.**
 - Chaque système de règles porte en commentaire la section de conception qu'il applique, par exemple `// spec: combat.md §5.4`.
