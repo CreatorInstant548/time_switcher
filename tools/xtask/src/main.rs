@@ -6,6 +6,7 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 mod build_inputs;
+mod carry;
 mod disk;
 mod exemptions;
 mod github;
@@ -20,6 +21,7 @@ mod slots;
 mod spec_map;
 mod steps;
 mod sys;
+mod verify_cache;
 mod verify_main;
 mod workflows;
 
@@ -27,6 +29,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use steps::{Ctx, Outcome};
+
+/// Empreinte des entrées de construction, inscrite par `build.rs` (J2, AS-23 point 1) ; clé du
+/// cache de `verify-main` (V2).
+pub const BUILT_FROM: &str = env!("XTASK_INPUTS_SHA256");
 
 type Step = (&'static str, &'static str, fn(&Ctx) -> Outcome);
 
@@ -79,7 +85,7 @@ const STEPS: [Step; 13] = [
     ("spec-map", "spec-map check", steps::spec_map),
 ];
 
-const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] | cargo xtask hooks install|verify [--dry-run]";
+const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--no-cache] | cargo xtask hooks install|verify [--dry-run]";
 
 struct Options {
     all: bool,
