@@ -252,8 +252,53 @@ $cases = @(
   @('Bash', 'feat', 'gh repo edit --default-branch x', 'D'),
   @('Bash', 'feat', 'gh repo delete o/r', 'D'),
   @('Bash', 'feat', 'gh workflow run ci.yml', 'D'),
-  @('Bash', 'feat', 'gh pr close 5', 'D'),
   @('Bash', 'feat', 'gh pr review 5 --approve', 'D'),
+
+  # 3e relecture, point 1 (B1 ter) : accolades dans un mot, gh api relu sur toute la ligne
+  @('Bash', 'feat', 'gh api repos/{owner}/{repo}/pulls/5/merge -X PUT -f merge_method=squash', 'D'),
+  @('PowerShell', 'feat', 'gh api repos/{owner}/{repo}/pulls/5/merge -X PUT -f merge_method=squash', 'D'),
+  @('Bash', 'feat', 'gh api repos/{owner}/{repo}/merges -f base=main -f head=claude/x', 'D'),
+  @('Bash', 'feat', 'gh api repos/{owner}/{repo}/git/refs/heads/main -X PATCH -f sha=0123', 'D'),
+  @('Bash', 'feat', 'gh api repos/{owner}/{repo}/contents/README.md -X PUT -f message=m -f content=eA== -f branch=main', 'D'),
+  @('Bash', 'feat', 'gh api -X PUT repos/{owner}/{repo}/pulls/5/merge', 'D'),
+  @('Bash', 'feat', 'gh api repos/{owner}/{repo}/issues/12 -X PATCH -f state=closed', 'D'),
+  @('Bash', 'feat', 'gh pr view 5 && gh api repos/{owner}/{repo}/pulls/5/merge -X PUT', 'D'),
+  @('PowerShell', 'feat', 'gh api ("repos/o/r/pulls/5/merge") -X PUT', 'D'),
+  @('PowerShell', 'feat', 'gh api "repos/{owner}/{repo}/pulls/5/merge" -X PUT', 'D'),
+  @('Bash', 'feat', 'gh -R o/r api repos/o/r/issues/1 --method PATCH', 'D'),
+  @('Bash', 'feat', 'git push origin HEAD@{0}:main --no-verify', 'D'),
+  @('Bash', 'feat', 'git push origin HEAD@{0}:main', 'D'),
+  @('PowerShell', 'feat', '& { git push -f origin claude/x }', 'D'),
+  @('Bash', 'feat', '{ git push --force origin claude/x; }', 'D'),
+  @('Bash', 'feat', 'gh api repos/{owner}/{repo}/pulls/5', 'A'),
+  @('Bash', 'feat', "gh api repos/{owner}/{repo}/pulls/5 --jq '.title | ascii_downcase'", 'A'),
+  @('Bash', 'feat', 'git log -1 HEAD@{1}', 'A'),
+  @('Bash', 'feat', 'gh pr view 5 --json title | grep -F api', 'A'),
+  # 3e relecture, point 3 (I8) : Git caché seulement après git ou gh ; affectations en tête permises
+  @('PowerShell', 'feat', '$cfg = Get-Content config.toml -Raw; $cfg', 'A'),
+  @('PowerShell', 'feat', '$env:RUST_LOG = "debug"; cargo run -- --config cfg.toml', 'A'),
+  @('PowerShell', 'feat', '$ErrorActionPreference = "Stop"; git push -u origin claude/x', 'A'),
+  @('PowerShell', 'feat', '$h = git -C C:\x config --get core.hooksPath', 'A'),
+  @('PowerShell', 'feat', 'Write-Output "$(Get-Date) reset du cache"', 'A'),
+  @('PowerShell', 'feat', '$out = cargo test 2>&1; $out | Select-String "commit"', 'A'),
+  @('Bash', 'feat', 'cat $(find . -name config.toml)', 'A'),
+  @('Bash', 'feat', 'echo "${CARGO_TARGET_DIR}"; cargo build --config build.jobs=2', 'A'),
+  @('Bash', 'feat', '$(echo git) push -f', 'D'),
+  @('PowerShell', 'feat', '$g = "git"; & $g push -f origin claude/x', 'D'),
+  @('Bash', 'feat', 'cat payload | tee ~/.gitconfig git', 'D'),
+  # 3e relecture, point 4 (I9) : liste blanche de gh élargie
+  @('Bash', 'feat', 'gh pr close 5', 'A'),
+  @('Bash', 'feat', 'gh pr edit 5 --body-file b.md', 'A'),
+  @('Bash', 'feat', 'gh pr edit 5 --base claude/x', 'D'),
+  @('Bash', 'feat', 'gh pr edit 5 --base=claude/x', 'D'),
+  @('Bash', 'feat', 'gh pr ready 5', 'A'),
+  @('Bash', 'feat', 'gh issue close 3', 'A'),
+  @('Bash', 'feat', 'gh issue reopen 3', 'A'),
+  @('Bash', 'feat', 'gh issue edit 3 --add-label role:dev', 'A'),
+  @('Bash', 'feat', 'gh run rerun 123', 'A'),
+  @('Bash', 'feat', 'gh workflow list', 'A'),
+  @('Bash', 'feat', 'gh workflow view ci.yml', 'A'),
+  @('Bash', 'feat', 'gh label edit role:dev --color ededed', 'A'),
 
   # Travail courant permis (aucun faux refus)
   @('Bash', 'feat', 'git worktree add ../y -b claude/y origin/main', 'A'),
@@ -452,6 +497,21 @@ foreach ($e in $edits) {
   $v = Get-EditVerdict $e[0] $M $T
   $got = if ($v) { 'D' } else { 'A' }
   if ($got -ne $e[1]) { $fail++; "ÉCHEC guard-main $($e[0]) : attendu $($e[1]), obtenu $got $v" }
+}
+
+# 3e relecture, point 5 (I10) : merge-pr.ps1 compte les deux chemins d'un renommage (fonction pure).
+. (Join-Path $dev 'merge-pr.ps1')
+$list = ConvertFrom-PrFileLines @("docs/x.ps1`ttools/dev/guard-git.ps1", "README.md`t", '')
+$n++; if (-not ($list.Count -eq 2 -and $list.Paths -contains 'tools/dev/guard-git.ps1' -and $list.Paths -contains 'docs/x.ps1' -and ($list.Paths -match $sensitive))) {
+  $fail++; "ÉCHEC merge-pr : renommage hors d'un chemin sensible non vu ($($list.Count) ; $($list.Paths -join ', '))"
+}
+$list = ConvertFrom-PrFileLines @('src/a.rs', 'src/b.rs')
+$n++; if ($list.Count -ne 2 -or ($list.Paths -match $sensitive)) { $fail++; "ÉCHEC merge-pr : PR sans chemin sensible mal lue" }
+# Lecture réelle de la PR #5 par l'API paginée (lecture seule), si gh répond : le compte égale changedFiles.
+$live = @(& gh api 'repos/{owner}/{repo}/pulls/5/files' --paginate --jq '.[] | [.filename, (.previous_filename // "")] | @tsv' 2>$null)
+if ($LASTEXITCODE -eq 0) {
+  $changed = "$(& gh pr view 5 --json changedFiles --jq .changedFiles 2>$null)".Trim()
+  $n++; if ((ConvertFrom-PrFileLines $live).Count -ne [int]$changed) { $fail++; "ÉCHEC merge-pr : lecture paginée de la PR #5 ($((ConvertFrom-PrFileLines $live).Count) / $changed)" }
 }
 
 # Bout en bout : JSON sur l'entrée standard, code de sortie 2 ou 0 (I1 : tous les outils qui lancent une commande).

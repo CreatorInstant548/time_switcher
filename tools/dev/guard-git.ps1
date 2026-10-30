@@ -20,7 +20,8 @@ function Split-Command([string]$Text, [string]$Tool) {
   $cur = [Collections.Generic.List[string]]::new()
   $sb = [Text.StringBuilder]::new(); $has = $false; $q = $null
   $esc = if ($Tool -eq 'PowerShell') { '`' } else { '\' }
-  $flush = { if ($has) { $cur.Add($sb.ToString()) }; [void]$sb.Clear(); Set-Variable has $false -Scope 1 }
+  $braces = 0   # accolades ouvertes dans le mot courant : repos/{owner}/{repo}, HEAD@{0} restent des mots entiers
+  $flush = { if ($has) { $cur.Add($sb.ToString()) }; [void]$sb.Clear(); Set-Variable has $false -Scope 1; Set-Variable braces 0 -Scope 1 }
   for ($i = 0; $i -lt $Text.Length; $i++) {
     $c = [string]$Text[$i]
     if ($q -eq "'") { if ($c -eq "'") { $q = $null } else { [void]$sb.Append($c) }; continue }
@@ -37,6 +38,9 @@ function Split-Command([string]$Text, [string]$Tool) {
       if ($i + 1 -lt $Text.Length -and $Text[$i + 1] -eq '&') { $r = '>&'; $i++ }
       $cur.Add($r); continue
     }
+    # « { » ne coupe qu'en début de mot ; la « } » qui la ferme dans le même mot reste littérale.
+    if ($c -eq '{' -and $has) { $braces++; [void]$sb.Append($c); continue }
+    if ($c -eq '}' -and $braces -gt 0) { $braces--; [void]$sb.Append($c); continue }
     if (";&|`n(){}".Contains($c)) { & $flush; if ($cur.Count) { $segs.Add($cur.ToArray()) }; $cur.Clear(); continue }
     [void]$sb.Append($c); $has = $true
   }
@@ -225,22 +229,49 @@ function Get-GhVerdict([string[]]$T, [int]$At) {
     if (-not $a[$k].StartsWith('-')) { $words += $a[$k] }
   }
   $top = "$($words[0])".ToLowerInvariant(); $sub = "$($words[1])".ToLowerInvariant()
-  $allowed = @{ 'pr' = 'create', 'view', 'list', 'diff', 'checks', 'comment', 'status'; 'issue' = 'create', 'view', 'list', 'comment', 'edit'
-                'run' = 'list', 'view', 'watch'; 'repo' = @('view'); 'auth' = @('status'); 'label' = 'list', 'create' }
+  $allowed = @{ 'pr' = 'create', 'view', 'list', 'diff', 'checks', 'comment', 'status', 'close', 'edit', 'ready'
+                'issue' = 'create', 'view', 'list', 'comment', 'edit', 'close', 'reopen'
+                'run' = 'list', 'view', 'watch', 'rerun'; 'workflow' = 'list', 'view'; 'repo' = @('view'); 'auth' = @('status')
+                'label' = 'list', 'create', 'edit' }
   if (-not $top -and ($a | Where-Object { $_ -in '--version', '--help', '-h' })) { return $null }
   if ($top -in 'version', 'help') { return $null }
   if ($allowed.ContainsKey($top)) {
+    if ($top -eq 'pr' -and $sub -eq 'edit' -and ($a | Where-Object { $_ -eq '--base' -or $_ -like '--base=*' -or $_ -ceq '-B' })) {
+      return 'gh pr edit --base est interdit : la base d''une PR reste main'
+    }
     if ($sub -in $allowed[$top]) { return $null }
     if ($top -eq 'pr' -and $sub -eq 'merge') { return 'gh pr merge est interdit : fusion par pwsh tools/dev/merge-pr.ps1 <PR> depuis la copie principale (SEC0-15)' }
     return "gh $top $sub non permis (liste blanche de gh)"
   }
   if ($top -ne 'api') { return "gh $top non permis (alias ou commande hors liste blanche de gh)" }
-  for ($k = 0; $k -lt $a.Count; $k++) {
-    $x = $a[$k]; $next = if ($k + 1 -lt $a.Count) { $a[$k + 1] } else { '' }
+  return Get-GhApiArgsVerdict $a
+}
+
+# Arguments de gh api : lecture seule (GET, sans champs), hors chemins d'écriture ; motif du refus ou $null.
+function Get-GhApiArgsVerdict([string[]]$A) {
+  for ($k = 0; $k -lt $A.Count; $k++) {
+    $x = $A[$k]; $next = if ($k + 1 -lt $A.Count) { $A[$k + 1] } else { '' }
     $method = if ($x -ceq '-X' -or $x -eq '--method') { $next } elseif ($x -clike '-X?*') { $x.Substring(2) } elseif ($x -like '--method=*') { $x.Substring(9) } else { $null }
     if ($method -and $method -ine 'GET') { return "gh api en écriture ($method) est interdit (SEC0-14)" }
     if ($x -cmatch '^-[fF]' -or $x -match '^--(field|raw-field|input)') { return 'gh api avec des champs (-f, -F, --input) est interdit (SEC0-14)' }
-    if ($x -match '(?i)(contents/|merges|pulls/[^/]+/merge|(^|/)git/|(^|/)graphql$)') { return "gh api sur $x est interdit (SEC0-14)" }
+    if ($x -match '(?i)(contents/|merges|pulls/[^/\s]+/merge|(^|/)git/|(^|/)graphql$)') { return "gh api sur $x est interdit (SEC0-14)" }
+  }
+  return $null
+}
+
+# gh api relu sur tout le reste de la ligne, jusqu'à un | ; & hors guillemets : des parenthèses
+# (gh api ("…") -X PUT) ou un découpage du chemin ne cachent ni la méthode, ni les champs, ni le chemin.
+function Get-GhApiLineVerdict([string]$Text) {
+  foreach ($m in [regex]::Matches($Text, '(?i)(?<![\w.-])gh(\.exe)?[''"]?((\s+-R|\s+--repo)\s+\S+)*\s+api\b(?<rest>[^\n]*)')) {
+    $sb = [Text.StringBuilder]::new(); $q = $null
+    foreach ($ch in $m.Groups['rest'].Value.ToCharArray()) {
+      if ($q) { if ($ch -eq $q) { $q = $null } else { [void]$sb.Append($ch) }; continue }
+      if ($ch -eq [char]"'" -or $ch -eq [char]'"') { $q = $ch; continue }
+      if ('|;&'.Contains([string]$ch)) { break }
+      [void]$sb.Append($(if ('()'.Contains([string]$ch)) { ' ' } else { $ch }))
+    }
+    $v = Get-GhApiArgsVerdict @($sb.ToString() -split '\s+' | Where-Object { $_ })
+    if ($v) { return $v }
   }
   return $null
 }
@@ -297,13 +328,24 @@ function Get-CommandVerdict([string]$Command, [string]$Tool, [string]$Cwd, [int]
     return 'alias ou fonction définis dans une commande qui appelle git : refus (SEC0-14)'
   }
   if ($text -match '(?i)\b(pwsh|powershell)(\.exe)?\b.*\s-(e|ec|enc|encodedcommand)\s') { return 'pwsh -EncodedCommand est interdit : commande illisible' }
-  # Substitution, évaluation, ou commande tirée d'une variable (seuls $(git rev-parse ...) et $(pwd) sont permis).
+  # Substitution, évaluation, ou commande tirée d'une variable (seuls $(git rev-parse ...) et $(pwd) sont permis),
+  # dans une commande qui appelle git ou gh, avec un mot d'écriture placé après git ou gh.
+  # Une affectation en tête ($x = …, $env:X = …) n'est pas une commande tirée d'une variable.
   $scan = $text -replace '\$\(\s*(git\s+rev-parse(\s+--?[\w-]+)*|pwd)\s*\)', 'X'
-  $subst = $scan -match '\$\(|\$''|\$\{|(?i)\biex\b|(?i)invoke-expression|(?i)\bcmd(\.exe)?\s+/[ck]|[&.]\s*[\(\$]|(^|[;&|\n])\s*\$\w' -or
+  $subst = $scan -match '\$\(|\$''|\$\{|(?i)\biex\b|(?i)invoke-expression|(?i)\bcmd(\.exe)?\s+/[ck]|[&.]\s*[\(\$]|(^|[;&|\n])\s*\$[\w:]+(?![\w:]|\s*=)' -or
            ($Tool -eq 'Bash' -and $scan.Contains('`')) -or ($scan -match '(?i)\bcmd\b' -and $scan.Contains('^'))
-  if ($subst -and $scan -match '(?i)\b(push|commit|update-ref|merge|reset|rebase|config|send-pack)\b') {
+  $danger = '\b(push|commit|update-ref|merge|reset|rebase|config|send-pack)\b'
+  # Mot d'écriture placé : après git ou gh ; après une commande fabriquée en position de commande
+  # (g${x}it, $'\x67it', g^it, ('gi'+'t')) ; ou n'importe où avec iex, Invoke-Expression, eval ou cmd /c.
+  $hidden = $scan -match "(?is)(?<![\w.-])(git|gh)(\.exe)?\b.*$danger" -or
+            $scan -match "(?im)(^|[;&|\n])\s*&?\s*\S*[\`$``^+'`"\\{}()]\S*\s+$danger" -or
+            (($scan -match '(?i)\biex\b|invoke-expression|\beval\b|\bcmd(\.exe)?\s+/[ck]' -or ($Tool -eq 'Bash' -and $scan.Contains('`'))) -and
+             $scan -match "(?i)$danger")
+  if ($subst -and $hidden) {
     return "substitution (`$(...), iex, cmd /c...) avec une écriture Git : refus par prudence ; $HintCommit"
   }
+  $v = Get-GhApiLineVerdict $text
+  if ($v) { return $v }
 
   $dir = $Cwd
   foreach ($s in (Split-Command $text $Tool)) {
@@ -324,7 +366,11 @@ function Get-CommandVerdict([string]$Command, [string]$Tool, [string]$Cwd, [int]
         }
       }
     }
-    if ($head -ne 'git' -and -not (Test-ReadOnlySegment $s) -and ($s | Where-Object { Test-GitConfigMention $_ })) {
+    # Un appel git du segment est jugé par sa liste blanche ; une redirection vers ces fichiers est refusée partout.
+    $redirect = $(for ($k = 0; $k -lt $s.Count - 1; $k++) { if ($s[$k] -in '>', '>>' -and (Test-GitConfigMention $s[$k + 1])) { $true } })
+    $callsGit = [bool]$(for ($k = 0; $k -lt $s.Count; $k++) {
+      if ((Test-Exe $s[$k] 'git') -and ($k -eq 0 -or $s[$k - 1] -in $prefixCmds + '=' -or $s[$k - 1] -match '^\$[\w:]+=?$')) { $true } })
+    if ($redirect -or (-not $callsGit -and -not (Test-ReadOnlySegment $s) -and ($s | Where-Object { Test-GitConfigMention $_ }))) {
       return 'écriture possible de la configuration de Git (.git/config, config.worktree, attributs, crochets, ~/.gitconfig) interdite (SEC0-14)'
     }
     if ($s[0] -in $cdCmds) {

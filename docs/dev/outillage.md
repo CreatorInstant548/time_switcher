@@ -40,7 +40,7 @@ Les crochets vivent dans `tools/dev/hooks/`. Ils s'exécutent depuis une **copie
 |---|---|
 | `pre-commit` | Refus de **tout commit sur `main`**, sans variable d'exception (SEC0-13).<br>Refus d'un fichier de plus de 5 Mo (SEC0-11).<br>Refus, hors LFS, des extensions `.glb .gltf .png .jpg .ogg .wav .mp3 .otf .ttf .onnx .gguf .pt .safetensors .parquet .sqlite .db .blend .psd .fbx .zip .7z`. Exception : `**/tests/fixtures/**`, jusqu'à 256 Ko.<br>`gitleaks dir` sur une **extraction des fichiers indexés** (ajoutés ou modifiés). Elle est faite par `git checkout-index` dans `TS_CACHE\tmp`, puis supprimée. Un attribut `-diff`, `binary` ou `textconv` ne masque donc rien (I3 bis). Toutes les branches sont concernées, `pilotage` comprise (SEC0-08). |
 | `pre-merge-commit` | Mêmes contrôles, pour un `git merge` qui crée un commit de fusion. |
-| `reference-transaction` | `refs/heads/main` ne prend qu'une valeur : celle de `main` **sur le distant**, lue par `git ls-remote origin refs/heads/main`. C'est le cas de l'avance rapide de `git pull --ff-only`. La référence locale `refs/remotes/origin/main` ne fait pas foi, puisqu'elle peut être déplacée à la main (I2 bis). Sont refusés :<br>- la **suppression** de `main` ;<br>- toute mise à jour quand `origin/main` est absente, ou quand **le distant ne répond pas** ;<br>- tout autre déplacement : `revert`, `cherry-pick`, `rebase`, `am`, `reset`, `update-ref`, `branch -f`, `merge`.<br>L'appel réseau n'a lieu que lorsque `main` bouge. Attention : un `reset --hard` refusé a déjà modifié l'index et les fichiers. On les rétablit par `git reset --hard`, sans argument. |
+| `reference-transaction` | `refs/heads/main` ne prend qu'une valeur : celle de `main` **sur le distant**, lue par `git ls-remote origin refs/heads/main`. C'est le cas de l'avance rapide de `git pull --ff-only`. La référence locale `refs/remotes/origin/main` ne fait pas foi, puisqu'elle peut être déplacée à la main (I2 bis). Sont refusés :<br>- la **suppression** de `main` ;<br>- toute mise à jour quand `origin/main` est absente, ou quand **le distant ne répond pas** ;<br>- tout autre déplacement : `revert`, `cherry-pick`, `rebase`, `am`, `reset`, `update-ref`, `branch -f`, `merge`.<br>Sont acceptés : une valeur inchangée, et l'élagage de `git pack-refs` ou `git gc`. Dans ce cas, la référence libre disparaît alors que `packed-refs` contient déjà la même valeur, sans `packed-refs.lock` ; une vraie suppression tient ce verrou (constaté en 2.56).<br>L'appel réseau n'a lieu que lorsque `main` bouge. Attention : un `reset --hard` refusé a déjà modifié l'index et les fichiers. On les rétablit par `git reset --hard`, sans argument. |
 | `pre-push` | Refus de pousser vers `main` ; refus d'une poussée forcée (historique distant non ancêtre) ; refus de supprimer `pilotage`.<br>`gitleaks git` sur la plage poussée, avec `--text --no-ext-diff --no-textconv` (I3 bis). |
 | `commit-msg` | Format `type(portée): description`, avec un type parmi `feat fix refactor perf test docs build ci chore` (A31). Restent permis : `Merge …`, `Revert "…"`, `fixup!`, `squash!` et `amend!`. |
 
@@ -135,20 +135,29 @@ Toute **autre sous-commande, et tout alias**, est refusée. Sont ainsi fermés :
 - refus de `--all`, de `--mirror` et de la suppression de `pilotage`.
 
 **`gh` : liste blanche.** Les options `-R`/`--repo` sont sautées avec leur valeur, où qu'elles soient. Sont permis :
-- `pr create|view|list|diff|checks|comment|status` ;
-- `issue create|view|list|comment|edit` ;
-- `label list|create` ;
-- `run list|view|watch` ;
+- `pr create|view|list|diff|checks|comment|status|close|edit|ready`, avec `pr edit --base` refusé ;
+- `issue create|view|list|comment|edit|close|reopen` ;
+- `label list|create|edit` ;
+- `run list|view|watch|rerun`, `workflow list|view` ;
 - `repo view` ;
 - `auth status` ;
 - `version` et `help` ;
 - `api` en lecture seule : ni `-X`/`--method` autre que `GET`, ni `-f`, `-F`, `--field`, `--raw-field`, `--input`, ni `graphql`, `contents/`, `merges`, `pulls/*/merge` ou `git/`.
 
-Tout le reste est refusé, dont tout alias de `gh` : `pr merge`, `pr close`, `pr review`, `alias set|import`, `extension`, `secret`, `repo edit|delete`, `workflow`.
+Tout le reste est refusé, dont tout alias de `gh` : `pr merge`, `pr review`, `alias set|import`, `extension`, `secret`, `repo edit|delete`, `workflow run`.
+
+`gh api` est relu **sur tout le reste de la ligne**, jusqu'à un `|`, `;` ou `&` hors guillemets, et non sur le seul segment. Les marques `{owner}/{repo}`, les parenthèses (`gh api ("…") -X PUT`) ou les guillemets ne cachent donc ni la méthode, ni les champs, ni le chemin.
+
+Dans le découpage, `{` ne coupe un mot qu'en début de mot, et la `}` qui la ferme reste littérale : `repos/{owner}/{repo}/…` et `HEAD@{0}` sont des mots entiers.
 
 **`gh pr merge` est refusé : la fusion passe par `pwsh tools/dev/merge-pr.ps1 <PR>`**, depuis la copie principale (§3.3). Le message de refus le dit.
 
-**Git caché.** Si la commande contient une substitution ou une évaluation, **et** l'un des mots `push`, `commit`, `update-ref`, `merge`, `reset`, `rebase`, `config` ou `send-pack`, elle est refusée par prudence.
+**Git caché.** Si la commande contient une substitution ou une évaluation, **et** l'un des mots `push`, `commit`, `update-ref`, `merge`, `reset`, `rebase`, `config` ou `send-pack`, elle est refusée par prudence. Le mot doit être placé :
+- après `git` ou `gh` ;
+- ou après une commande fabriquée en position de commande (`g${x}it`, `$'\x67it'`, `g^it`, `('gi'+'t')`) ;
+- ou n'importe où avec `iex`, `Invoke-Expression`, `eval`, `cmd /c`, ou un accent grave en Bash.
+
+Une affectation en tête (`$x = …`, `$env:X = …`) n'est pas une commande tirée d'une variable.
 - Formes de substitution : `$(`, accent grave en Bash, `$'`, `${`, `iex`, `Invoke-Expression`, `cmd /c`, `^` avec `cmd`, `& (…)`, `& $x`, `$x` en tête de commande.
 - Seules `$(git rev-parse …)` et `$(pwd)` sont permises, par exemple `cd "$(git rev-parse --show-toplevel)"`.
 - `pwsh -EncodedCommand` est refusé.
@@ -176,7 +185,7 @@ En cas d'erreur interne, la commande est refusée.
 1. Il est lancé depuis la **copie principale**, c'est-à-dire le script de la copie principale, jamais une copie modifiée dans un worktree. La copie principale doit être propre et sur `main` ; elle est mise à jour par `git pull --ff-only`.
 2. **Crochets** : `install-hooks.ps1 -Verify` doit réussir. Il vérifie l'empreinte du jeu et la valeur effective dans chaque copie de travail (SEC0-12, I6). Le contrôle de l'origine (`origin-check`, SEC0-17) reste à T3.
 3. `gh pr view` : PR ouverte, base `main`, hors brouillon, `MERGEABLE`, et en retard de 0 commit sur `main`.
-4. **Liste complète des fichiers**, par `gh pr diff --name-only` : leur nombre doit égaler `changedFiles`, sinon la fusion est refusée. *Pourquoi : `gh pr view --json files` s'arrête à 100 fichiers (I5).*
+4. **Liste complète des fichiers**, par l'API `pulls/<n>/files` paginée. Un renommage compte ses deux chemins, `filename` et `previous_filename` (I10). Le nombre de fichiers doit égaler `changedFiles`, sinon la fusion est refusée. *Pourquoi : `gh pr view --json files` s'arrête à 100 fichiers (I5), et `gh pr diff --name-only` ne donne pas l'ancien chemin d'un renommage.*
 5. **Chemin sensible** : la PR doit porter les commentaires `review-ok: <sha de tête>` **et** `archsec-ok: <sha de tête>`. Sont sensibles :
    - `.claude/`, `.github/`, `.cargo/`, `tools/`, `fuzz/`, `deny.toml`, `.gitleaks.toml`, `rust-toolchain.toml` ;
    - les crates `ts_persist`, `ts_net`, `ts_pilot`, `ts_client_native`, `ts_accounts`, `ts_admin`, `ts_protocol` et `ts_view` ;

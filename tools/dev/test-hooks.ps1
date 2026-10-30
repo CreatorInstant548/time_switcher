@@ -138,10 +138,21 @@ try {
   Expect 'distant injoignable : mise à jour de main refusée' $true { G merge --ff-only origin/main } 'injoignable'
   G remote set-url origin $remote | Out-Null
   Expect 'distant rétabli : git merge --ff-only origin/main accepté' $false { G merge --ff-only origin/main }
+  # 3e relecture, point 2 (I7) : pack-refs et gc acceptés, main inchangé ; une vraie suppression reste refusée.
+  $before = MainSha
+  Expect 'git pack-refs --all accepté' $false { G pack-refs --all }
+  Check 'git pack-refs --all : main inchangé' ((MainSha) -eq $before) (MainSha)
+  Expect 'git gc accepté' $false { G gc --quiet }
+  Check 'git gc : main inchangé' ((MainSha) -eq $before) (MainSha)
+  G switch -q claude/essai | Out-Null
+  Expect 'suppression de main empaquetée refusée (update-ref -d)' $true { G update-ref -d refs/heads/main $before } 'suppression de main'
+  Expect 'suppression de main empaquetée refusée (branch -D)' $true { G branch -D main } 'suppression de main'
+  Check 'main toujours présente' ((MainSha) -eq $before) (MainSha)
+  G switch -q main | Out-Null
   # origin/main absente : toute mise à jour de main refusée.
   $head = MainSha
   G switch -q claude/essai | Out-Null; G update-ref -d refs/remotes/origin/main | Out-Null
-  Expect 'mise à jour de main sans origin/main refusée' $true { G branch -f main $head } 'absente'
+  Expect 'mise à jour de main sans origin/main refusée' $true { G branch -f main claude/autre } 'absente'
   G fetch -q origin | Out-Null
 
   # Essai réel de travail courant : chaque commande passe guard-git, puis s'exécute avec les crochets épinglés.

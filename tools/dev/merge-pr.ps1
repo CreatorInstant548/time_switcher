@@ -7,13 +7,24 @@
 # Le contrôle de l'origine des commits de main (origin-check, SEC0-17) reste à T3.
 # -DryRun : tous les contrôles en lecture, sans fusion ni mise à jour (permis depuis un worktree).
 # spec: carnet architecture-securite.md SEC0-15 (révisé), §5 (chemins sensibles), §9.3
-param([Parameter(Mandatory)][int]$Pr, [switch]$DryRun)
+param([int]$Pr, [switch]$DryRun)
 $ErrorActionPreference = 'Stop'
 
 function Fail([string]$Message) { [Console]::Error.WriteLine("merge-pr : REFUS : $Message"); exit 1 }
 function Invoke-Git { $out = & git -C $script:main @args 2>&1; if ($LASTEXITCODE -ne 0) { Fail "git $($args -join ' ') : $out" }; $out }
 $sensitive = '^(\.claude/|\.github/|\.cargo/|tools/|fuzz/|deny\.toml$|\.gitleaks\.toml$|rust-toolchain\.toml$|' +
              'crates/(ts_persist|ts_net|ts_pilot|ts_client_native|ts_accounts|ts_admin|ts_protocol|ts_view)/)'
+
+# Fichiers de la PR à partir des lignes « filename TAB previous_filename » de l'API pulls/<n>/files (paginée) :
+# Count = nombre de fichiers (à comparer à changedFiles) ; Paths = les deux chemins d'un renommage.
+function ConvertFrom-PrFileLines([string[]]$Lines) {
+  $files = @($Lines | Where-Object { $_ -ne '' })
+  $paths = @($files | ForEach-Object { $_ -split "`t" } | Where-Object { $_ -ne '' } | Sort-Object -Unique)
+  return [pscustomobject]@{ Count = $files.Count; Paths = $paths }
+}
+
+if ($MyInvocation.InvocationName -eq '.') { return }   # chargé par les tests
+if ($Pr -le 0) { Fail 'usage : pwsh -NoProfile -File tools/dev/merge-pr.ps1 <PR> [-DryRun]' }
 
 # 1. Copie principale propre, sur main, à jour par --ff-only. Le script lancé doit être le sien (pas une copie modifiée).
 $common = "$(& git -C $PSScriptRoot rev-parse --path-format=absolute --git-common-dir)".Trim()
@@ -42,10 +53,13 @@ if ($LASTEXITCODE -ne 0) { Fail "comparaison avec main : $behind" }
 if ([int]"$behind".Trim() -ne 0) { Fail "branche en retard de $behind commit(s) sur main : la mettre à jour." }
 
 # 3. Chemin sensible : review-ok et archsec-ok sur le SHA de tête. La liste complète des fichiers vient de
-# gh pr diff --name-only (gh pr view --json files s'arrête à 100) et doit compter changedFiles fichiers.
-$paths = @(& gh pr diff $Pr --name-only 2>&1 | Where-Object { $_ })
-if ($LASTEXITCODE -ne 0) { Fail "gh pr diff --name-only : $paths" }
-if ($paths.Count -ne [int]$p.changedFiles) { Fail "liste des fichiers incomplète ($($paths.Count) lus, $($p.changedFiles) annoncés)." }
+# l'API pulls/<n>/files paginée (gh pr view --json files s'arrête à 100) ; un renommage compte ses deux
+# chemins (filename et previous_filename) ; le nombre de fichiers doit égaler changedFiles.
+$lines = @(& gh api "repos/{owner}/{repo}/pulls/$Pr/files" --paginate --jq '.[] | [.filename, (.previous_filename // "")] | @tsv' 2>&1)
+if ($LASTEXITCODE -ne 0) { Fail "liste des fichiers de la PR : $lines" }
+$list = ConvertFrom-PrFileLines $lines
+if ($list.Count -ne [int]$p.changedFiles) { Fail "liste des fichiers incomplète ($($list.Count) lus, $($p.changedFiles) annoncés)." }
+$paths = $list.Paths
 $isSensitive = [bool]($paths | Where-Object { $_ -match $sensitive })
 if (-not $isSensitive -and ($paths | Where-Object { $_ -match '(^|/)Cargo\.(toml|lock)$' })) {
   $diff = & gh pr diff $Pr 2>&1 | Out-String

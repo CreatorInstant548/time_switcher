@@ -8,11 +8,22 @@
 [ "$1" = "prepared" ] || exit 0
 . "$(dirname "$0")/common.sh"
 
+common=$(git rev-parse --git-common-dir)
 while read -r old new ref; do
   [ "$(printf '%s' "$ref" | tr 'A-Z' 'a-z')" = "refs/heads/main" ] || continue
   # Suppression : nouvelle valeur nulle (Git envoie aussi une ancienne valeur nulle, « peu importe »).
-  case $new in *[!0]*) ;; *) fail "suppression de main interdite (SEC0-13)." ;; esac
+  # Seule exception, l'élagage de git pack-refs ou git gc : la référence libre disparaît alors que
+  # packed-refs contient déjà la même valeur, et packed-refs n'est pas en cours de réécriture.
+  # Une vraie suppression (branch -D, update-ref -d) tient packed-refs.lock (constaté en 2.56).
+  case $new in
+    *[!0]*) ;;
+    *) case $old in *[!0]*)
+         [ ! -e "$common/packed-refs.lock" ] && grep -qx "$old refs/heads/main" "$common/packed-refs" 2>/dev/null && continue ;;
+       esac
+       fail "suppression de main interdite (SEC0-13)." ;;
+  esac
   [ "$old" = "$new" ] && continue   # valeur inchangée
+  [ "$new" = "$(git rev-parse -q --verify refs/heads/main 2>/dev/null)" ] && continue   # même valeur (écriture de packed-refs)
   git rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1 ||
     fail "main ne bouge pas tant que refs/remotes/origin/main est absente (SEC0-13) : git fetch origin d'abord."
   # La référence locale origin/main peut être déplacée à la main : seule fait foi la valeur du distant.
