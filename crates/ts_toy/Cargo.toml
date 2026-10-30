@@ -1,0 +1,23 @@
+[package]
+name = "ts_toy"
+version = "0.0.0"
+description = "Test crate of time_switcher: toy world and toy generator for the determinism proof (phase 0)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# Test crate (D-DEV-02): never a normal dependency of a host or a rule crate, never in
+# `standard_rules()`. `cargo xtask check` (features step) refuses it there.
+# `bevy_ecs` by name: its derives (`Component`, `Resource`) need it.
+[dependencies]
+bevy_ecs.workspace = true
+bevy_tasks.workspace = true
+blake3.workspace = true
+ts_kernel = { path = "../ts_kernel" }
+
+[dev-dependencies]
+ts_persist = { path = "../ts_persist" }
+
+[lints]
+workspace = true

@@ -11,10 +11,5 @@ publish = false
 [dependencies]
 ts_kernel = { path = "../ts_kernel" }
 
-# Tests only: `#[derive(Resource)]` needs `bevy_ecs` by name. The kernel offers no way yet to get
-# the bytes of a lone `StateHash` value, so the tests read them from a one-resource `Sim`.
-[dev-dependencies]
-bevy_ecs.workspace = true
-
 [lints]
 workspace = true

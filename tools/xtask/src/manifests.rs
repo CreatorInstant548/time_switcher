@@ -289,6 +289,63 @@ mod tests {
         assert_eq!(errors.len(), 7, "{errors:#?}");
     }
 
+    /// Y6, D-DEV-02: `ts_toy` is refused in a normal dependency of a host or a rule crate,
+    /// directly or through another crate, and accepted as a dev-dependency or in a tool.
+    #[test]
+    fn ts_toy_only_in_tests_and_tools() {
+        let errors = |extra: &str| {
+            let json = format!(
+                r#"{{"workspace_root":"/w","packages":[
+                {{"name":"ts_kernel","manifest_path":"/w/k/Cargo.toml","features":{{"default":[]}}}},
+                {{"name":"ts_toy","manifest_path":"/w/t/Cargo.toml",
+                  "dependencies":[{{"name":"ts_kernel","kind":null}}]}},
+                {extra}]}}"#
+            );
+            check_features(&parse(&json).unwrap())
+        };
+        let pkg = |name: &str, dep: &str, kind: &str| {
+            format!(
+                r#"{{"name":"{name}","manifest_path":"/w/{name}/Cargo.toml",
+                   "dependencies":[{{"name":"{dep}","kind":{kind}}}]}}"#
+            )
+        };
+        // Refused: a host, a rule crate, or a crate of the core, directly.
+        for name in [
+            "ts_server",
+            "ts_client_native",
+            "ts_game",
+            "ts_model",
+            "ts_kernel2",
+        ] {
+            let e = errors(&pkg(name, "ts_toy", "null"));
+            assert_eq!(
+                e,
+                [format!(
+                    "{name} dépend de ts_toy en dépendance normale (D-DEV-02)"
+                )]
+            );
+        }
+        // Refused through another crate, even a tool: the host and the middle crate.
+        let through = [
+            pkg("ts_server", "ts_mid", "null"),
+            pkg("ts_mid", "ts_toy", "null"),
+        ];
+        assert_eq!(errors(&through.join(",")).len(), 2);
+        let tool = [
+            pkg("ts_server", "ts_runner", "null"),
+            pkg("ts_runner", "ts_toy", "null"),
+        ];
+        assert_eq!(
+            errors(&tool.join(",")),
+            ["ts_server dépend de ts_toy en dépendance normale (D-DEV-02)"]
+        );
+        // Accepted: as a dev-dependency, or in a tool.
+        assert!(errors(&pkg("ts_game", "ts_toy", r#""dev""#)).is_empty());
+        for name in TOOLS {
+            assert!(errors(&pkg(name, "ts_toy", "null")).is_empty(), "{name}");
+        }
+    }
+
     #[test]
     fn tree_lines() {
         let tree = "ts_host v0.0.0\n└── ts_kernel v0.0.0 (/w/k) default\n    ts_kernel feature \"dev-bench\"\n";
