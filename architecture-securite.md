@@ -489,6 +489,33 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | **PR #42, après les constats du relecteur A** | SHA de tête `18f8710451b5c578d7a3d9579ff78d3c9a727527`, `ci-ok` vert | **`archsec-ok: 18f8710451b5c578d7a3d9579ff78d3c9a727527`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/42#issuecomment-6524986286)) : chaque refus S4 est prouvé par son message, mutation à l'appui ; un paramètre en trop côté GitHub est une dérive. Écart accepté : deux paramètres renvoyés par GitHub (`automatic_copilot_code_review_enabled`, `required_reviewers`) ne sont tolérés qu'à leur valeur neutre. Un 404 ne vaut absence de protection qu'avec « Branch not protected » |
 | 30/10 | **PR #49 (T8, codec de `ts_persist`), fusion** | SHA de tête `002c995dd42ef898bafde5a881415c0536c9016d`, `ci-ok` vert ; `review-ok` du relecteur neuf | **`archsec-ok: 002c995dd42ef898bafde5a881415c0536c9016d`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/49#issuecomment-6525138102)) : Q1 à Q6 et AS-36 conformes ; `ruzstd` en pur Rust, taux de 2,28 (à remesurer en phase 1), aucune allocation tirée d'une taille lue, clé absente des octets. AS-37 : exigence pour la future signature |
 | 30/10 | **PR #47 (T7b, `ts_data` et `ts_runner`), fusion** | SHA de tête `f0752c2526dd978f430f82644446289cf88915a1`, `ci-ok` vert ; `review-ok` du relecteur neuf | **`archsec-ok: f0752c2526dd978f430f82644446289cf88915a1`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/47#issuecomment-6525177725)) : T1 à T4 et AS-35 conformes ; `ron =0.12.2` n'ajoute que `once_cell` ; le chemin n'est plus recopié dans les erreurs (SEC0-26) |
+| 30/10 | Consigne T3f (cache de `verify-main`, reprises ; V et S) | `scratchpad/…/consigne-T3f.md` | **Validée avec V1 à V4** (§9.14). Le cache garde les faits lus sur GitHub, pas le verdict ; J4 est recalculé à chaque fois. La clé contient la version de `xtask`. `--no-cache` tourne chaque nuit en CI. Les reprises bornées peuvent entrer dans la #42 si les 500 persistent |
+
+### 9.14 Consigne T3f : `verify-main` robuste aux erreurs passagères de GitHub (30/10)
+
+**Validée avec les corrections V1 à V4**, toutes décidées.
+
+- **V1, ce qu'on met en cache : les faits lus sur GitHub, pas le verdict.** Pour chaque commit, on garde :
+  - la PR trouvée (numéro, `merge_commit_sha`, tête) ;
+  - le verdict G3 de `ci-ok` sur cette tête ;
+  - la présence des commentaires `review-ok` et `archsec-ok` sur cette tête.
+
+  Le calcul des chemins sensibles et le recoupement J4 avec le §9 sont **refaits à chaque exécution**, à partir de ces faits et des fichiers d'`origin/main`. Ce sont des lectures Git locales, rapides.
+
+  *Pourquoi :* mettre l'empreinte du §9 dans la clé effacerait le cache à chaque écriture du carnet, c'est-à-dire plusieurs fois par jour. À l'inverse, un verdict en cache masquerait une ligne retirée du §9.
+- **V2, la clé contient aussi la version de la logique.** On ajoute à la clé l'empreinte des entrées de construction de `xtask` (`BUILT_FROM`, J2). Un vérificateur modifié ne réutilise donc pas les faits d'un autre.
+- **V3, le cache local n'est pas une preuve.** `TS_CACHE` est accessible en écriture à toutes les sessions, donc une entrée forgée pourrait masquer une anomalie. Parade :
+  - la tâche de nuit de la **CI** lance `verify-main --no-cache` sur tout l'historique ;
+  - les lectures qu'il fait (commits, *check-runs*, commentaires) passent avec le `GITHUB_TOKEN` en lecture ;
+  - seul `repo-settings -Check`, qui exige les droits d'administration, est sauté en CI ;
+  - un échec ouvre une *issue* `nightly-failure` et suspend les fusions.
+
+  Une entrée forgée serait ainsi détectée dans les 24 heures, par un environnement que les sessions locales ne touchent pas.
+
+  Si le *workflow* doit changer, c'est une PR `.github/` à part.
+- **V4, reprises.** Seulement pour les lectures `GET`, sur 500, 502, 503, 504 ou un JSON invalide. 3 essais au plus, avec attente croissante. Jamais sur 4xx ni sur une écriture. Après le dernier échec, c'est un refus. Validé tel quel.
+
+**Si les 500 bloquent encore la #42 :** les **seules reprises bornées** (V4) peuvent être ajoutées à la #42, dans un petit delta. Je reposerai alors mon avis sur le delta, sans revoir toute la PR. Le cache reste dans T3f.
 
 ### 9.13 Consignes T8 (`ts_persist`) et T7b (`ts_data`) (30/10)
 
