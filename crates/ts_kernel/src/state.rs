@@ -11,6 +11,9 @@ use bevy_ecs::lifecycle::HookContext;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::{DeferredWorld, World};
 
+use crate::canonical::{
+    CanonicalError, StateDecode, StateReader, decode_component, decode_resource,
+};
 use crate::{DayOrigin, Money, SimTime, StableId};
 
 /// Contexte BLAKE3 de l'empreinte d'une famille, écrit en dur.
@@ -99,7 +102,8 @@ impl StateWriter<'_> {
 /// another one of the same type, so concatenated values stay unambiguous. Use fixed-width
 /// writers, or length-prefixed ones ([`StateWriter::bytes`], [`StateWriter::str`],
 /// [`StateWriter::count`] before a sequence). It must depend only on the value: no
-/// pointer, no hash-table order, no `Debug` text.
+/// pointer, no hash-table order, no `Debug` text. Its decoding twin is
+/// [`crate::StateDecode`].
 pub trait StateHash {
     /// Écrit la valeur.
     fn hash_state(&self, w: &mut StateWriter<'_>);
@@ -281,10 +285,20 @@ impl StableEntity {
 /// Valeur d'état capturée, opaque.
 pub(crate) type Boxed = Box<dyn Any + Send + Sync>;
 
+/// Valeurs capturées d'un type d'état.
+pub(crate) enum Captured {
+    Component(Vec<(StableId, Boxed)>),
+    Resource(Option<Boxed>),
+}
+
 /// Écriture canonique d'un type de composant pour les entités données.
 type WriteComponent = fn(&World, &[(StableId, Entity)], &mut StateWriter<'_>);
 /// Copie des valeurs d'un type de composant pour les entités données.
 type CaptureComponent = fn(&World, &[(StableId, Entity)]) -> Vec<(StableId, Boxed)>;
+/// Decoding of a component type's values from the canonical encoding.
+type DecodeComponent = fn(&mut StateReader<'_>) -> Result<Vec<(StableId, Boxed)>, CanonicalError>;
+/// Decoding of a resource type's value from the canonical encoding.
+type DecodeResource = fn(&mut StateReader<'_>) -> Result<Option<Boxed>, CanonicalError>;
 
 /// Accès à un type d'état, sans connaître le type.
 #[derive(Clone, Copy)]
@@ -294,12 +308,14 @@ pub(crate) enum StateKind {
         capture: CaptureComponent,
         /// Rend `false` si la valeur n'est pas du bon type.
         insert: fn(&mut World, Entity, &(dyn Any + Send + Sync)) -> bool,
+        decode: DecodeComponent,
     },
     Resource {
         write: fn(&World, &mut StateWriter<'_>),
         capture: fn(&World) -> Option<Boxed>,
         /// Insère la valeur, ou retire la ressource si `None` ; `false` si le type ne va pas.
         insert: fn(&mut World, Option<&(dyn Any + Send + Sync)>) -> bool,
+        decode: DecodeResource,
     },
 }
 
@@ -386,24 +402,30 @@ fn insert_resource<R: Resource + Clone>(
 }
 
 impl StateEntry {
-    pub(crate) fn component<C: Component + Clone + StateHash>(family: &'static str) -> Self {
+    pub(crate) fn component<C: Component + Clone + StateHash + StateDecode>(
+        family: &'static str,
+    ) -> Self {
         Self {
             family,
             kind: StateKind::Component {
                 write: write_component::<C>,
                 capture: capture_component::<C>,
                 insert: insert_component::<C>,
+                decode: decode_component::<C>,
             },
         }
     }
 
-    pub(crate) fn resource<R: Resource + Clone + StateHash>(family: &'static str) -> Self {
+    pub(crate) fn resource<R: Resource + Clone + StateHash + StateDecode>(
+        family: &'static str,
+    ) -> Self {
         Self {
             family,
             kind: StateKind::Resource {
                 write: write_resource::<R>,
                 capture: capture_resource::<R>,
                 insert: insert_resource::<R>,
+                decode: decode_resource::<R>,
             },
         }
     }
@@ -547,6 +569,31 @@ pub(crate) fn hash_world(
     }
 }
 
+/// Contexte BLAKE3 de l'empreinte d'une valeur isolée, écrit en dur.
+const VALUE_CONTEXT: &str = "time_switcher 2026-10-30 state value v1";
+
+// spec: revues/architecture.md §11.3 ; carnet architecture-securite.md §10
+/// Canonical bytes of one value: exactly what [`StateHash::hash_state`] writes, the bytes
+/// the value has inside a snapshot. For tests of encodings outside the kernel; it gives no
+/// [`StateWriter`].
+pub fn state_hash_bytes<T: StateHash + ?Sized>(value: &T) -> Vec<u8> {
+    encode_with(|w| value.hash_state(w))
+}
+
+// spec: revues/architecture.md §11.3 ; carnet architecture-securite.md §10
+/// BLAKE3 digest of [`state_hash_bytes`], under a context of its own (never equal to a
+/// family digest).
+pub fn state_hash_digest<T: StateHash + ?Sized>(value: &T) -> StateDigest {
+    StateDigest(blake3::derive_key(VALUE_CONTEXT, &state_hash_bytes(value)))
+}
+
+/// Bytes written by `f`, in a buffer.
+pub(crate) fn encode_with(f: impl FnOnce(&mut StateWriter<'_>)) -> Vec<u8> {
+    let mut out = Vec::new();
+    f(&mut StateWriter(Sink::Bytes(&mut out)));
+    out
+}
+
 /// Encodage canonique complet, familles triées, dans un tampon.
 pub(crate) fn encode_world(
     world: &World,
@@ -605,5 +652,30 @@ mod tests {
             encode(&|w| Money::from_cents(-2).hash_state(w)),
             (-2_i64).to_le_bytes()
         );
+    }
+
+    /// AS-39: one value's bytes are those of `StateHash`, and its digest is frozen.
+    #[test]
+    fn single_value_reference_vectors() {
+        assert_eq!(state_hash_bytes(&0x0102_u16), [2, 1]);
+        assert_eq!(
+            state_hash_bytes(&Some(StableId::from_snapshot_raw(5))),
+            [1, 5, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            state_hash_bytes(&vec![7_u8, 8][..]),
+            [2, 0, 0, 0, 0, 0, 0, 0, 7, 8]
+        );
+        let d = state_hash_digest(&Money::from_cents(-2));
+        assert_eq!(
+            d.as_bytes(),
+            &blake3::derive_key(VALUE_CONTEXT, &(-2_i64).to_le_bytes())
+        );
+        assert_eq!(
+            format!("{d:?}"),
+            "78ea69c1a8c2495349302c234a0dafa59b8258ba78e8eafcdb86952eb8ac088f"
+        );
+        let family = blake3::derive_key(FAMILY_CONTEXT, &(-2_i64).to_le_bytes());
+        assert_ne!(d.as_bytes(), &family);
     }
 }

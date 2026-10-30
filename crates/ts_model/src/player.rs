@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use ts_kernel::{StateHash, StateWriter};
+use ts_kernel::{CanonicalError, StateDecode, StateHash, StateReader, StateWriter};
 
 // spec: securite.md S12 ; carnet architecture-securite.md SEC0-21, §9.11 M2
 /// Pseudonym of a player in **one** world: 128 bits, `HMAC(world secret key, account id)`
@@ -11,7 +11,8 @@ use ts_kernel::{StateHash, StateWriter};
 ///
 /// It is not personal data in itself, so it may enter the state hash and the snapshots
 /// through [`PlayerId::canonical_bytes`] and its [`StateHash`] encoding. On purpose, it has:
-/// - a single constructor, [`PlayerId::from_pseudonym_bytes`], fed by the host;
+/// - a single constructor, [`PlayerId::from_pseudonym_bytes`], fed by the host (plus its
+///   [`StateDecode`], which reads back a snapshot the host restores);
 /// - no `From`/`Into` from or to an integer, a string or bytes, no `FromStr`, no `Default`;
 /// - no `Display` and no `Serialize`: it is never shown nor sent as an account identifier;
 /// - an abridged `Debug`: the first 4 bytes in hexadecimal.
@@ -80,6 +81,17 @@ impl StateHash for PlayerId {
     }
 }
 
+/// Decoding twin of the [`StateHash`] encoding: the 16 bytes, in order (AS-36).
+impl StateDecode for PlayerId {
+    fn decode_state(r: &mut StateReader<'_>) -> Result<Self, CanonicalError> {
+        let mut bytes = [0; 16];
+        for b in &mut bytes {
+            *b = r.u8()?;
+        }
+        Ok(Self(bytes))
+    }
+}
+
 impl fmt::Debug for PlayerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("PlayerId(")?;
@@ -129,6 +141,11 @@ mod tests {
         impl StateHash for Holder {
             fn hash_state(&self, w: &mut StateWriter<'_>) {
                 self.0.hash_state(w);
+            }
+        }
+        impl StateDecode for Holder {
+            fn decode_state(r: &mut StateReader<'_>) -> Result<Self, CanonicalError> {
+                PlayerId::decode_state(r).map(Self)
             }
         }
         struct Probe([u8; 16]);

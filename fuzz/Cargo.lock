@@ -1051,6 +1051,7 @@ dependencies = [
 name = "ts_persist_fuzz_seeds"
 version = "0.0.0"
 dependencies = [
+ "ts_kernel",
  "ts_persist",
 ]
 

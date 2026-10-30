@@ -9,4 +9,5 @@ license = "LicenseRef-Proprietary"
 publish = false
 
 [dependencies]
+ts_kernel = { path = "../../crates/ts_kernel" }
 ts_persist = { path = "../../crates/ts_persist" }
