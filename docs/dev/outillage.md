@@ -197,7 +197,7 @@ En cas d'erreur interne, la commande est refusée.
 
 `cargo xtask merge` a remplacé `merge-pr.ps1` (T3) : c'est le **seul chemin de fusion**. C'est un chemin sensible, validé par archi-sécu. Le détail est dans [xtask](xtask.md) §6. Dans l'ordre, le premier contrôle qui échoue arrête tout. Les numéros sont ceux qu'affiche la commande (`[1]`, `[3-4]`, etc.) :
 - **[1] Copie principale** propre, sur `main`, mise à jour par `git pull --ff-only`. Le binaire doit être construit depuis `main` (J2). La commande est refusée en mode CI.
-- **[2] `verify-main`** (origine de chaque commit de `main`, réglages GitHub) et **`hooks verify`** : une anomalie suspend les fusions.
+- **[2] `verify-main`** (approbations de chaque commit de `main` qui touche un chemin sensible, réglages GitHub et attestation du *ruleset*) et **`hooks verify`** : une anomalie suspend les fusions. Depuis T3e-2 (AS-31 E3), un commit non sensible n'a plus à venir d'une PR avec `ci-ok` aux yeux de `verify-main` : le *ruleset* `main` l'impose (§6.4).
 - **[3-4] État de la PR** : ouverte, base `main`, hors brouillon, `MERGEABLE`, en retard de 0 commit sur `main`, titre conforme (A31).
 - **[5] `ci-ok`** vert sur le SHA de tête, venu de `ci.yml` (G3).
 - **[6] Liste complète des fichiers**, par l'API `pulls/<n>/files` paginée. Un renommage compte ses deux chemins (I10). Le nombre de fichiers doit égaler `changedFiles`. L'arbre de tête est refusé s'il contient des chemins égaux à la casse près, ou un chemin non ASCII sous un chemin sensible (B1).
@@ -293,7 +293,8 @@ Deux modes exclusifs ; tout autre argument est refusé (code 2).
   - tout *ruleset* inconnu qui vise `main` ou `pilotage` (S3 ; motifs `~ALL`, `~DEFAULT_BRANCH` et jokers compris, de façon prudente) ;
   - toute **protection de branche classique** encore présente, sur n'importe quelle branche (S3). `branches?protected=true` compte aussi les branches visées par un *ruleset* : chaque branche listée est relue par `branches/<nom>/protection`. Seul le 404 dont le message est « Branch not protected » vaut « aucune » ; tout autre 404 arrête `-Check` (code 2) ;
   - au-delà de 100 *rulesets* ou de 100 branches protégées, `-Check` s'arrête (code 2) : la pagination n'est pas gérée ;
-  - toute différence des champs de `repo` et des quatre ressources d'Actions.
+  - toute différence des champs de `repo` et des quatre ressources d'Actions ;
+  - **l'attestation qui remplace l'essai R6.4** (AS-31, T3e-2) : `current_user_can_bypass` doit valoir `never` sur le *ruleset* `main` (lu par `GET` sur ce *ruleset*). Ce champ reste dans la liste des champs ignorés par la comparaison ci-dessous, puisqu'il ne figure pas dans le fichier : il est attesté à part, pour `main` seulement. Les règles effectives de `main` (`rules/branches/main`) doivent contenir `deletion`, `non_fast_forward`, `required_linear_history`, `pull_request` et `required_status_checks`. Sinon, c'est un écart (code 1), qui suspend les fusions (E4).
 
   Champs ignorés, liste explicite : `id`, `node_id`, `source`, `source_type`, `_links`, `created_at`, `updated_at`, `current_user_can_bypass` d'un *ruleset* ; les champs de l'objet du dépôt absents du fichier ; `selected_actions_url`. Un paramètre de règle présent sur GitHub et absent du fichier est un **écart** (par exemple `do_not_enforce_on_create: true`, qui affaiblirait la règle ; le fichier le fixe donc à `false`). Seule exception, une liste fermée et commentée dans le script, et seulement avec sa valeur neutre : `automatic_copilot_code_review_enabled: false` et `required_reviewers: []`, que GitHub peut renvoyer sans qu'on les envoie. Elle évite qu'un `-Apply` conforme laisse un écart qui suspendrait toutes les fusions.
 - **`-Apply`** : refuse un fichier invalide sans rien écrire. Sinon, crée (`POST`) ou remplace (`PUT`, identifiant retrouvé par nom) les deux *rulesets*, règle le dépôt (`PATCH`) et les quatre ressources d'Actions (`PUT`), puis relance `-Check` et échoue si un écart subsiste. Il ne supprime ni *ruleset* inconnu ni protection classique : `-Check` les signale.
@@ -313,7 +314,7 @@ Codes de sortie : 0 conforme, 1 écart ou écriture refusée, 2 usage, préalabl
 
 | Barrière | Serveur (GitHub) | Local |
 |---|---|---|
-| PR obligatoire, `ci-ok` de GitHub Actions, branche à jour, historique linéaire | *ruleset* `main` | `cargo xtask merge` (G3, toujours en place, E5) |
+| PR obligatoire, `ci-ok` de GitHub Actions, branche à jour, historique linéaire | *ruleset* `main` | `cargo xtask merge` (G3, toujours en place, E5) ; `verify-main` seulement pour les commits sensibles (contrôle d'origine retiré par T3e-2) |
 | Poussée forcée vers `main` | *ruleset* `main` | — (retiré par T3e-1) ; `reference-transaction` pour la copie locale de `main` |
 | Poussée forcée vers `pilotage` et les autres branches | *ruleset* `pilotage` (aucun pour les branches de tâche) | `pre-push`, `guard-git` |
 | Suppression de `main` et de `pilotage` | *rulesets* | `pre-push`, `guard-git` ; `reference-transaction` pour la copie locale de `main` |
@@ -322,8 +323,8 @@ Codes de sortie : 0 conforme, 1 écart ou écriture refusée, 2 usage, préalabl
 | Actions permises, épinglage par SHA | réglages d'Actions | étape `workflows` de `xtask check` |
 | Avis `review-ok` et `archsec-ok` sur les chemins sensibles | — (un seul compte) | `cargo xtask merge`, `verify-main` (J4) |
 | Secrets | — (pas de détection en Pro sur un dépôt privé) | `gitleaks` en `pre-commit`, `pre-push` et CI |
-| Dérive des réglages eux-mêmes | — | `repo-settings.ps1 -Check` dans `verify-main` |
+| Dérive des réglages eux-mêmes, contournement possible du *ruleset* `main` | — | `repo-settings.ps1 -Check` dans `verify-main` (attestation comprise) |
 
 **Risque résiduel (R-ARCH-05)** : un script écrit puis exécuté par une session peut appeler `gh api` en écriture avec le jeton administrateur, ce que `guard-git` ne voit pas (§3.4). Les *rulesets* sans contournement le lient pour `main` et `pilotage`, mais il peut modifier les réglages eux-mêmes : `-Check` le détecte après coup, à la fusion suivante ou la nuit.
 
-T3d ne retire **aucune** barrière locale (S6). Les retraits viennent ensuite, dans l'ordre d'AS-31 : T3e-1 (refus de poussée et de poussée forcée vers `main` dans `pre-push` et `guard-git`, **fait**), l'essai R6.4 par l'orchestrateur, puis T3e-2 (contrôle d'origine de `verify-main`). Restent sans changement : `gitleaks` en `pre-push` (E2), `pre-commit`, `commit-msg`, `reference-transaction`, `guard-main`, la liste blanche de `git` et de `gh` (dont `--no-verify`), `cargo xtask merge` et `verify-main`. Après la fusion de T3e-1, `cargo xtask hooks install` est relancé depuis la copie principale pour épingler le nouveau `pre-push`.
+T3d ne retire **aucune** barrière locale (S6). Les retraits viennent ensuite, dans l'ordre d'AS-31 : T3e-1 (refus de poussée et de poussée forcée vers `main` dans `pre-push` et `guard-git`, **fait**), l'essai R6.4, remplacé par l'attestation de GitHub que `-Check` relit à chaque exécution, donc à chaque `cargo xtask merge` (§6.2 ; sauté en CI, comme tout `-Check`), puis T3e-2 (contrôle d'origine de `verify-main` pour les commits non sensibles, **fait** ; son cache local, qui ne servait plus qu'à ce contrôle, est retiré avec lui). Restent sans changement : `gitleaks` en `pre-push` (E2), `pre-commit`, `commit-msg`, `reference-transaction`, `guard-main`, la liste blanche de `git` et de `gh` (dont `--no-verify`), `cargo xtask merge` et `verify-main`. Après la fusion de T3e-1, `cargo xtask hooks install` est relancé depuis la copie principale pour épingler le nouveau `pre-push`.

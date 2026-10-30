@@ -10,8 +10,8 @@
 //!   make the change sensitive.
 //!
 //! `merge` and `verify-main` call this same code (W6); `verify-main` then does J4 on `A`. `ci-ok`
-//! stays required on `H` itself, by the callers (W7). Every PR fact is read on GitHub on each run
-//! and nothing goes to the `verify-main` cache (V5, AS-39). The head must be based on the
+//! stays required on `H` itself, by the callers (W7). Every PR fact is read on GitHub on each run,
+//! and nothing is cached (V5, AS-39). The head must be based on the
 //! reference `main`, and what lands on `main` must have the head's tree. `merge` reads the trees
 //! of `A` and `H` from the objects fetched locally; `verify-main` reads them through the API,
 //! because in CI it has no PR objects (no `git fetch`). The bases are `main` commits, read from
