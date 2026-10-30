@@ -78,6 +78,8 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 
 | Tâche | Branche / PR | État | `xtask check` | `/code-review` | `/security-review` + avis archi-sécu | Fusion |
 |---|---|---|---|---|---|---|
+| (orchestrateur) | `claude/fin-mode-local`, #1 | Fusionnée | sans objet (documentation) | relue | sans objet | f60e5bc |
+| (conception) | `claude/da-declaration-ia`, #4 | Fusionnée | sans objet (documentation, pas encore de CI) | relue | sans objet | de84d92 |
 
 ## Sessions et agents actifs
 
@@ -111,3 +113,4 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 - 30/10 : exigences d'archi-sécu lues (SEC0-01 à 28, grille V0-01 à 13, spec-map §7). Découpage v2 : T2 scindée (T2a, T2b), T7 scindée (T7a, T7b), T9w ajoutée, T3 en mode GitHub, ordre de la grille.
 - 30/10 : découpage validé avec corrections par archi-sécu ; v2 corrigée (ni attestation ni registre local ; ChaCha8 et BLAKE3 ; approbations par commentaires liés au SHA).
 - 30/10 : **T0 terminée** : `C:\Dev\ts-cache\` créé ; cargo-deny 0.20.2, cargo-audit 0.22.2, gitleaks 8.30.1 (`C:\Dev\tools\gitleaks\`, archive SHA-256 d29144de…afc4e conforme au fichier officiel). **T1 lancée** (sous-agent Opus, worktree isolé).
+- 30/10 : PR #4 (direction artistique v0.4.2, documentation) fusionnée, de84d92. Orchestrateur : `guard-git.ps1` dans le `.claude/settings.json` **du projet**, pas dans les réglages utilisateur (décision de l'orchestrateur) ; consigne de T1 modifiée ; archi-sécu informé. **Contrainte** : une session peut modifier le `settings.json` de son worktree ; restent `pre-push`/`pre-commit` épinglés, `ci-ok`, `xtask merge`.
