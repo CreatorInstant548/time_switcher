@@ -39,6 +39,9 @@ pub struct Repo {
     /// `propriétaire/dépôt`, tiré du distant `origin`.
     pub slug: String,
     pub dry_run: bool,
+    /// Mode CI (A2) : les réglages GitHub n'y sont pas lisibles (`GITHUB_TOKEN` sans droits
+    /// d'administration), `verify-main` saute leur contrôle avec un avertissement (AS-30 R5).
+    pub ci: bool,
     /// `TS_CACHE` et dossier personnel (réglages de Claude Code), remplaçables en test.
     pub cache: PathBuf,
     pub home: Option<PathBuf>,
@@ -111,6 +114,7 @@ impl Repo {
             here,
             slug,
             dry_run,
+            ci: crate::steps::ci_mode(),
             cache: sys::ts_cache(),
             home: sys::home(),
             runner: Box::new(System),
