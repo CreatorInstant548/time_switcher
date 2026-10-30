@@ -11,6 +11,7 @@ mod manifests;
 mod metadata;
 mod scan;
 mod slots;
+mod spec_map;
 mod steps;
 mod sys;
 mod workflows;
@@ -121,6 +122,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("slots") => return slots::main(&args[1..]),
         Some("disk") => return disk::main(&args[1..]),
+        Some("spec-map") => return spec_map::run(&args[1..]),
         _ => {}
     }
     let opts = match parse(&args) {
