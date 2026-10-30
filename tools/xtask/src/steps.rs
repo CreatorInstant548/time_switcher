@@ -612,6 +612,21 @@ pub fn profiles(cx: &Ctx) -> Outcome {
 pub fn features(cx: &Ctx) -> Outcome {
     let meta = tri!(cx.meta());
     let mut errors = manifests::check_features(meta);
+    // E7 : ni [patch] ni [replace], à la racine comme dans chaque crate.
+    let root = cx.root.join("Cargo.toml");
+    let manifests = std::iter::once(root).chain(
+        meta.packages
+            .iter()
+            .map(|p| PathBuf::from(&p.manifest_path)),
+    );
+    for m in manifests {
+        let text = tri!(sys::read_text(&m));
+        errors.extend(
+            manifests::patch_sections(&text)
+                .into_iter()
+                .map(|l| format!("{} : {l} interdit (E7)", m.display())),
+        );
+    }
     for host in HOSTS.iter().filter(|h| meta.package(h).is_some()) {
         let args = [
             "tree",

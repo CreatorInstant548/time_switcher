@@ -14,6 +14,23 @@ pub const CI_WORKFLOW: &str = ".github/workflows/ci.yml";
 /// Étiquette des *issues* d'anomalie.
 const ISSUE_LABEL: &str = "role:architecture";
 
+/// Sortie d'une commande : code (`None` si tuée), sortie standard brute, sortie d'erreur.
+pub type Output = (Option<i32>, Vec<u8>, String);
+
+/// Lanceur des commandes `git` et `gh` : le vrai ([`System`]), ou un enregistreur dans les tests,
+/// qui prouve par exemple qu'un `--dry-run` n'appelle jamais `gh pr merge` (AS-23 point 2).
+pub trait Run {
+    fn run(&self, dir: &Path, prog: &str, args: &[&str]) -> Result<Output, String>;
+}
+
+pub struct System;
+
+impl Run for System {
+    fn run(&self, dir: &Path, prog: &str, args: &[&str]) -> Result<Output, String> {
+        sys::outputs(dir, prog, args)
+    }
+}
+
 pub struct Repo {
     /// Copie principale (parent du dossier Git commun).
     pub main: PathBuf,
@@ -22,6 +39,10 @@ pub struct Repo {
     /// `propriétaire/dépôt`, tiré du distant `origin`.
     pub slug: String,
     pub dry_run: bool,
+    /// `TS_CACHE` et dossier personnel (réglages de Claude Code), remplaçables en test.
+    pub cache: PathBuf,
+    pub home: Option<PathBuf>,
+    pub runner: Box<dyn Run>,
 }
 
 /// Même chemin une fois résolus les liens et les jonctions, sans tenir compte de la casse.
@@ -90,18 +111,51 @@ impl Repo {
             here,
             slug,
             dry_run,
+            cache: sys::ts_cache(),
+            home: sys::home(),
+            runner: Box::new(System),
         })
+    }
+
+    /// Sortie brute d'une commande qui doit réussir ; sa sortie d'erreur est dans le refus.
+    pub fn out(&self, dir: &Path, prog: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+        let (code, out, err) = self.runner.run(dir, prog, args)?;
+        if code != Some(0) {
+            return Err(format!(
+                "échec de « {prog} {} » : {}",
+                args.join(" "),
+                err.trim()
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Sortie texte d'une commande qui doit réussir, sans espaces de fin.
+    pub fn text(&self, dir: &Path, prog: &str, args: &[&str]) -> Result<String, String> {
+        let out = self.out(dir, prog, args)?;
+        let s = String::from_utf8(out).map_err(|_| format!("sortie non UTF-8 de {prog}"))?;
+        Ok(s.trim_end().to_owned())
+    }
+
+    /// Vrai si la commande sort avec le code 0.
+    pub fn ok(&self, dir: &Path, prog: &str, args: &[&str]) -> Result<bool, String> {
+        Ok(self.runner.run(dir, prog, args)?.0 == Some(0))
     }
 
     /// `git` dans la copie principale ; sortie sans espaces de fin.
     pub fn git(&self, args: &[&str]) -> Result<String, String> {
-        sys::stdout_of(&self.main, "git", args).map(|s| s.trim_end().to_owned())
+        self.text(&self.main, "git", args)
+    }
+
+    /// `gh` dans la copie principale.
+    pub fn gh(&self, args: &[&str]) -> Result<String, String> {
+        self.text(&self.main, "gh", args)
     }
 
     /// Contenu de `<rév>:<chemin>`, `None` si le chemin n'y existe pas. La révision doit exister :
     /// sinon c'est une erreur, et non un fichier absent.
     pub fn blob(&self, dir: &Path, rev: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
-        if !sys::succeeds(
+        if !self.ok(
             dir,
             "git",
             &["cat-file", "-e", &format!("{rev}^{{commit}}")],
@@ -109,23 +163,19 @@ impl Repo {
             return Err(format!("révision {rev} introuvable dans {}", dir.display()));
         }
         let spec = format!("{rev}:{path}");
-        if !sys::succeeds(dir, "git", &["cat-file", "-e", &spec])? {
+        if !self.ok(dir, "git", &["cat-file", "-e", &spec])? {
             return Ok(None);
         }
-        sys::bytes_of(dir, "git", &["cat-file", "blob", &spec]).map(Some)
+        self.out(dir, "git", &["cat-file", "blob", &spec]).map(Some)
     }
 
     /// `gh api` en lecture, toutes pages.
     pub fn api_all(&self, path: &str) -> Result<Vec<Value>, String> {
-        pages(&sys::stdout_of(
-            &self.main,
-            "gh",
-            &["api", "--paginate", path],
-        )?)
+        pages(&self.gh(&["api", "--paginate", path])?)
     }
 
     pub fn api(&self, path: &str) -> Result<Value, String> {
-        serde_json::from_str(&sys::stdout_of(&self.main, "gh", &["api", path])?)
+        serde_json::from_str(&self.gh(&["api", path])?)
             .map_err(|e| format!("réponse de GitHub illisible pour {path} : {e}"))
     }
 
@@ -190,24 +240,20 @@ impl Repo {
                 "distant hors de GitHub : issue « {title} » impossible"
             ));
         }
-        let list = sys::stdout_of(
-            &self.main,
-            "gh",
-            &[
-                "issue",
-                "list",
-                "-R",
-                &self.slug,
-                "--state",
-                "open",
-                "--label",
-                ISSUE_LABEL,
-                "--limit",
-                "500",
-                "--json",
-                "number,title,body",
-            ],
-        )?;
+        let list = self.gh(&[
+            "issue",
+            "list",
+            "-R",
+            &self.slug,
+            "--state",
+            "open",
+            "--label",
+            ISSUE_LABEL,
+            "--limit",
+            "500",
+            "--json",
+            "number,title,body",
+        ])?;
         for i in pages(&list)? {
             let text = format!(
                 "{} {}",
@@ -228,27 +274,23 @@ impl Repo {
             println!("  --dry-run : ouvrirait l'issue « {title} » ({ISSUE_LABEL}) :\n{body}");
             return Ok(());
         }
-        let tmp = sys::ts_cache().join("tmp");
+        let tmp = self.cache.join("tmp");
         std::fs::create_dir_all(&tmp).map_err(|e| format!("{} : {e}", tmp.display()))?;
         let file = tmp.join(format!("xtask-issue-{}.md", std::process::id()));
         sys::write(&file, body.as_bytes())?;
         let f = file.to_string_lossy().into_owned();
-        let out = sys::stdout_of(
-            &self.main,
-            "gh",
-            &[
-                "issue",
-                "create",
-                "-R",
-                &self.slug,
-                "--title",
-                title,
-                "--label",
-                ISSUE_LABEL,
-                "--body-file",
-                &f,
-            ],
-        );
+        let out = self.gh(&[
+            "issue",
+            "create",
+            "-R",
+            &self.slug,
+            "--title",
+            title,
+            "--label",
+            ISSUE_LABEL,
+            "--body-file",
+            &f,
+        ]);
         let _ = std::fs::remove_file(&file); // corps recopié dans l'issue
         println!("  issue ouverte : {}", out?.trim());
         Ok(())
@@ -308,12 +350,13 @@ pub fn judge_ci(
     }
 }
 
-/// Un commentaire porte la ligne `<tag>: <sha>` (espaces autour permis).
+/// Un commentaire dont la **première ligne** est exactement `<tag>: <sha>` (I3) : une ligne citée
+/// plus bas, dans un avis défavorable par exemple, ne vaut pas approbation.
 pub fn approved(bodies: &[String], tag: &str, sha: &str) -> bool {
-    bodies.iter().flat_map(|b| b.lines()).any(|l| {
-        l.split_once(':')
-            .is_some_and(|(k, v)| k.trim() == tag && v.trim().eq_ignore_ascii_case(sha))
-    })
+    let want = format!("{tag}: {sha}");
+    bodies
+        .iter()
+        .any(|b| b.lines().next().is_some_and(|l| l.trim_end() == want))
 }
 
 /// SHA de commit complet, en hexadécimal minuscule.
@@ -415,16 +458,25 @@ mod tests {
     #[test]
     fn reads_approvals_and_slugs() {
         let b = vec![
-            format!("Relu.\n  review-ok: {SHA}  \n"),
+            format!("review-ok: {SHA}  \r\nRelu, rien de bloquant.\n"),
             format!("archsec-ok: {}", &SHA[..39]),
+            // I3 : la ligne citée dans un avis défavorable ne compte pas.
+            format!("Changements demandés. Après correction :\narchsec-ok: {SHA}"),
         ];
         assert!(approved(&b, "review-ok", SHA));
         assert!(!approved(&b, "archsec-ok", SHA));
-        assert!(!approved(
-            &[format!("pas review-ok: {SHA}")],
-            "review-ok",
-            SHA
-        ));
+        for bad in [
+            format!("pas review-ok: {SHA}"),
+            format!(" review-ok: {SHA}"),
+            format!("review-ok:  {SHA}"),
+            format!("review-ok: {}", SHA.to_uppercase()),
+            format!("Relu.\nreview-ok: {SHA}"),
+        ] {
+            assert!(
+                !approved(std::slice::from_ref(&bad), "review-ok", SHA),
+                "{bad}"
+            );
+        }
         assert_eq!(
             slug_of("https://github.com/CreatorInstant548/time_switcher.git").as_deref(),
             Some(SLUG)

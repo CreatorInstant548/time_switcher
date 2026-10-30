@@ -7,6 +7,10 @@
 #   fichier                ce fichier exactement
 #   section:<motif>        section d'un Cargo.toml (toute crate), « * » pour un segment ou plus
 #   cargo-lock:new-crate   Cargo.lock qui ajoute une crate (nom absent de la base)
+#   cargo-toml:sources     Cargo.toml dont une ligne ajoutée ou retirée touche [patch, [replace,
+#                          git =, registry =, branch =, tag = ou rev = (AS-23 point 4)
+#   cargo-lock:source-change  Cargo.lock où une crate de la base change de source
+# Les chemins se comparent sans tenir compte de la casse (B1).
 
 # Crates
 crates/ts_net/
@@ -34,10 +38,13 @@ tools/dev/
 tools/ci/
 deny.toml
 .gitleaks.toml
+rust-toolchain
 rust-toolchain.toml
 fuzz/
 
-# Sections des Cargo.toml, et Cargo.lock quand il ajoute une crate
+# Sections et sources des Cargo.toml ; Cargo.lock quand il ajoute une crate ou en change la source
 section:features
 section:profile.*
+cargo-toml:sources
 cargo-lock:new-crate
+cargo-lock:source-change

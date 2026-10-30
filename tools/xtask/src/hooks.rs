@@ -142,8 +142,8 @@ fn gitleaks(set: &Set) -> Result<(), String> {
     Ok(())
 }
 
-fn pinned_root() -> PathBuf {
-    sys::ts_cache().join("hooks")
+fn pinned_root(repo: &Repo) -> PathBuf {
+    repo.cache.join("hooks")
 }
 
 /// Jeu écrit dans un dossier d'attente, fichiers en lecture seule.
@@ -200,7 +200,7 @@ pub fn install(repo: &Repo) -> Result<String, String> {
     }
     gitleaks(&want)?;
     let hash = set_hash(&want)?;
-    let root = pinned_root();
+    let root = pinned_root(repo);
     let dest = root.join(&hash);
     if dest.exists() {
         let errors = diff(&want, &disk_set(&dest, None)?, &dest.display().to_string());
@@ -269,11 +269,12 @@ pub fn config_unreadable(code: Option<i32>, stderr: &str) -> bool {
 /// `git config --show-origin --get-all core.hooksPath` d'une copie de travail. Une lecture
 /// illisible (accès concurrent passager d'une autre session) est relancée une fois après 1 s ;
 /// si elle le reste, refus clair.
-fn read_hooks_path(wt: &Path) -> Result<String, String> {
+fn read_hooks_path(repo: &Repo, wt: &Path) -> Result<String, String> {
     let args = ["config", "--show-origin", "--get-all", "core.hooksPath"];
     for attempt in 0..2 {
-        let (code, out, err) = sys::outputs(wt, "git", &args)?;
+        let (code, out, err) = repo.runner.run(wt, "git", &args)?;
         if !config_unreadable(code, &err) {
+            let out = String::from_utf8_lossy(&out).into_owned();
             return Ok(if code == Some(0) { out } else { String::new() });
         }
         if attempt == 0 {
@@ -298,7 +299,7 @@ fn check_worktree(
     errors: &mut Vec<String>,
 ) -> Result<(), String> {
     let w = wt.display();
-    let lines = read_hooks_path(wt)?;
+    let lines = read_hooks_path(repo, wt)?;
     let lines: Vec<&str> = lines.lines().collect();
     match lines.as_slice() {
         [one] => {
@@ -325,7 +326,7 @@ fn check_worktree(
     let disk = wt.join(settings);
     let disk = disk.is_file().then(|| sys::read(&disk)).transpose()?;
     // Branche sans commit (orpheline) : aucun réglage attendu.
-    let born = sys::succeeds(
+    let born = repo.ok(
         wt,
         "git",
         &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
@@ -337,6 +338,12 @@ fn check_worktree(
     };
     if disk != head {
         errors.push(format!("{w} : {settings} diffère de celui de HEAD"));
+    }
+    // m3 : sur une branche, le fichier commis ne désactive pas les crochets.
+    let committed =
+        String::from_utf8_lossy(head.as_deref().unwrap_or_default()).to_ascii_lowercase();
+    if committed.contains("disableallhooks") {
+        errors.push(format!("{w} : {settings} commis mentionne disableAllHooks"));
     }
     if same_path(wt, &repo.main) && disk != repo.blob(&repo.main, "origin/main", settings)? {
         errors.push(format!("{w} : {settings} diffère de celui d'origin/main"));
@@ -358,7 +365,7 @@ fn check_worktree(
 pub fn verify(repo: &Repo) -> Result<(String, Vec<String>), String> {
     let want = origin_set(repo)?;
     let hash = set_hash(&want)?;
-    let pinned = pinned_root().join(&hash);
+    let pinned = pinned_root(repo).join(&hash);
     let mut errors = Vec::new();
     if pinned.is_dir() {
         errors.extend(diff(
@@ -372,7 +379,7 @@ pub fn verify(repo: &Repo) -> Result<(String, Vec<String>), String> {
             pinned.display()
         ));
     }
-    let current = sys::read_text(&pinned_root().join("current.sha256")).unwrap_or_default();
+    let current = sys::read_text(&pinned_root(repo).join("current.sha256")).unwrap_or_default();
     if current.trim() != hash {
         errors.push(format!(
             "current.sha256 vaut « {} », attendu {hash}",
@@ -398,7 +405,11 @@ pub fn verify(repo: &Repo) -> Result<(String, Vec<String>), String> {
         check_worktree(repo, wt, &pinned, &common_cfg, &mut errors)?;
         n += 1;
     }
-    match sys::home().map(|h| h.join(".claude").join("settings.json")) {
+    match repo
+        .home
+        .as_ref()
+        .map(|h| h.join(".claude").join("settings.json"))
+    {
         Some(user) if user.is_file() => {
             let text = sys::read_text(&user)?;
             errors.extend(
