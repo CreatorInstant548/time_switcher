@@ -315,3 +315,8 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
     - voie 1 : **PR #51** (2 lignes : `false`, `required_reviewers: []`), avec `review-ok`, `archsec-ok` et `ci-ok`, fusionnée **une seule fois par le titulaire du compte, depuis l'interface web**. Aucune session ne la fusionne ;
     - voie 2 : une exception durable de réparation dans T3f (PR limitée à `repo-settings.json`, écart recalculé à vide avec le fichier de la tête, historique conforme, tous les contrôles), avec un test par condition.
   - #47 (54119b2), #49 et T3f attendent.
+- 30/10 : **#52 (T3f)** ouverte (877363c) : cache de faits, `BUILT_FROM` dans la clé, reprises bornées des `GET`. Relecteur neuf (Opus) lancé. Avis d'archi-sécu :
+  - **T3h** (`nightly.yml` : `verify-main --no-cache`, lecture seule, `fetch-depth: 0`) passe **juste après la #52**, avant toute fusion non urgente ;
+  - **T3g** (exception de réparation AS-38, `-Check -SourceCommit`) se fait dans une PR dédiée ;
+  - consignes dans `consigne-T3g-T3h.md` ;
+  - **en attendant T3h** : `cargo xtask verify-main --no-cache` une fois par jour depuis la copie principale, avec le résultat noté ici. Premier passage après le `-Apply` qui suit la #51.
