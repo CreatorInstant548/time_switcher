@@ -14,9 +14,16 @@ use crate::{Phase, StateHash};
 // spec: revues/architecture.md §5.3
 /// Greffon de règles. `standard_rules()` (`ts_game`) en donne la liste unique.
 ///
-/// Un greffon déclare dans [`Plugin::build`] ses composants, ses ressources, ses systèmes par
-/// phase et les greffons dont il dépend. Désactiver un greffon ne change pas les règles des
-/// autres ; la construction échoue si un greffon actif dépend d'un greffon coupé.
+/// Un greffon déclare dans [`Plugin::build`] ses composants, ses ressources et ses systèmes par
+/// phase, et dans [`Plugin::dependencies`] les greffons dont il dépend. Désactiver un greffon
+/// ne change pas les règles des autres ; la construction échoue si un greffon actif dépend d'un
+/// greffon coupé.
+///
+/// **Time-skip contract** (architecture §8.1): while no entity carries
+/// [`crate::LodComplete`], [`crate::Sim::run_until`] skips the ticks that have no due event.
+/// A system must therefore leave the state unchanged on a tick with no due event and no
+/// entity in full simulation: no per-tick counter, no `Local` accumulator, no polling of the
+/// clock. Otherwise skipping and ticking would give different worlds.
 pub trait Plugin {
     /// Nom stable et unique du greffon (par exemple `"economy"`).
     fn name(&self) -> &'static str;
@@ -30,6 +37,13 @@ pub trait Plugin {
         false
     }
 
+    /// Plugins this one needs. Each must be active and come **earlier** in the rules, so
+    /// that it is built first. They are checked before any [`Plugin::build`] runs, so a
+    /// wrong order is a [`crate::BuildError`], never a panic in `build`.
+    fn dependencies(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Déclare le contenu du greffon.
     fn build(&self, b: &mut SimBuilder);
 }
@@ -40,8 +54,6 @@ pub struct SimBuilder {
     pub(crate) world: World,
     pub(crate) phases: Vec<Schedule>,
     pub(crate) current: &'static str,
-    /// Dépendances déclarées, `(greffon, greffon requis)`.
-    pub(crate) dependencies: Vec<(&'static str, &'static str)>,
     /// Types d'état, dans l'ordre de déclaration.
     pub(crate) state: Vec<StateEntry>,
     /// Migrations déclarées, `(greffon, version d'origine)`.
@@ -70,12 +82,6 @@ impl SimBuilder {
         systems: impl IntoScheduleConfigs<ScheduleSystem, M>,
     ) -> &mut Self {
         self.phases[phase.index()].add_systems(systems);
-        self
-    }
-
-    /// Déclare que le greffon en construction a besoin du greffon `plugin`.
-    pub fn depends_on(&mut self, plugin: &'static str) -> &mut Self {
-        self.dependencies.push((self.current, plugin));
         self
     }
 
@@ -130,7 +136,6 @@ impl fmt::Debug for SimBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SimBuilder")
             .field("current", &self.current)
-            .field("dependencies", &self.dependencies)
             .finish_non_exhaustive()
     }
 }

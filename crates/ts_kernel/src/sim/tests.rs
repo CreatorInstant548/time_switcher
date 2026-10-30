@@ -19,10 +19,10 @@ impl Plugin for TestPlugin {
     fn disableable(&self) -> bool {
         self.disableable
     }
+    fn dependencies(&self) -> &'static [&'static str] {
+        self.deps
+    }
     fn build(&self, b: &mut SimBuilder) {
-        for &d in self.deps {
-            b.depends_on(d);
-        }
         (self.setup)(b);
     }
 }
@@ -288,6 +288,104 @@ fn unordered_writes_are_rejected() {
     let mut sim = build(&ordered).unwrap();
     sim.step();
     assert_eq!(sim.world().resource::<Counter>().0, 3);
+}
+
+/// Two unordered writers of `Counter` in one phase, or one opt-out of the detection.
+enum Ambiguity {
+    Unordered,
+    WithAll,
+    WorldResource,
+}
+
+struct Ambiguous(Phase, Ambiguity);
+
+impl Plugin for Ambiguous {
+    fn name(&self) -> &'static str {
+        "ambiguous"
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    fn build(&self, b: &mut SimBuilder) {
+        b.insert_resource(Counter::default());
+        match self.1 {
+            Ambiguity::Unordered => {
+                b.add_systems(self.0, (add_one, double));
+            }
+            Ambiguity::WithAll => {
+                b.add_systems(self.0, (add_one.ambiguous_with_all(), double));
+            }
+            Ambiguity::WorldResource => {
+                b.world_mut().allow_ambiguous_resource::<Counter>();
+                b.add_systems(self.0, (add_one, double));
+            }
+        }
+    }
+}
+
+/// L7 in **every** phase: unordered writes and opt-outs are refused (T6a review m3).
+#[test]
+fn ambiguities_are_refused_in_every_phase() {
+    for phase in Phase::ALL {
+        let unordered: [Box<dyn Plugin>; 1] = [Box::new(Ambiguous(phase, Ambiguity::Unordered))];
+        assert!(
+            matches!(build(&unordered), Err(BuildError::Schedule { phase: p, .. }) if p == phase),
+            "{phase:?}"
+        );
+        let with_all: [Box<dyn Plugin>; 1] = [Box::new(Ambiguous(phase, Ambiguity::WithAll))];
+        assert_eq!(
+            build(&with_all).unwrap_err(),
+            BuildError::AmbiguityOptOut { phase: Some(phase) }
+        );
+        let world: [Box<dyn Plugin>; 1] = [Box::new(Ambiguous(phase, Ambiguity::WorldResource))];
+        assert_eq!(
+            build(&world).unwrap_err(),
+            BuildError::AmbiguityOptOut { phase: None }
+        );
+    }
+}
+
+/// A plugin listed before its dependency is refused before any `build` runs, so a `build`
+/// that reads the dependency's resource never panics (T6a review m5).
+#[test]
+fn dependency_must_come_first() {
+    let reads_counter = Box::new(TestPlugin {
+        name: "reader",
+        version: 1,
+        disableable: false,
+        deps: &["counter"],
+        setup: |b| {
+            let _ = b.world_mut().resource::<Counter>().0;
+        },
+    });
+    let owner = plugin("counter", |b| {
+        b.insert_resource(Counter::default());
+    });
+    assert_eq!(
+        build(&[reads_counter, owner]).unwrap_err(),
+        BuildError::DependencyOrder {
+            plugin: "reader",
+            dependency: "counter"
+        }
+    );
+}
+
+/// `run_until` never panics at the bounds of `i64` (T6a review m2).
+#[test]
+fn run_until_handles_extreme_dates() {
+    let mut sim = build(&[]).unwrap();
+    assert_eq!(
+        sim.run_until(StopCondition::At(SimTime::from_millis(i64::MIN))),
+        RunReport::default()
+    );
+    let r = sim.run_until(StopCondition::At(SimTime::from_millis(i64::MAX)));
+    assert_eq!(r.ticks, 0);
+    let end = sim.now().as_millis();
+    assert!(i64::MAX - end < 50 && end % 50 == 0, "{end}");
+    assert_eq!(
+        sim.run_until(StopCondition::At(SimTime::from_millis(i64::MAX))),
+        RunReport::default()
+    );
 }
 
 #[test]
