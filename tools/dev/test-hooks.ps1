@@ -120,6 +120,7 @@ try {
   $orphan = "$(G commit-tree 'HEAD^{tree}' -m 'docs(essai): orphelin')".Trim()
   Expect 'poussée forcée vers main acceptée par pre-push' $false { G push --dry-run -f origin "${orphan}:refs/heads/main" }
   Expect 'suppression de main refusée (pre-push)' $true { G push --dry-run origin :main } 'suppression de la branche main'
+  Expect 'variante de casse de main refusée (pre-push)' $true { G push --dry-run origin HEAD:refs/heads/Main } 'variante de casse'
   Expect 'poussée vers le main d''un distant autre qu''origin refusée (pre-push)' $true { G push --dry-run $remote HEAD:main } 'distant origin'
   Check 'main du distant inchangé par les essais en --dry-run' ("$(& git -C $remote rev-parse main)".Trim() -eq $remoteMain)
   Add 'b.txt' (Text "b`n"); G commit -q --amend -m 'docs(essai): réécrit' | Out-Null

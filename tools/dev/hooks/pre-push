@@ -14,6 +14,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   dest=$(printf '%s' "$remote_ref" | tr 'A-Z' 'a-z')
   [ "$dest" = "refs/heads/main" ] && [ "$remote" != "origin" ] &&
     fail "poussée vers main permise seulement vers le distant origin, que garde le ruleset de GitHub (SEC0-13, AS-31)."
+  # Main, MAIN : hors du ruleset, et confondus avec main dans un système de fichiers insensible à la casse.
+  [ "$dest" = "refs/heads/main" ] && [ "$remote_ref" != "refs/heads/main" ] &&
+    fail "variante de casse de main ($remote_ref) interdite : main s'écrit en minuscules (SEC0-13)."
   if [ "$local_sha" = "$ZERO" ]; then
     [ "$dest" = "refs/heads/main" ] && fail "suppression de la branche main interdite (SEC0-13)."
     [ "$dest" = "refs/heads/pilotage" ] && fail "suppression de la branche pilotage interdite."

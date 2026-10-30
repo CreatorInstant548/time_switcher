@@ -167,11 +167,15 @@ function Get-GitVerdict([string[]]$T, [int]$At, [string]$Dir) {
       # le ruleset main (26213563) de GitHub les refuse sans contournement. Seulement vers le distant
       # origin, nommé : le ruleset ne garde que lui. La poussée forcée reste refusée vers toute autre
       # destination, et vers une destination implicite (sans refspec, HEAD) ; main s'écrit en
-      # minuscules, seule forme que garde le ruleset (Main, MAIN : poussée forcée refusée).
+      # minuscules, seule forme que garde le ruleset (Main, MAIN : refusés, ils masqueraient
+      # origin/main dans un système de fichiers insensible à la casse).
       $refs = @(); $skip = $false; $force = $false; $repoOpt = $false; $delete = $false; $tags = $false
       foreach ($x in $a) {
         if ($skip) { $skip = $false; continue }
-        if ($x -in '--repo', '-o', '--push-option', '--receive-pack', '--exec') { $repoOpt = $repoOpt -or $x -eq '--repo'; $skip = $true; continue }
+        # Options à valeur séparée, abréviations comprises (--rep, --push-o) : la valeur n'est ni un distant ni une refspec.
+        $isRepo = -not $x.Contains('=') -and (Test-Abbrev $x '--repo' 5)
+        if ($x -ceq '-o' -or $isRepo -or (-not $x.Contains('=') -and ((Test-Abbrev $x '--push-option' 4) -or
+            (Test-Abbrev $x '--receive-pack' 6) -or (Test-Abbrev $x '--exec' 4)))) { $repoOpt = $repoOpt -or $isRepo; $skip = $true; continue }
         if ((Test-Abbrev $x '--delete' 4) -or $x -cmatch '^-[a-zA-Z]*d') { $delete = $true }
         if ((Test-Abbrev $x '--tags' 4) -or (Test-Abbrev $x '--follow-tags' 4)) { $tags = $true }
         if ((Test-Abbrev $x '--force' 4) -or (Test-Abbrev $x '--force-with-lease' 4) -or (Test-Abbrev $x '--force-if-includes' 4) -or
@@ -179,7 +183,7 @@ function Get-GitVerdict([string[]]$T, [int]$At, [string]$Dir) {
         if ((Test-Abbrev $x '--mirror' 4) -or (Test-Abbrev $x '--all' 4) -or (Test-Abbrev $x '--branches' 4)) {
           return 'git push --all/--branches/--mirror interdit : poussez une seule branche'
         }
-        if ($x -like '--repo=*' -or $x -like '--receive-pack=*' -or $x -like '--exec=*') { return "git push $x interdit" }
+        if ($x.Contains('=') -and ((Test-Abbrev $x '--repo' 5) -or (Test-Abbrev $x '--receive-pack' 6) -or (Test-Abbrev $x '--exec' 4))) { return "git push $x interdit" }
         if (-not $x.StartsWith('-')) { $refs += $x }
       }
       if ($refs.Count -ge 1 -and $refs[0] -eq '.') { return 'git push vers le dépôt local (.) interdit' }
@@ -194,6 +198,7 @@ function Get-GitVerdict([string[]]$T, [int]$At, [string]$Dir) {
         $dst = ($spec -split ':')[-1]
         $toMain = Test-MainRef $dst
         if ($toMain -and ($spec.StartsWith(':') -or $delete)) { return 'suppression de la branche main interdite (SEC0-13)' }
+        if ($toMain -and -not (Test-MainRefExact $dst)) { return "variante de casse de main ($dst) interdite : main s'écrit en minuscules (SEC0-13)" }
         if (($toMain -or ($dst -in 'HEAD', '@' -and (& $onMain))) -and -not $viaOrigin) { return $mainHint }
         if (($plus -or $force) -and -not (Test-MainRefExact $dst)) { return 'poussée forcée interdite hors de main (SEC0-14)' }
         if ($dst -match '(?i)^refs/remotes/') { return 'poussée vers refs/remotes/ interdite' }

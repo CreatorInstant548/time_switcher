@@ -65,7 +65,15 @@ $cases = @(
   # main en minuscules seulement (le ruleset ne garde pas Main ni MAIN), sans étiquettes forcées ni motif
   @('Bash', 'feat', 'git push -f origin HEAD:Main', 'D'),
   @('Bash', 'feat', 'git push origin +claude/x:refs/heads/MAIN', 'D'),
-  @('Bash', 'feat', 'git push origin HEAD:Main', 'A'),
+  @('Bash', 'feat', 'git push origin HEAD:Main', 'D'),
+  @('Bash', 'feat', 'git push origin HEAD:refs/heads/MAIN', 'D'),
+  # options à valeur abrégées : la valeur n'est pas le distant
+  @('Bash', 'feat', 'git push --push-o origin upstream main', 'D'),
+  @('Bash', 'feat', 'git push --rep origin upstream main', 'D'),
+  @('Bash', 'feat', 'git push --rep origin origin main', 'D'),
+  @('Bash', 'feat', 'git push --rep=x origin main', 'D'),
+  @('Bash', 'feat', 'git push --push-o ci.skip origin main', 'A'),
+  @('Bash', 'feat', 'git push -o ci.skip origin claude/x', 'A'),
   @('Bash', 'main', 'git push -f origin @', 'D'),
   @('Bash', 'feat', 'git push -f --tags origin main', 'D'),
   @('Bash', 'feat', 'git push --follow-tags -f origin main', 'D'),
