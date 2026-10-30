@@ -1,0 +1,6 @@
+// spec: revues/architecture.md §5.2
+// Example cards for the loader of ts_data (T7b). No game rule, no game value.
+[
+    Activity(id: "activity.bake", name: "Cuire du pain", items: ["item.bread"]),
+    Activity(id: "activity.rest", name: "Se reposer", items: []),
+]

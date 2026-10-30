@@ -1,0 +1,12 @@
+# Programme du corpus initial de la cible `decode` (SEC0-24) : stable, sans libFuzzer.
+#   cargo run --locked --manifest-path fuzz/seeds/Cargo.toml -- <dossier du corpus>
+
+[package]
+name = "ts_persist_fuzz_seeds"
+version = "0.0.0"
+edition = "2024"
+license = "LicenseRef-Proprietary"
+publish = false
+
+[dependencies]
+ts_persist = { path = "../../crates/ts_persist" }
