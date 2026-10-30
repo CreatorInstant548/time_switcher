@@ -12,3 +12,11 @@ fn one_thread_matches_reference() {
     assert_eq!(bevy_tasks::ComputeTaskPool::get().thread_num(), 1);
     assert_eq!(hash, common::EXPECTED);
 }
+
+/// Snapshot at tick k, restore, then N ticks: same hash as k + N ticks straight.
+#[test]
+fn one_thread_round_trips() {
+    for (straight, restored) in common::round_trips(Threads::Single, &[0, 9, 40], 30).unwrap() {
+        assert_eq!(straight, restored);
+    }
+}

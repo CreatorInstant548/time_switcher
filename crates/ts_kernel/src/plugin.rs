@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use bevy_ecs::component::Component;
+use bevy_ecs::component::{Component, ComponentId};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule};
 use bevy_ecs::system::ScheduleSystem;
@@ -46,6 +46,8 @@ pub struct SimBuilder {
     pub(crate) state: Vec<StateEntry>,
     /// Migrations déclarées, `(greffon, version d'origine)`.
     pub(crate) migrations: Vec<(&'static str, u32)>,
+    /// Components allowed on stable entities: declared state and transient components.
+    pub(crate) known_components: Vec<ComponentId>,
 }
 
 impl SimBuilder {
@@ -85,8 +87,19 @@ impl SimBuilder {
         &mut self,
         family: &'static str,
     ) -> &mut Self {
-        self.world.register_component::<C>();
+        let id = self.world.register_component::<C>();
+        self.known_components.push(id);
         self.state.push(StateEntry::component::<C>(family));
+        self
+    }
+
+    // spec: revues/architecture.md §11.3
+    /// Declares a component that stable entities may carry without it being state: a cache
+    /// that the plugin rebuilds from the state. It is neither hashed nor saved, and a restore
+    /// drops it.
+    pub fn transient_component<C: Component>(&mut self) -> &mut Self {
+        let id = self.world.register_component::<C>();
+        self.known_components.push(id);
         self
     }
 

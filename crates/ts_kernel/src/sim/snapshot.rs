@@ -5,10 +5,11 @@ use core::fmt;
 use std::collections::BTreeMap;
 
 use super::{
-    BuildError, EventQueue, Sim, SimClock, SimConfig, StableIds, TimedEvent, write_kernel,
+    BuildError, EventQueue, LodComplete, Sim, SimClock, SimConfig, StableIds, TimedEvent,
+    complete_ids, write_kernel,
 };
 use crate::rng::WorldKey;
-use crate::state::{Boxed, StateKind, encode_world, stable_entities};
+use crate::state::{Boxed, StableIndex, StateKind, encode_world, stable_entities};
 use crate::{
     DayOrigin, Plugin, RulesFingerprint, Scheduled, Scheduler, SimTime, StableEntity, StableId,
     StableIdAllocator,
@@ -40,6 +41,16 @@ pub enum RestoreError {
     StateLayoutMismatch,
     /// L'instantané est incohérent.
     Corrupt(&'static str),
+    /// The configuration's tick length differs from the snapshot's (M5).
+    TickMismatch {
+        /// Tick length recorded in the snapshot, in milliseconds.
+        snapshot: i64,
+        /// Tick length of the given configuration, in milliseconds.
+        current: i64,
+    },
+    /// A game-space `StableId` is not below the restored allocator counter (M3): the
+    /// allocator would hand it out again.
+    StableIdBeyondCounter(StableId),
 }
 
 impl fmt::Display for RestoreError {
@@ -52,6 +63,13 @@ impl fmt::Display for RestoreError {
             ),
             Self::StateLayoutMismatch => f.write_str("types d'état différents de l'instantané"),
             Self::Corrupt(what) => write!(f, "instantané incohérent : {what}"),
+            Self::TickMismatch { snapshot, current } => write!(
+                f,
+                "tick length differs: {snapshot} ms in the snapshot, {current} ms configured"
+            ),
+            Self::StableIdBeyondCounter(id) => {
+                write!(f, "{id:?} is not below the StableId allocator counter")
+            }
         }
     }
 }
@@ -69,6 +87,15 @@ impl std::error::Error for RestoreError {}
 /// Seules les entités qui portent [`StableEntity`] sont enregistrées ; une entité sans
 /// identité durable, créée par la construction d'un greffon, reste telle que la construction
 /// l'a faite.
+///
+/// Restore contract (F4: snapshot, restore, then N ticks gives the same state as running
+/// straight through):
+/// - stable entities are respawned in `StableId` order, with their declared state
+///   components and their [`crate::LodComplete`] marker; their `Entity` values change;
+/// - durable references therefore use `StableId`, and [`crate::StableIndex`] maps them to
+///   entities;
+/// - any iteration whose effect depends on its order sorts by `StableId`, since query order
+///   is not part of the state.
 pub trait Snapshot: Sized {
     /// Prend l'instantané.
     fn snapshot(sim: &Sim, scope: SnapshotScope) -> Self;
@@ -99,12 +126,15 @@ enum Captured {
 pub struct MemorySnapshot {
     rules: RulesFingerprint,
     plugins: Vec<(&'static str, u32)>,
+    tick_ms: i64,
     now: SimTime,
     day_origin: DayOrigin,
     next_stable_id: u64,
     next_seq: u64,
     events: Vec<Scheduled<TimedEvent>>,
     entities: Vec<StableId>,
+    /// Stable entities that carry `LodComplete`, sorted.
+    complete: Vec<StableId>,
     /// Famille et genre (composant ou non) de chaque type d'état, dans l'ordre de déclaration.
     layout: Vec<(&'static str, bool)>,
     captured: Vec<Captured>,
@@ -165,18 +195,30 @@ impl Snapshot for MemorySnapshot {
     fn snapshot(sim: &Sim, scope: SnapshotScope) -> Self {
         let SnapshotScope::Full = scope;
         let world = &sim.world;
+        debug_assert_eq!(
+            sim.undeclared_state_components(),
+            0,
+            "a stable entity carries a component that is neither state nor transient (M2)"
+        );
+        debug_assert_eq!(
+            world.resource::<StableIndex>().conflicts(),
+            0,
+            "two entities carry the same StableId"
+        );
         let entities = stable_entities(world);
         let clock = world.resource::<SimClock>();
         let queue = world.resource::<EventQueue>();
         Self {
             rules: sim.rules,
             plugins: sim.active.clone(),
+            tick_ms: sim.tick_ms,
             now: clock.now,
             day_origin: clock.day_origin,
             next_stable_id: world.resource::<StableIds>().0.to_snapshot_raw(),
             next_seq: queue.next_seq(),
             events: queue.pending().into_iter().cloned().collect(),
             entities: entities.iter().map(|&(id, _)| id).collect(),
+            complete: complete_ids(world, &entities),
             layout: sim
                 .state
                 .iter()
@@ -212,11 +254,24 @@ impl Snapshot for MemorySnapshot {
         if layout != self.layout {
             return Err(RestoreError::StateLayoutMismatch);
         }
+        if self.tick_ms != sim.tick_ms {
+            return Err(RestoreError::TickMismatch {
+                snapshot: self.tick_ms,
+                current: sim.tick_ms,
+            });
+        }
         if self.now.as_millis().rem_euclid(sim.tick_ms) != 0 {
             return Err(RestoreError::Corrupt("date hors de la grille des ticks"));
         }
         let ids = StableIdAllocator::from_snapshot_raw(self.next_stable_id)
             .ok_or(RestoreError::Corrupt("compteur de StableId"))?;
+        if let Some(&id) = self
+            .entities
+            .iter()
+            .find(|id| !id.is_map() && id.index() >= self.next_stable_id)
+        {
+            return Err(RestoreError::StableIdBeyondCounter(id));
+        }
         let queue = Scheduler::restore(self.now, self.next_seq, self.events.clone())
             .ok_or(RestoreError::Corrupt("rangs des événements"))?;
 
@@ -233,12 +288,20 @@ impl Snapshot for MemorySnapshot {
         }
         world.insert_resource(StableIds(ids));
         world.insert_resource(EventQueue(queue));
+        // Respawned in `StableId` order (I3); the `StableEntity` hooks rebuild the index (I2).
         let mut map = BTreeMap::new();
         for &id in &self.entities {
             let e = world.spawn(StableEntity::new(id)).id();
             if map.insert(id, e).is_some() {
                 return Err(RestoreError::Corrupt("StableId en double"));
             }
+        }
+        // The full-simulation marker drives the time skip (I1).
+        for id in &self.complete {
+            let Some(&e) = map.get(id) else {
+                return Err(RestoreError::Corrupt("LodComplete on an unknown StableId"));
+            };
+            world.entity_mut(e).insert(LodComplete);
         }
         for (entry, captured) in sim.state.iter().zip(&self.captured) {
             let ok = match (entry.kind, captured) {

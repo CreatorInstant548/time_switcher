@@ -5,7 +5,7 @@ use core::num::NonZeroU16;
 use core::ops::{Deref, DerefMut};
 use std::collections::BTreeSet;
 
-use bevy_ecs::component::Component;
+use bevy_ecs::component::{Component, ComponentId};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::{QueryState, With};
 use bevy_ecs::resource::Resource;
@@ -15,7 +15,9 @@ use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 
 use crate::phase::phase_schedule;
 use crate::rng::{StreamKeys, WorldKey};
-use crate::state::{StateEntry, StateWriter, hash_world};
+use crate::state::{
+    StableIndex, StateEntry, StateWriter, hash_world, stable_entities, undeclared_components,
+};
 use crate::{
     DayOrigin, Phase, Plugin, RulesFingerprint, Scheduled, Scheduler, SimBuilder, SimTime,
     StableEntity, StableId, StableIdAllocator, StateHash, StateHashes,
@@ -41,6 +43,27 @@ fn write_kernel(world: &World, w: &mut StateWriter<'_>) {
         w.u64(e.seq);
         e.event.hash_state(w);
     }
+    // Stable entities (M1), then those in full simulation (I1), both sorted by `StableId`.
+    let stable = stable_entities(world);
+    w.count(stable.len());
+    for &(id, _) in &stable {
+        id.hash_state(w);
+    }
+    let complete = complete_ids(world, &stable);
+    w.count(complete.len());
+    for id in complete {
+        id.hash_state(w);
+    }
+}
+
+// spec: revues/architecture.md §6.5, §8.1 ; carnet architecture-securite.md §9.10 L2
+/// Stable entities that carry [`LodComplete`], sorted by `StableId`.
+fn complete_ids(world: &World, stable: &[(StableId, Entity)]) -> Vec<StableId> {
+    stable
+        .iter()
+        .filter(|&&(_, e)| world.get::<LodComplete>(e).is_some())
+        .map(|&(id, _)| id)
+        .collect()
 }
 
 impl StateHash for TimedEvent {
@@ -301,6 +324,8 @@ pub struct Sim {
     complete: QueryState<Entity, With<LodComplete>>,
     state: Vec<StateEntry>,
     migrations: Vec<(&'static str, u32)>,
+    /// Components allowed on stable entities (M2).
+    known_components: Vec<ComponentId>,
 }
 
 impl fmt::Debug for Sim {
@@ -378,8 +403,11 @@ impl Sim {
         ensure_thread_pool(cfg.threads)?;
 
         let mut world = World::new();
-        world.register_component::<LodComplete>();
-        world.register_component::<StableEntity>();
+        let kernel_components = vec![
+            world.register_component::<LodComplete>(),
+            world.register_component::<StableEntity>(),
+        ];
+        world.insert_resource(StableIndex::default());
         world.insert_resource(SimClock {
             now: SimTime::EPOCH,
             tick_ms,
@@ -400,6 +428,7 @@ impl Sim {
             dependencies: Vec::new(),
             state: Vec::new(),
             migrations: Vec::new(),
+            known_components: kernel_components,
         };
         for p in &plugins {
             b.current = p.name();
@@ -419,6 +448,7 @@ impl Sim {
             mut phases,
             state,
             migrations,
+            known_components,
             ..
         } = b;
         for (schedule, &phase) in phases.iter_mut().zip(Phase::ALL.iter()) {
@@ -439,7 +469,16 @@ impl Sim {
             complete,
             state,
             migrations,
+            known_components,
         })
+    }
+
+    // spec: revues/architecture.md §11.3
+    /// Number of components carried by stable entities that are neither declared state,
+    /// declared transient, nor kernel components (M2). Such a component is lost on restore;
+    /// [`Sim::snapshot`] checks that this is zero in debug builds.
+    pub fn undeclared_state_components(&self) -> usize {
+        undeclared_components(&self.world, &self.known_components)
     }
 
     // spec: revues/architecture.md §7.1, §11.3 ; carnet architecture-securite.md §9.10 L3, L4

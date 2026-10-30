@@ -15,3 +15,12 @@ fn four_threads_match_reference() {
     assert!(workers > 1, "par_iter n'a tourné que sur {workers} fil");
     assert_eq!(hash, common::EXPECTED);
 }
+
+/// Snapshot at tick k, restore, then N ticks: same hash as k + N ticks straight.
+#[test]
+fn four_threads_round_trip() {
+    let threads = Threads::Fixed(NonZeroU16::new(4).unwrap());
+    for (straight, restored) in common::round_trips(threads, &[0, 9, 40], 30).unwrap() {
+        assert_eq!(straight, restored);
+    }
+}

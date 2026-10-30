@@ -3,11 +3,13 @@
 
 use core::any::Any;
 use core::fmt;
+use std::collections::BTreeMap;
 
-use bevy_ecs::component::Component;
+use bevy_ecs::component::{Component, ComponentId};
 use bevy_ecs::entity::Entity;
+use bevy_ecs::lifecycle::HookContext;
 use bevy_ecs::resource::Resource;
-use bevy_ecs::world::World;
+use bevy_ecs::world::{DeferredWorld, World};
 
 use crate::{DayOrigin, Money, SimTime, StableId};
 
@@ -36,8 +38,9 @@ impl fmt::Debug for StateWriter<'_> {
 }
 
 impl StateWriter<'_> {
-    /// Octets bruts, sans longueur.
-    pub fn raw(&mut self, bytes: &[u8]) {
+    /// Raw bytes, with no length prefix. Crate-private (M4): callers outside the kernel only
+    /// get fixed-width or length-prefixed writers, so their encodings stay self-delimiting.
+    pub(crate) fn raw(&mut self, bytes: &[u8]) {
         match &mut self.0 {
             Sink::Hasher(h) => {
                 h.update(bytes);
@@ -92,9 +95,11 @@ impl StateWriter<'_> {
 // spec: revues/architecture.md §11.3, §7.1 ; carnet architecture-securite.md §9.10 L3
 /// Encodage canonique d'une valeur d'état, pour l'empreinte et pour l'instantané.
 ///
-/// L'encodage doit être **injectif** (deux valeurs différentes, deux suites d'octets
-/// différentes) et ne dépendre que de la valeur : aucun pointeur, aucun ordre de table de
-/// hachage, aucun texte de `Debug`.
+/// The encoding must be **self-delimiting** (prefix-free): no encoded value is a prefix of
+/// another one of the same type, so concatenated values stay unambiguous. Use fixed-width
+/// writers, or length-prefixed ones ([`StateWriter::bytes`], [`StateWriter::str`],
+/// [`StateWriter::count`] before a sequence). It must depend only on the value: no
+/// pointer, no hash-table order, no `Debug` text.
 pub trait StateHash {
     /// Écrit la valeur.
     fn hash_state(&self, w: &mut StateWriter<'_>);
@@ -183,8 +188,83 @@ impl<T: StateHash> StateHash for Vec<T> {
 // spec: revues/architecture.md §6.1, §11.3
 /// Composant : l'identité durable d'une entité. Seules les entités qui le portent entrent
 /// dans l'empreinte et dans l'instantané, triées par [`StableId`].
+///
+/// It is immutable: its hooks keep [`StableIndex`] up to date on spawn, insert, removal
+/// and despawn.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[component(immutable, on_insert = index_insert, on_discard = index_discard)]
 pub struct StableEntity(StableId);
+
+fn index_insert(mut world: DeferredWorld<'_>, ctx: HookContext) {
+    let Some(id) = world.get::<StableEntity>(ctx.entity).map(|s| s.id()) else {
+        return;
+    };
+    if let Some(mut index) = world.get_resource_mut::<StableIndex>() {
+        match index.map.get(&id) {
+            Some(&e) if e != ctx.entity => index.conflicts += 1,
+            _ => {
+                index.map.insert(id, ctx.entity);
+            }
+        }
+    }
+}
+
+fn index_discard(mut world: DeferredWorld<'_>, ctx: HookContext) {
+    let Some(id) = world.get::<StableEntity>(ctx.entity).map(|s| s.id()) else {
+        return;
+    };
+    if let Some(mut index) = world.get_resource_mut::<StableIndex>()
+        && index.map.get(&id) == Some(&ctx.entity)
+    {
+        index.map.remove(&id);
+    }
+}
+
+// spec: revues/architecture.md §6.1, §9.2, §12.1
+/// Resource: the `StableId → Entity` index of the entities that carry [`StableEntity`],
+/// kept up to date by that component's hooks and rebuilt by a restore.
+///
+/// **Rule:** any durable reference (kept across ticks, in a component or a resource) is a
+/// [`StableId`], never an `Entity`. An `Entity` is valid only within a tick: a restore
+/// respawns every stable entity under a new `Entity`. Look it up here when needed.
+///
+/// **Rule:** an iteration whose effect depends on its order (accumulation, first match,
+/// cross writes) sorts by [`StableId`], for example by walking this index, which is
+/// sorted. Query order is not part of the state and changes on restore.
+#[derive(Resource, Debug, Default)]
+pub struct StableIndex {
+    map: BTreeMap<StableId, Entity>,
+    /// Insertions refused because the id was already mapped to another entity.
+    conflicts: u32,
+}
+
+impl StableIndex {
+    /// Entity currently carrying `id`.
+    pub fn get(&self, id: StableId) -> Option<Entity> {
+        self.map.get(&id).copied()
+    }
+
+    /// Stable entities, sorted by [`StableId`].
+    pub fn iter(&self) -> impl Iterator<Item = (StableId, Entity)> + '_ {
+        self.map.iter().map(|(&id, &e)| (id, e))
+    }
+
+    /// Number of stable entities.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// True if no entity is stable.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Number of entities given an id that another entity already carried: always zero in
+    /// a sound world.
+    pub const fn conflicts(&self) -> u32 {
+        self.conflicts
+    }
+}
 
 impl StableEntity {
     /// Entité d'identité `id`.
@@ -331,12 +411,27 @@ impl StateEntry {
 
 /// Entités d'identité durable, triées par [`StableId`].
 pub(crate) fn stable_entities(world: &World) -> Vec<(StableId, Entity)> {
-    let mut out: Vec<_> = world
-        .try_query::<(Entity, &StableEntity)>()
-        .map(|mut q| q.iter(world).map(|(e, s)| (s.id(), e)).collect())
-        .unwrap_or_default();
-    out.sort_unstable();
-    out
+    world
+        .get_resource::<StableIndex>()
+        .map(|index| index.iter().collect())
+        .unwrap_or_default()
+}
+
+// spec: revues/architecture.md §11.3 ; carnet architecture-securite.md §9.10 L3
+/// Components carried by stable entities that are not in `known` (M2): such a component
+/// is neither hashed nor saved, so a restore would drop it.
+pub(crate) fn undeclared_components(world: &World, known: &[ComponentId]) -> usize {
+    stable_entities(world)
+        .into_iter()
+        .filter_map(|(_, e)| world.get_entity(e).ok())
+        .map(|e| {
+            e.archetype()
+                .components()
+                .iter()
+                .filter(|c| !known.contains(c))
+                .count()
+        })
+        .sum()
 }
 
 // spec: revues/architecture.md §11.3

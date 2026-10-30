@@ -55,5 +55,7 @@ pub use sim::{
     SimClock, SimConfig, Snapshot, SnapshotScope, StableIds, StepReport, StopCondition, Threads,
     TimedEvent, WorldStreams,
 };
-pub use state::{KERNEL_FAMILY, StableEntity, StateDigest, StateHash, StateHashes, StateWriter};
+pub use state::{
+    KERNEL_FAMILY, StableEntity, StableIndex, StateDigest, StateHash, StateHashes, StateWriter,
+};
 pub use time::{DayOrigin, SimDay, SimTime};

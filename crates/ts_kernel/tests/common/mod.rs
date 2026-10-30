@@ -6,19 +6,19 @@
 //! de test est un exécutable distinct, donc un processus distinct, et les deux comparent leur
 //! empreinte à la même valeur figée.
 
-use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
 use std::thread::ThreadId;
 
-use bevy_ecs::prelude::{Component, Entity, Query, Res, ResMut, Resource};
+use bevy_ecs::prelude::{Component, Query, Res, ResMut, Resource};
 use ts_kernel::rng::{Stream, WorldKey, draw_block};
 use ts_kernel::{
-    BuildError, Phase, Plugin, Sim, SimBuilder, SimClock, SimConfig, StableEntity, StableId,
-    StableIds, StateHash, StateWriter, Threads, WorldStreams,
+    BuildError, MemorySnapshot, Phase, Plugin, RestoreError, Sim, SimBuilder, SimClock, SimConfig,
+    SnapshotScope, StableEntity, StableId, StableIds, StableIndex, StateHash, StateWriter, Threads,
+    WorldStreams,
 };
 
 /// Empreinte globale attendue après [`TICKS`] ticks, quel que soit le nombre de fils.
-pub const EXPECTED: &str = "304f304dbc178bfc4ca03cf5374212c4426c5ebd033dae52f765b7848101625a";
+pub const EXPECTED: &str = "bbe5dc0e03104235bfeb179e14678e8179c46a6780558e31c733e727af58214e";
 /// Nombre de ticks.
 pub const TICKS: usize = 1000;
 /// Nombre d'entités.
@@ -58,9 +58,9 @@ struct Outbox(Mutex<Vec<Msg>>);
 #[derive(Resource, Default)]
 pub struct Workers(pub Mutex<Vec<ThreadId>>);
 
-/// Annuaire `StableId` vers entité.
+/// Message targets, as durable `StableId`s (never `Entity`, which a restore changes).
 #[derive(Resource)]
-struct Roster(BTreeMap<StableId, Entity>, Vec<StableId>);
+struct Roster(Vec<StableId>);
 
 /// Phase `Act` : chaque entité n'écrit que ses composants (§9.2, règle 2) et poste deux
 /// messages croisés.
@@ -73,7 +73,7 @@ fn act(
     mut q: Query<(&StableEntity, &mut Pos, &mut Heat)>,
 ) {
     let slot = clock.now().as_millis().unsigned_abs();
-    let ids = &roster.1;
+    let ids = &roster.0;
     q.par_iter_mut().for_each(|(s, mut p, mut h)| {
         let block = draw_block(streams.get(Stream::Ai), s.id(), slot, 3);
         p.0 += (block[0] % 11) as i64 - 5;
@@ -98,11 +98,15 @@ fn act(
 /// Phase `Consequences` : messages triés par (`StableId` source, `seq` local), puis appliqués
 /// dans cet ordre (§9.2, règle 3). L'opération flottante n'est pas associative : sans le tri,
 /// l'empreinte dépendrait de l'ordre de fin des fils.
-fn deliver(mut outbox: ResMut<Outbox>, roster: Res<Roster>, mut q: Query<(&mut Pos, &mut Heat)>) {
+fn deliver(
+    mut outbox: ResMut<Outbox>,
+    index: Res<StableIndex>,
+    mut q: Query<(&mut Pos, &mut Heat)>,
+) {
     let mut msgs = std::mem::take(outbox.0.get_mut().unwrap_or_else(PoisonError::into_inner));
     msgs.sort_unstable_by_key(|m| (m.source, m.local_seq));
     for m in msgs {
-        if let Some(&e) = roster.0.get(&m.target)
+        if let Some(e) = index.get(m.target)
             && let Ok((mut p, mut h)) = q.get_mut(e)
         {
             p.0 -= m.amount;
@@ -126,16 +130,15 @@ impl Plugin for ParallelWorld {
             .insert_resource(Outbox::default())
             .insert_resource(Workers::default());
         let world = b.world_mut();
-        let mut map = BTreeMap::new();
+        let mut ids = Vec::new();
         for _ in 0..ENTITIES {
             let Some(id) = world.resource_mut::<StableIds>().allocate() else {
                 break;
             };
-            let e = world.spawn((StableEntity::new(id), Pos(0), Heat(1.0))).id();
-            map.insert(id, e);
+            world.spawn((StableEntity::new(id), Pos(0), Heat(1.0)));
+            ids.push(id);
         }
-        let ids = map.keys().copied().collect();
-        world.insert_resource(Roster(map, ids));
+        world.insert_resource(Roster(ids));
         b.add_systems(Phase::Act, act);
         b.add_systems(Phase::Consequences, deliver);
     }
@@ -144,23 +147,12 @@ impl Plugin for ParallelWorld {
 /// Exécute [`TICKS`] ticks avec `threads` et rend l'empreinte globale en hexadécimal, et le
 /// nombre de fils distincts vus dans `par_iter`.
 pub fn run(threads: Threads) -> Result<(String, usize), BuildError> {
-    let rules: Vec<Box<dyn Plugin>> = vec![Box::new(ParallelWorld)];
-    let cfg = SimConfig {
-        threads,
-        ..SimConfig::default()
-    };
-    let key = WorldKey::from_bytes(*b"time_switcher L6");
-    let mut sim = Sim::build(cfg, &rules, &key)?;
+    let rules = rules();
+    let mut sim = Sim::build(config(threads), &rules, &key())?;
     for _ in 0..TICKS {
         sim.step();
     }
-    let hex = sim
-        .state_hash()
-        .global
-        .as_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let hex = hex(&sim);
     let workers = sim
         .world()
         .resource::<Workers>()
@@ -169,4 +161,55 @@ pub fn run(threads: Threads) -> Result<(String, usize), BuildError> {
         .unwrap_or_else(PoisonError::into_inner)
         .len();
     Ok((hex, workers))
+}
+
+fn rules() -> Vec<Box<dyn Plugin>> {
+    vec![Box::new(ParallelWorld)]
+}
+
+fn config(threads: Threads) -> SimConfig {
+    SimConfig {
+        threads,
+        ..SimConfig::default()
+    }
+}
+
+fn key() -> WorldKey {
+    WorldKey::from_bytes(*b"time_switcher L6")
+}
+
+fn hex(sim: &Sim) -> String {
+    sim.state_hash()
+        .global
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+// spec: revues/architecture.md §11.1, §12.4
+/// Round trip (F4): for each `k`, snapshot at tick `k`, restore, run `n` ticks, and return
+/// the pairs (straight hash, restored hash), which must be equal.
+pub fn round_trips(
+    threads: Threads,
+    ks: &[usize],
+    n: usize,
+) -> Result<Vec<(String, String)>, RestoreError> {
+    let rules = rules();
+    let mut out = Vec::new();
+    for &k in ks {
+        let mut straight =
+            Sim::build(config(threads), &rules, &key()).map_err(RestoreError::Build)?;
+        for _ in 0..k {
+            straight.step();
+        }
+        let snap: MemorySnapshot = straight.snapshot(SnapshotScope::Full);
+        let mut restored = Sim::restore(&snap, config(threads), &rules, &key())?;
+        for _ in 0..n {
+            straight.step();
+            restored.step();
+        }
+        out.push((hex(&straight), hex(&restored)));
+    }
+    Ok(out)
 }
