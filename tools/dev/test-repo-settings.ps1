@@ -40,6 +40,7 @@ $mutations = [ordered]@{
   'fusion classique'                 = { param($c) $c.repo['allow_merge_commit'] = $true }
   'rebase'                           = { param($c) $c.repo['allow_rebase_merge'] = $true }
   'fusion automatique'               = { param($c) $c.repo['allow_auto_merge'] = $true }
+  'repo : clé hors liste'            = { param($c) $c.repo['visibility'] = 'public' }
   'allowed_actions all'              = { param($c) $c.actions.permissions['allowed_actions'] = 'all' }
   'sans sha_pinning_required'        = { param($c) $c.actions.permissions.Remove('sha_pinning_required') }
   'motif hors liste'                 = { param($c) $c.actions.selected_actions['patterns_allowed'] = @($c.actions.selected_actions['patterns_allowed']) + 'evil/action@*' }

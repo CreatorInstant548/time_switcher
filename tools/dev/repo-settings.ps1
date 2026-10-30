@@ -132,6 +132,9 @@ function Get-Invalid($C) {
     $bad.Add("ruleset_main : ci-ok requis, lié à GitHub Actions (integration_id $ActionsAppId, R1)")
   }
   $repo = $C.repo
+  # Clés fermées : un PATCH du dépôt ne peut rien changer d'autre (visibilité, branche par défaut…).
+  $repoKeys = 'allow_auto_merge', 'allow_merge_commit', 'allow_rebase_merge', 'allow_squash_merge', 'delete_branch_on_merge', 'squash_merge_commit_title'
+  if ($repo -isnot [Collections.IDictionary] -or (J @($repo.Keys)) -cne (J @($repoKeys))) { $bad.Add("repo : clés attendues $($repoKeys -join ', ')"); return , $bad }
   if (-not ($repo -is [Collections.IDictionary] -and (Test-True $repo['allow_squash_merge']) -and (Test-False $repo['allow_merge_commit']) -and
             (Test-False $repo['allow_rebase_merge']) -and (Test-False $repo['allow_auto_merge']))) {
     $bad.Add('repo : squash seulement, sans fusion automatique (R2)')
