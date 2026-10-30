@@ -92,6 +92,8 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | (conception) | `#22` (A12, documentation) | **Fusionnée** par `merge-pr.ps1`, `ci-ok` vert | — | relue | sans objet | 60aedbe |
 | T5a | `claude/ts-kernel-1`, [#20](https://github.com/CreatorInstant548/time_switcher/pull/20), tête bbe2c76 | **Fusionnée** par `merge-pr.ps1` | **`ci-ok` vert** ; `check --all` (13 étapes) | `/security-review` et relecture interne par l'auteur | `review-ok` et `archsec-ok` sur bbe2c76 ; fusionnée avant T3a (accord d'archi-sécu) | **43b3509** |
 | T5b | `claude/ts-kernel-rng`, [#24](https://github.com/CreatorInstant548/time_switcher/pull/24), tête 0d9a227 | En relecture | **`ci-ok` vert** ; `check --all` (50 renvois) ; R5 ≈ 320 ns/bloc en dev | — | 1er relecteur neuf en cours, puis 2e, puis `archsec-ok` | — |
+| T3a | `claude/xtask-merge`, [#23](https://github.com/CreatorInstant548/time_switcher/pull/23), tête c41e984 (`merge`, `hooks`) | En relecture | **`ci-ok` vert** ; test-guards 475/475, test-hooks 58/58 | `/code-review` par l'auteur | 1er relecteur neuf en cours, puis 2e, puis `archsec-ok` | — |
+| T3a (suite) | [#25](https://github.com/CreatorInstant548/time_switcher/pull/25), tête 2b73b7d (`verify-main`) | Attend #23 | **`ci-ok` vert** ; `verify-main --dry-run` : aucune anomalie | — | après #23 | — |
 
 ## Sessions et agents actifs
 
@@ -102,7 +104,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | sous-agent t2a-espace | T2a | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t2b-check | T2b | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t13-ci | T13 + A2 | Opus | — | 30/10, **terminée** (fusionnée) |
-| sous-agent t3a-merge | T3a | Opus | worktree isolé, `claude/xtask-merge` | 30/10 |
+| sous-agent t3a-merge | T3a | Opus | — | 30/10, **livrée** (PR #23 et #25) |
 | sous-agent t5a-kernel | T5a | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t5b-rng | T5b | Opus | — | 30/10, **livrée** (PR #24) |
 | sous-agent t2c-disk | T2c | Opus | — | 30/10, **livrée** (PR #16) |
@@ -182,3 +184,4 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
 - 30/10 : PR #20 : `review-ok` sur bbe2c76 (I1 fermé, AS-22 vérifié par une sonde, glissement sur 200 ans) ; `archsec-ok` demandé. Pour la phase 1 : `SimDay` garde un `Default` (jour 0) ; glissement à faire en fin de journée. Limite de `spec-map` (identifiants en 2ᵉ colonne) ajoutée à l'issue #18.
 - 30/10 : **PR #20 fusionnée** (43b3509) avant T3a, avec l'accord d'archi-sécu. Le premier essai de `merge-pr.ps1` a été refusé par `install-hooks -Verify` (« Permission denied » sur `.git/config`, accès concurrent passager) ; la configuration était conforme, et le second essai est passé. À traiter dans T3a : relancer la lecture une fois avant de conclure, sans jamais réussir en silence. **T5b (aléa) lancée.**
 - 30/10 : T5b livrée, PR #24 : `chacha20` 0.10.2 (`xchacha`) et `blake3` 1.8.7 (`pure`). Le `build.rs` de blake3 sonde encore le compilateur C même avec `pure` ; à juger par le relecteur et archi-sécu. R5 : environ 320 ns par bloc, mesuré en dev (opt-level 1) ; **mesure en release à faire dans la copie principale** (T12). Le flux `Identification` vient de la clôture de l'architecture T2-1 (validé en C5). 1er relecteur neuf lancé.
+- 30/10 : T3a livrée en deux PR : #23 (`merge`, `hooks` ; ~1 450 lignes hors tests, écart accepté (décidé) : l'unique barrière de fusion forme un tout) et #25 (`verify-main`). `ACKNOWLEDGED` est vide ; PR d'avant la CI : #1, #3, #4, #5, #9, #10, #11, #15, #16. **Défaut trouvé** : les crochets installés dataient de la #5 alors que la #14 avait modifié `tools.lock`, et `install-hooks -Verify` ne le voyait pas (point 1 de l'issue #6). Je les ai réinstallés depuis la copie principale (`e080f45…`, conformes sur 5 copies). `CLAUDE.md` est à faire changer par l'orchestrateur après la fusion de #23 (`cargo xtask merge <PR>` depuis la racine de la copie principale). 1er relecteur neuf de #23 lancé.
