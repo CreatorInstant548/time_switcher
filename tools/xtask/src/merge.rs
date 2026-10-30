@@ -2,24 +2,24 @@
 //! depuis la copie principale, avec le binaire compilé depuis `main` (J2). Les contrôles se font
 //! dans l'ordre de la consigne T3a, et le premier qui échoue arrête tout : en cas de doute, refus.
 //! `--dry-run` fait tous les contrôles, sans fusion ni *issue* : il poursuit après une suspension
-//! des fusions (étape 2) pour tout montrer, mais son résultat reste alors un refus.
+//! des fusions (étape 2) pour tout montrer, mais son résultat reste alors un refus. Il n'appelle
+//! jamais `gh pr merge` ni `git pull`, et ne touche ni l'arbre, ni l'index, ni les branches de la
+//! copie principale (test `dry_run_never_merges`). Les deux `git fetch` (`origin` et
+//! `pull/<n>/head`) écrivent en revanche dans `.git` : références distantes, `FETCH_HEAD`, objets.
+//! Hors de la copie principale, son résultat est au mieux « OK sauf J2 », avec le code 3 (m1).
 //! spec: carnet architecture-securite.md SEC0-15, SEC0-16 ; §9.6 G3, G8 ; §9.8 J1, J2, J8
 //! Voir aussi l'issue #6, conditions T3-a et T3-b.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
-use std::time::{Duration, UNIX_EPOCH};
 
 use serde_json::Value;
 
 use crate::github::{Repo, approved, is_sha, same_path};
-use crate::{hooks, sensitive, sys, verify_main, workflows};
+use crate::{build_inputs, hooks, sensitive, verify_main, workflows};
 
-/// Entrées dont tout changement fait recompiler `xtask` : ses sources et la chaîne de compilation.
-/// Un binaire plus ancien que leur dernier commit n'a pas été compilé depuis le code de `main`
-/// (J2). `Cargo.lock` et `Cargo.toml` n'y sont pas : cargo ne recompile `xtask` que si le
-/// changement le concerne, et la règle refuserait alors toutes les fusions suivantes.
-const XTASK_INPUTS: [&str; 2] = ["tools/xtask", "rust-toolchain.toml"];
+/// Empreinte des entrées de construction, inscrite par `build.rs` (J2, AS-23 point 1).
+const BUILT_FROM: &str = env!("XTASK_INPUTS_SHA256");
 const TYPES: [&str; 9] = [
     "feat", "fix", "refactor", "perf", "test", "docs", "build", "ci", "chore",
 ];
@@ -73,7 +73,34 @@ fn step(n: &str, what: &str) {
     println!("\n[{n}] {what}");
 }
 
-/// J2 : binaire sous `<copie principale>\target`, plus récent que le dernier commit de ses entrées.
+/// Empreinte des entrées de construction de `xtask` dans `HEAD` de la copie principale.
+fn head_fingerprint(repo: &Repo) -> Result<String, String> {
+    let ls = repo.git(&["ls-tree", "-r", "-z", "--full-tree", "HEAD"])?;
+    let mut files = Vec::new();
+    for entry in ls.split('\0').filter(|e| !e.is_empty()) {
+        let (meta, path) = entry
+            .split_once('\t')
+            .ok_or("sortie de git ls-tree illisible")?;
+        if !build_inputs::is_input(path) {
+            continue;
+        }
+        let oid = match meta.split(' ').collect::<Vec<_>>()[..] {
+            ["100644" | "100755", "blob", oid] => oid,
+            _ => {
+                return Err(format!(
+                    "{path} : entrée de construction inattendue ({meta})"
+                ));
+            }
+        };
+        files.push((
+            path.to_owned(),
+            repo.out(&repo.main, "git", &["cat-file", "blob", oid])?,
+        ));
+    }
+    Ok(build_inputs::fingerprint(&files))
+}
+
+/// J2 : binaire sous `<copie principale>\target`, construit depuis les entrées exactes de `HEAD`.
 fn binary_check(repo: &Repo) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("exécutable introuvable : {e}"))?;
     // Chemins canoniques (jonction de l'emplacement résolue, casse du disque) : comparaison par composants.
@@ -92,25 +119,21 @@ fn binary_check(repo: &Repo) -> Result<(), String> {
             "lancer cargo xtask merge <PR> depuis la racine de la copie principale",
         ));
     }
-    let mut args = vec!["log", "-1", "--format=%ct", "HEAD", "--"];
-    args.extend(XTASK_INPUTS);
-    let ct: u64 = repo
-        .git(&args)?
-        .trim()
-        .parse()
-        .map_err(|_| "date du dernier commit illisible")?;
-    let built = sys::modified(&exe).ok_or("date du binaire illisible")?;
-    if built <= UNIX_EPOCH + Duration::from_secs(ct) {
+    let want = head_fingerprint(repo)?;
+    if BUILT_FROM != want {
         return Err(refuse(
-            "binaire compilé avant le dernier commit de main qui touche xtask",
-            "relancer cargo xtask merge <PR> (cargo recompile depuis main) ; si le refus persiste, vérifier l'horloge du poste",
+            format!(
+                "binaire construit depuis d'autres entrées que HEAD de main (empreinte {BUILT_FROM}, attendu {want})"
+            ),
+            "relancer cargo xtask merge <PR> depuis la racine de la copie principale : cargo reconstruit xtask",
         ));
     }
     Ok(())
 }
 
 /// Étape 1 : copie principale propre, sur `main`, à jour d'`origin/main` (par `--ff-only`).
-fn main_copy(repo: &Repo) -> Result<(), String> {
+/// Rend faux en `--dry-run` si J2 n'est pas rempli (m1).
+fn main_copy(repo: &Repo) -> Result<bool, String> {
     let pull = "git pull --ff-only dans la copie principale";
     if repo.git(&["branch", "--show-current"])? != "main" {
         return Err(refuse(
@@ -141,18 +164,21 @@ fn main_copy(repo: &Repo) -> Result<(), String> {
         ));
     }
     if repo.dry_run {
+        let mut j2 = true;
         if let Err(e) = binary_check(repo) {
             println!(
                 "  AVERTISSEMENT (--dry-run) : contrôle J2 non rempli, bloquant sans --dry-run :\n  {e}"
             );
+            j2 = false;
         }
         if !same_path(&repo.here, &repo.main) {
             println!(
                 "  AVERTISSEMENT (--dry-run) : lancé hors de la copie principale ({}).",
                 repo.here.display()
             );
+            j2 = false;
         }
-        return Ok(());
+        return Ok(j2);
     }
     if !same_path(&repo.here, &repo.main) {
         return Err(refuse(
@@ -163,24 +189,20 @@ fn main_copy(repo: &Repo) -> Result<(), String> {
             "cd vers la copie principale, puis cargo xtask merge <PR>",
         ));
     }
-    binary_check(repo)
+    binary_check(repo).map(|()| true)
 }
 
 /// PR ouverte, base `main`, hors brouillon, fusionnable, en retard de 0 commit, titre A31.
 fn pr_state(repo: &Repo, pr: u64) -> Result<Value, String> {
-    let v = sys::stdout_of(
-        &repo.main,
-        "gh",
-        &[
-            "pr",
-            "view",
-            &pr.to_string(),
-            "-R",
-            &repo.slug,
-            "--json",
-            "number,state,baseRefName,headRefOid,isDraft,mergeable,changedFiles,title,url",
-        ],
-    )?;
+    let v = repo.gh(&[
+        "pr",
+        "view",
+        &pr.to_string(),
+        "-R",
+        &repo.slug,
+        "--json",
+        "number,state,baseRefName,headRefOid,isDraft,mergeable,changedFiles,title,url",
+    ])?;
     let p: Value = serde_json::from_str(&v).map_err(|e| format!("gh pr view illisible : {e}"))?;
     let sha = p["headRefOid"]
         .as_str()
@@ -310,12 +332,13 @@ fn workflows_at(repo: &Repo, sha: &str) -> Result<(), String> {
     ))
 }
 
-fn run(repo: &Repo, pr: u64) -> Result<(), String> {
+/// Vrai si tout est conforme ; faux en `--dry-run` quand seul J2 manque (m1).
+fn run(repo: &Repo, pr: u64) -> Result<bool, String> {
     step(
         "1",
-        "copie principale propre, sur main, à jour ; binaire compilé depuis main (J2)",
+        "copie principale propre, sur main, à jour ; binaire construit depuis main (J2)",
     );
-    main_copy(repo)?;
+    let j2 = main_copy(repo)?;
     step("2", "verify-main (SEC0-17) et hooks verify (SEC0-35)");
     let history = verify_main::verify_or_report(repo)?;
     let hooks_ok = hooks::verify_or_report(repo)?;
@@ -366,7 +389,7 @@ fn run(repo: &Repo, pr: u64) -> Result<(), String> {
         ));
     }
     repo.git(&["fetch", "--quiet", "origin", &format!("pull/{pr}/head")])?;
-    if !sys::succeeds(
+    if !repo.ok(
         &repo.main,
         "git",
         &["cat-file", "-e", &format!("{sha}^{{commit}}")],
@@ -374,6 +397,22 @@ fn run(repo: &Repo, pr: u64) -> Result<(), String> {
         return Err(refuse(
             format!("tête {sha} introuvable après git fetch"),
             "réessayer",
+        ));
+    }
+    // B1 : sous Windows, deux chemins égaux à la casse près s'écrasent au git pull.
+    let rules = sensitive::rules(repo)?;
+    let tree = repo.git(&["ls-tree", "-r", "-z", "--name-only", "--full-tree", &sha])?;
+    let tree: Vec<String> = tree
+        .split('\0')
+        .filter(|f| !f.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let case = rules.tree_errors(&tree);
+    if !case.is_empty() {
+        case.iter().for_each(|e| println!("  - {e}"));
+        return Err(refuse(
+            "arbre de tête refusé : casse ou chemin non ASCII (B1)",
+            "renommer les chemins dans la PR",
         ));
     }
     let base = repo.git(&["merge-base", "origin/main", &sha])?;
@@ -388,7 +427,7 @@ fn run(repo: &Repo, pr: u64) -> Result<(), String> {
     paths.dedup();
     println!("  {count} fichier(s)");
     step("7", "chemins sensibles (liste d'origin/main, G8)");
-    let hits = sensitive::hits(repo, &sensitive::rules(repo)?, &base, &sha, &paths)?;
+    let hits = sensitive::hits(repo, &rules, &base, &sha, &paths)?;
     println!(
         "  {}",
         if hits.is_empty() {
@@ -430,40 +469,32 @@ fn run(repo: &Repo, pr: u64) -> Result<(), String> {
     }
     if repo.dry_run {
         println!("  --dry-run : tous les contrôles sont passés ; aucune fusion (PR #{pr}, {sha}).");
-        return Ok(());
+        return Ok(j2);
     }
     let n = pr.to_string();
-    sys::stdout_of(
-        &repo.main,
-        "gh",
-        &[
-            "pr",
-            "merge",
-            &n,
-            "-R",
-            &repo.slug,
-            "--squash",
-            "--delete-branch",
-            "--match-head-commit",
-            &sha,
-        ],
-    )
+    repo.gh(&[
+        "pr",
+        "merge",
+        &n,
+        "-R",
+        &repo.slug,
+        "--squash",
+        "--delete-branch",
+        "--match-head-commit",
+        &sha,
+    ])
     .or_else(|e| {
         // gh sort en erreur si la fusion distante a réussi mais pas la suppression de la branche
         // locale (tenue par un worktree) : l'état de la PR fait foi.
-        let view = sys::stdout_of(
-            &repo.main,
-            "gh",
-            &[
-                "pr",
-                "view",
-                &n,
-                "-R",
-                &repo.slug,
-                "--json",
-                "state,mergeCommit",
-            ],
-        );
+        let view = repo.gh(&[
+            "pr",
+            "view",
+            &n,
+            "-R",
+            &repo.slug,
+            "--json",
+            "state,mergeCommit",
+        ]);
         let v: Value = view
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
@@ -486,7 +517,7 @@ fn run(repo: &Repo, pr: u64) -> Result<(), String> {
         "  PR #{pr} fusionnée ({sha}) ; copie principale : {}",
         repo.git(&["log", "--oneline", "-1"])?
     );
-    Ok(())
+    Ok(true)
 }
 
 pub fn main(args: &[String]) -> ExitCode {
@@ -501,9 +532,15 @@ pub fn main(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     match Repo::open(dry_run, true).and_then(|repo| run(&repo, pr)) {
-        Ok(()) => {
+        Ok(true) => {
             println!("\nRésultat : OK");
             ExitCode::SUCCESS
+        }
+        Ok(false) => {
+            println!(
+                "\nRésultat : OK sauf J2 (--dry-run hors de la copie principale, ou binaire non construit depuis main)"
+            );
+            ExitCode::from(3)
         }
         Err(e) => {
             println!("\nRésultat : REFUS : {e}");
@@ -514,7 +551,13 @@ pub fn main(args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::path::Path;
+    use std::rc::Rc;
+
     use serde_json::json;
+
+    use crate::github::{Output, Run};
 
     use super::*;
 
@@ -554,5 +597,179 @@ mod tests {
             ["README.md", "docs/x.ps1", "tools/dev/guard-git.ps1"]
         );
         assert!(pr_files(&[json!({"status": "added"})]).is_err());
+    }
+
+    /// B2 : sur une copie propre, l'empreinte inscrite par `build.rs` égale celle recalculée sur
+    /// `HEAD` par Git. Ignoré par défaut (exige une copie sans modification non commise) :
+    /// `cargo test -p xtask -- --ignored built_from_head`.
+    #[test]
+    #[ignore = "copie de travail propre exigée"]
+    fn built_from_head() {
+        let root = crate::sys::stdout_of(Path::new("."), "git", &["rev-parse", "--show-toplevel"])
+            .unwrap();
+        let root = std::path::PathBuf::from(root.trim());
+        let repo = Repo {
+            main: root.clone(),
+            here: root,
+            slug: String::new(),
+            dry_run: true,
+            cache: std::env::temp_dir(),
+            home: None,
+            runner: Box::new(crate::github::System),
+        };
+        assert_eq!(head_fingerprint(&repo).unwrap(), BUILT_FROM);
+    }
+
+    /// Lanceur enregistreur : réponses par préfixe de commande (le plus long gagne), appels notés.
+    struct Fake {
+        calls: Rc<RefCell<Vec<String>>>,
+        answers: Vec<(String, String)>,
+    }
+
+    impl Run for Fake {
+        fn run(&self, _dir: &Path, prog: &str, args: &[&str]) -> Result<Output, String> {
+            let line = format!("{prog} {}", args.join(" "));
+            self.calls.borrow_mut().push(line.clone());
+            let best = self
+                .answers
+                .iter()
+                .filter(|(k, _)| line.starts_with(k.as_str()))
+                .max_by_key(|(k, _)| k.len());
+            match best {
+                Some((_, out)) => Ok((Some(0), out.clone().into_bytes(), String::new())),
+                None => Err(format!("commande inattendue : {line}")),
+            }
+        }
+    }
+
+    /// B4, AS-23 point 2 : en `--dry-run`, `gh pr merge` n'est jamais appelé, et aucune commande
+    /// n'écrit dans la copie principale (ni `pull`, ni `config`, ni `checkout`, ni *issue*). Seuls
+    /// les `git fetch` écrivent, dans `.git`.
+    #[test]
+    fn dry_run_never_merges() {
+        const SHA: &str = "c41e984ba8594dedd592744fcb69a70f3716cd87";
+        const MAIN: &str = "43b3509aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let pr = json!({"number": 7, "state": "OPEN", "baseRefName": "main", "headRefOid": SHA,
+            "isDraft": false, "mergeable": "MERGEABLE", "changedFiles": 1,
+            "title": "docs(essai): x", "url": "u"});
+        let check = json!({"name": "ci-ok", "status": "completed", "conclusion": "success",
+            "head_sha": SHA, "check_suite": {"id": 5}});
+        let wfr = json!({"workflow_runs": [{"path": ".github/workflows/ci.yml", "workflow_id": 9,
+            "head_sha": SHA, "check_suite_id": 5, "repository": {"full_name": "o/r"}}]});
+        let answers = [
+            ("git branch --show-current", "main".to_owned()),
+            ("git status --porcelain", String::new()),
+            ("git fetch", String::new()),
+            ("git rev-parse", MAIN.to_owned()),
+            ("git ls-tree", String::new()),
+            ("git cat-file -e", String::new()),
+            (
+                "git cat-file blob origin/main:tools/dev/tools.lock",
+                "gitleaks.path = \"x\"\n".to_owned(),
+            ),
+            (
+                "git cat-file blob origin/main:tools/ci/sensitive-paths.txt",
+                include_str!("../../ci/sensitive-paths.txt").to_owned(),
+            ),
+            ("git worktree list", String::new()),
+            (
+                "git cat-file blob origin/pilotage:architecture-securite.md",
+                "## 9. Avis\n".to_owned(),
+            ),
+            (
+                "git rev-list --reverse origin/main",
+                "8ca4088bd38829d6c5aaa9281c4fa32b33a95e35\n2b5681461e46cc1cc008e786b8b04ccd22b4993f\n"
+                    .to_owned(),
+            ),
+            ("git merge-base", MAIN.to_owned()),
+            ("git diff --name-only", "docs/a.md\0".to_owned()),
+            (
+                &format!("git ls-tree -r -z --name-only --full-tree {SHA}") as &str,
+                "docs/a.md\0".to_owned(),
+            ),
+            ("gh issue list", "[]".to_owned()),
+            ("gh pr view 7", pr.to_string()),
+            (
+                "gh api repos/o/r/compare/",
+                json!({"behind_by": 0}).to_string(),
+            ),
+            (
+                "gh api repos/o/r/actions/workflows/ci.yml",
+                json!({"id": 9}).to_string(),
+            ),
+            (
+                "gh api --paginate repos/o/r/commits/",
+                json!({"check_runs": [check]}).to_string(),
+            ),
+            ("gh api repos/o/r/actions/runs", wfr.to_string()),
+            (
+                "gh api --paginate repos/o/r/pulls/7/files",
+                json!([{"filename": "docs/a.md"}]).to_string(),
+            ),
+        ];
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let nowhere = std::env::temp_dir().join("xtask-essai-inexistant");
+        let repo = Repo {
+            main: nowhere.clone(),
+            here: nowhere.clone(),
+            slug: "o/r".to_owned(),
+            dry_run: true,
+            cache: nowhere.join("cache"),
+            home: None,
+            runner: Box::new(Fake {
+                calls: Rc::clone(&calls),
+                answers: answers
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), v.clone()))
+                    .collect(),
+            }),
+        };
+        // Crochets non conformes dans ce faux dépôt : suspension, mais le dry-run va jusqu'au bout.
+        let result = run(&repo, 7);
+        let calls = calls.borrow();
+        assert!(
+            result.is_err_and(|e| e.contains("fusions suspendues")),
+            "{calls:#?}"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c.starts_with("gh pr view 7"))
+                .count(),
+            2,
+            "étape 11 atteinte"
+        );
+        let writes = [
+            "gh pr merge",
+            "gh issue create",
+            "gh pr edit",
+            "git pull",
+            "git config",
+            "git checkout",
+            "git switch",
+            "git reset",
+            "git commit",
+            "git push",
+            "git update-ref",
+            "git merge ",
+            "git branch -f",
+            "git branch -d",
+            "git branch -D",
+            "git branch -m",
+            "git worktree add",
+            "git stash",
+        ];
+        for c in calls.iter() {
+            assert!(
+                !writes.iter().any(|w| c.starts_with(w)),
+                "écriture en --dry-run : {c}"
+            );
+            assert!(c.starts_with("gh ") || c.starts_with("git "), "{c}");
+        }
+        assert!(
+            calls
+                .iter()
+                .any(|c| c == "git fetch --quiet origin pull/7/head")
+        );
     }
 }

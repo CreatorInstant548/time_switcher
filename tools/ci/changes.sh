@@ -40,7 +40,7 @@ entries=$({ git show origin/main:tools/ci/sensitive-paths.txt 2>/dev/null || tru
             cat tools/ci/sensitive-paths.txt; } |
           sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' | sort -u)
 
-prefixes=(); exact=(); regex=""; first=""; lock_rule=0
+prefixes=(); exact=(); regex=""; first=""; lock_rule=0; toml_sources=0; lock_source=0
 while IFS= read -r e; do
   case $e in
     section:*)
@@ -49,8 +49,11 @@ while IFS= read -r e; do
       case $p in *.\*) r="${p%.\*}"; r="${r//./[.]}([.].+)?" ;; *) r=${p//./[.]}; r=${r//\*/.+} ;; esac
       regex="${regex:+$regex|}$r"; first="${first:+$first|}${p%%.*}" ;;
     cargo-lock:new-crate) lock_rule=1 ;;
-    */) prefixes+=("$e") ;;
-    *) exact+=("$e") ;;
+    cargo-toml:sources) toml_sources=1 ;;
+    cargo-lock:source-change) lock_source=1 ;;
+    # B1 : chemins comparés en minuscules (Windows confond TOOLS/ et tools/).
+    */) prefixes+=("${e,,}") ;;
+    *) exact+=("${e,,}") ;;
   esac
 done <<< "$entries"
 
@@ -71,19 +74,56 @@ crate_names() { # crate_names <révision>
   { git show "$1:Cargo.lock" 2>/dev/null || true; } | sed -n 's/^name = "\(.*\)"$/\1/p' | sort -u
 }
 
+# Couples « nom source » des [[package]] d'un Cargo.lock.
+crate_sources() { # crate_sources <révision>
+  { git show "$1:Cargo.lock" 2>/dev/null || true; } | awk '
+    /^\[\[package\]\]/ { if (n != "") print n " " s; n = ""; s = ""; next }
+    /^name = "/ { n = $3; gsub(/"/, "", n) } /^source = "/ { s = $3; gsub(/"/, "", s) }
+    END { if (n != "") print n " " s }' | sort -u
+}
+
+# Lignes ajoutées ou retirées d'un Cargo.toml (espaces retirés) qui touchent à [patch, [replace
+# ou à une source hors crates.io (AS-23 point 4).
+toml_source_lines() { # toml_source_lines <base> <tête> <fichier>
+  # diff sort en 1 quand les fichiers diffèrent : ce code ne doit pas compter (pipefail).
+  { diff <({ git show "$1:$3" 2>/dev/null || true; } | tr -d ' \t\r' | tr 'A-Z' 'a-z' | sort) \
+         <({ git show "$2:$3" 2>/dev/null || true; } | tr -d ' \t\r' | tr 'A-Z' 'a-z' | sort) || true; } |
+    grep -E '^[<>]' | grep -qE '\[patch|\[replace|git=|registry=|branch=|tag=|rev='
+}
+
 sensitive_hits=()
 is_sensitive() { # is_sensitive <fichier>
-  local f=$1 e
-  for e in "${prefixes[@]}"; do [[ $f == "$e"* ]] && return 0; done
-  for e in "${exact[@]}"; do [[ $f == "$e" ]] && return 0; done
-  case $f in
-    Cargo.toml|*/Cargo.toml)
-      [ "$(sections_of "$mb" "$f")" != "$(sections_of "$head" "$f")" ] && return 0 ;;
-    Cargo.lock)
-      [ "$lock_rule" = 1 ] && [ -n "$(comm -13 <(crate_names "$mb") <(crate_names "$head"))" ] && return 0 ;;
+  local f=$1 l=${1,,} e
+  l=${l#./}
+  for e in "${prefixes[@]}"; do [[ $l == "$e"* ]] && return 0; done
+  for e in "${exact[@]}"; do [[ $l == "$e" ]] && return 0; done
+  case $l in
+    cargo.toml|*/cargo.toml)
+      [ "$(sections_of "$mb" "$f")" != "$(sections_of "$head" "$f")" ] && return 0
+      [ "$toml_sources" = 1 ] && toml_source_lines "$mb" "$head" "$f" && return 0 ;;
+    cargo.lock)
+      [ "$lock_rule" = 1 ] && [ -n "$(comm -13 <(crate_names "$mb") <(crate_names "$head"))" ] && return 0
+      if [ "$lock_source" = 1 ]; then
+        # Une crate de la base apparaît avec une source nouvelle.
+        while read -r name _; do
+          crate_sources "$mb" | awk -v n="$name" '$1 == n { found = 1 } END { exit !found }' && return 0
+        done < <(comm -13 <(crate_sources "$mb") <(crate_sources "$head"))
+      fi ;;
   esac
   return 1
 }
+
+# B1 : l'arbre de tête ne doit avoir ni deux chemins égaux à la casse près, ni chemin non ASCII
+# sous un chemin sensible. Sinon : échec (Windows écraserait un fichier suivi au git pull).
+tree=$(git ls-tree -r -z --name-only --full-tree "$head" | tr '\0' '\n')
+dups=$(printf '%s\n' "$tree" | tr 'A-Z' 'a-z' | sort | uniq -d)
+[ -z "$dups" ] || fail "chemins égaux à la casse près dans la tête : $(printf '%s ' $dups)"
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  if printf '%s' "$f" | LC_ALL=C grep -q '[^ -~]' && is_sensitive "$f"; then
+    fail "chemin non ASCII sous un chemin sensible : $f"
+  fi
+done < <(printf '%s\n' "$tree" | LC_ALL=C grep '[^ -~]' || true)
 
 for f in "${files[@]}"; do
   case $f in

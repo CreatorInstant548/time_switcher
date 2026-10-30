@@ -83,12 +83,6 @@ pub fn run_captured(root: &Path, prog: &str, args: &[&str]) -> Result<(bool, Str
 
 /// Sortie standard d'une commande qui doit réussir.
 pub fn stdout_of(root: &Path, prog: &str, args: &[&str]) -> Result<String, String> {
-    String::from_utf8(bytes_of(root, prog, args)?)
-        .map_err(|_| format!("sortie non UTF-8 de {prog}"))
-}
-
-/// Sortie standard brute d'une commande qui doit réussir (contenu d'un objet Git).
-pub fn bytes_of(root: &Path, prog: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     let out = command(root, prog, args)
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
@@ -97,35 +91,24 @@ pub fn bytes_of(root: &Path, prog: &str, args: &[&str]) -> Result<Vec<u8>, Strin
     if !out.status.success() {
         return Err(format!("échec de « {prog} {} »", args.join(" ")));
     }
-    Ok(out.stdout)
+    String::from_utf8(out.stdout).map_err(|_| format!("sortie non UTF-8 de {prog}"))
 }
 
-/// Code de sortie (`None` si tué), sortie standard et sortie d'erreur, séparées.
+/// Code de sortie (`None` si tué), sortie standard brute et sortie d'erreur, séparées.
 pub fn outputs(
     root: &Path,
     prog: &str,
     args: &[&str],
-) -> Result<(Option<i32>, String, String), String> {
+) -> Result<(Option<i32>, Vec<u8>, String), String> {
     let out = command(root, prog, args)
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("{prog} introuvable ou impossible à lancer : {e}"))?;
     Ok((
         out.status.code(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.stdout,
         String::from_utf8_lossy(&out.stderr).into_owned(),
     ))
-}
-
-/// Code de sortie seul, sorties tues : `git cat-file -e` et autres tests de présence.
-pub fn succeeds(root: &Path, prog: &str, args: &[&str]) -> Result<bool, String> {
-    let status = command(root, prog, args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| format!("{prog} introuvable ou impossible à lancer : {e}"))?;
-    Ok(status.success())
 }
 
 #[allow(clippy::disallowed_methods)] // outil : copie épinglée des crochets, corps d'issue.
@@ -146,11 +129,6 @@ pub fn entries(dir: &Path) -> Result<Vec<(String, bool)>, String> {
     }
     out.sort();
     Ok(out)
-}
-
-/// Date de modification d'un fichier.
-pub fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 /// Dossier personnel de l'utilisateur (réglages de Claude Code, lus sans jamais être écrits).

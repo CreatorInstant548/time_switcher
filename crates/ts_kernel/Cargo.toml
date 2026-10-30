@@ -17,5 +17,9 @@ dev-introspection = []
 external-pilot = []
 public = []
 
+[dependencies]
+blake3.workspace = true
+chacha20.workspace = true
+
 [lints]
 workspace = true
