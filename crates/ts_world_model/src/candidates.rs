@@ -24,6 +24,7 @@ pub enum CandidateKind {
     Alarm,
 }
 
+// PROVISOIRE(conception #34): candidates are not ClientShippable until the design decides (V12).
 // spec: revues/generation.md P12, V12
 /// A generic candidate position on one level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
