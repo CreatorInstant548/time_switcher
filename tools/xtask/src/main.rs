@@ -89,7 +89,7 @@ const STEPS: [Step; 14] = [
     ("spec-map", "spec-map check", steps::spec_map),
 ];
 
-const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask determinism [--full] [--bless] | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--no-cache] | cargo xtask hooks install|verify [--dry-run]";
+const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask determinism [--full] [--bless] | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--origin <n>d|all] | cargo xtask hooks install|verify [--dry-run]";
 
 struct Options {
     all: bool,

@@ -1,14 +1,15 @@
-//! `cargo xtask verify-main [--dry-run] [--no-cache]`: approvals of the sensitive commits of
-//! `origin/main` (SEC0-17, AS-31 E3). Every commit after the base must be a single-parent commit,
-//! so that its sensitivity can be computed. Since T3e-2, a non-sensitive commit needs nothing else:
-//! the GitHub ruleset of `main` (26213563) enforces the PR, `ci-ok` and linear history server side,
-//! and `repo-settings.ps1 -Check` watches that ruleset. A commit that touches a sensitive path is
-//! still the squash of a merged PR (J3), with `ci-ok` green on its head (G3), `review-ok` and
-//! `archsec-ok` on that head or carried over (AS-40), cross-checked with §9 of the architecture
-//! lead's log (J4), all read from GitHub on every run (V5, AS-39). There is no local cache any
-//! more: it only served non-sensitive commits, and `--no-cache` is accepted for the nightly job.
-//! An anomaly opens an issue and suspends merges until it is listed in [`ACKNOWLEDGED`] (J5). In
-//! CI mode, no `git fetch`: the refs come from the checkout (`refresh`).
+//! `cargo xtask verify-main [--dry-run] [--origin <n>d|all]`: approvals of the sensitive commits
+//! of `origin/main` (SEC0-17, AS-31 E3). Every commit after the base must be a single-parent
+//! commit, so that its sensitivity can be computed. Since T3e-2, a non-sensitive commit needs
+//! nothing else at merge time: the GitHub ruleset of `main` (26213563) enforces the PR, `ci-ok` and
+//! linear history server side, and `repo-settings.ps1 -Check` watches that ruleset. A commit that
+//! touches a sensitive path is still the squash of a merged PR (J3), with `ci-ok` green on its head
+//! (G3), `review-ok` and `archsec-ok` on that head or carried over (AS-40), cross-checked with §9
+//! of the architecture lead's log (J4), all read from GitHub on every run (V5, AS-39).
+//! `--origin` (AS-42, nightly job) adds J3 alone, one read per commit, for the non-sensitive
+//! commits of the window ([`Origin`]): a ruleset disabled for a while, then restored, cannot hide a
+//! commit pushed without a PR. An anomaly opens an issue and suspends merges until it is listed in
+//! [`ACKNOWLEDGED`] (J5). In CI mode, no `git fetch`: the refs come from the checkout (`refresh`).
 //! spec: carnet architecture-securite.md SEC0-17 ; §9.6 G3 ; §9.8 J3, J4, J5
 //! Voir aussi l'issue #6, point 2.
 
@@ -91,12 +92,81 @@ fn pull_of(repo: &Repo, sha: &str) -> Result<Result<Value, String>, String> {
     })
 }
 
+/// Commits checked by `--origin` (AS-42).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// Every commit after the base (weekly run).
+    All,
+    /// From the tip down to, and including, the first commit whose committer date is before this
+    /// Unix time. A backdated commit pushed directly is thus still checked: it is either above a
+    /// recent squash, so in the window, or the first old one.
+    Since(i64),
+}
+
+impl Origin {
+    /// `all`, or `<n>d` with `n` in 1..=366, counted back from `now` (Unix seconds).
+    pub fn parse(s: &str, now: i64) -> Option<Self> {
+        if s == "all" {
+            return Some(Self::All);
+        }
+        let days: i64 = s.strip_suffix('d')?.parse().ok()?;
+        (1..=366)
+            .contains(&days)
+            .then_some(Self::Since(now - days * 86_400))
+    }
+}
+
+/// Commits of the window, from `git log --format=%H %ct` (tip first): every line down to, and
+/// including, the first one dated before `cutoff`.
+pub fn window(log: &str, cutoff: i64) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for line in log.lines() {
+        let (sha, date) = line
+            .split_once(' ')
+            .ok_or_else(|| format!("unreadable git log line: {line}"))?;
+        let date: i64 = date
+            .parse()
+            .map_err(|_| format!("unreadable commit date: {line}"))?;
+        out.push(sha.to_owned());
+        if date < cutoff {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// AS-42 (J3 without G3): `commits/<sha>/pulls` must list exactly one PR whose
+/// `merge_commit_sha` is `sha`, merged (`merged_at` set) into `main`. Its number, or the anomaly.
+pub fn judge_squash(pulls: &[Value], sha: &str) -> Result<u64, String> {
+    let found: Vec<&Value> = pulls
+        .iter()
+        .filter(|p| p["merge_commit_sha"].as_str() == Some(sha))
+        .collect();
+    let [pr] = found[..] else {
+        return Err(format!(
+            "{} PR dont ce commit est le squash, attendu une (J3, AS-42)",
+            found.len()
+        ));
+    };
+    let n = pr["number"].as_u64().unwrap_or_default();
+    if pr["merged_at"].as_str().is_some_and(|d| !d.is_empty())
+        && pr["base"]["ref"].as_str() == Some("main")
+        && n > 0
+    {
+        Ok(n)
+    } else {
+        Err(format!(
+            "PR #{n} non fusionnée dans main par ce commit (J3, AS-42)"
+        ))
+    }
+}
+
 /// Anomalies d'un commit (vide si conforme), avec une note pour l'affichage.
 ///
 /// T3e-2 (AS-31 E3): a non-sensitive commit makes no GitHub read; its PR and `ci-ok` are enforced
-/// by the ruleset of `main`. It must still have exactly one parent: sensitivity is computed against
-/// that parent, so a commit with none or several could not be classified (and `required_linear_history`
-/// forbids it anyway).
+/// by the ruleset of `main`. With `origin` (AS-42), it makes exactly one: J3 by [`judge_squash`].
+/// It must still have exactly one parent: sensitivity is computed against that parent, so a commit
+/// with none or several could not be classified (and `required_linear_history` forbids it anyway).
 ///
 /// V5 (AS-39): for a commit that touches a sensitive path, the PR (`pulls/<n>`: head, `merged`,
 /// `merge_commit_sha`), G3, the approvals and then J4 use facts read from GitHub on this run.
@@ -105,6 +175,7 @@ fn check_commit(
     rules: &sensitive::Rules,
     section: &str,
     sha: &str,
+    origin: bool,
 ) -> Result<(Vec<String>, String), String> {
     let parents = repo.git(&["rev-list", "--parents", "-n", "1", sha])?;
     let parent = match parents.split_whitespace().collect::<Vec<_>>()[..] {
@@ -123,6 +194,19 @@ fn check_commit(
         .map(str::to_owned)
         .collect();
     let hits = sensitive::hits(repo, rules, &parent, sha, &files)?;
+    if hits.is_empty() && origin {
+        let pulls = repo.api_all(&format!(
+            "repos/{}/commits/{sha}/pulls?per_page=100",
+            repo.slug
+        ))?;
+        return Ok(match judge_squash(&pulls, sha) {
+            Ok(n) => (
+                Vec::new(),
+                format!("non sensible, squash de la PR #{n} (AS-42)"),
+            ),
+            Err(why) => (vec![why], String::new()),
+        });
+    }
     if hits.is_empty() {
         return Ok((
             Vec::new(),
@@ -191,7 +275,8 @@ fn check_commit(
 pub type Anomalies = Vec<(String, Vec<String>)>;
 
 /// Anomalies non levées de l'historique : (commit, motifs). `Err` si un contrôle n'a pas pu se faire.
-pub fn check(repo: &Repo) -> Result<Anomalies, String> {
+/// `origin`: the window of the AS-42 check, if any.
+pub fn check(repo: &Repo, origin: Option<Origin>) -> Result<Anomalies, String> {
     let carnet = repo
         .blob(&repo.main, "origin/pilotage", CARNET)
         .map_err(|e| format!("origin/pilotage illisible ({e}) : J4 impossible"))?
@@ -206,13 +291,24 @@ pub fn check(repo: &Repo) -> Result<Anomalies, String> {
             "commit de base {b} absent d'origin/main : historique réécrit"
         ));
     }
+    let in_window = match origin {
+        Some(Origin::Since(cutoff)) => Some(window(
+            &repo.git(&["log", "--format=%H %ct", "origin/main"])?,
+            cutoff,
+        )?),
+        _ => None,
+    };
     let mut anomalies = Vec::new();
     for sha in history {
         if BASE.contains(&sha) {
             println!("  {} base", &sha[..7]);
             continue;
         }
-        let (bad, note) = check_commit(repo, &rules, &section, sha)?;
+        let j3 = match &in_window {
+            Some(w) => w.iter().any(|s| s == sha),
+            None => origin.is_some(),
+        };
+        let (bad, note) = check_commit(repo, &rules, &section, sha, j3)?;
         if bad.is_empty() {
             println!("  {} conforme ({note})", &sha[..7]);
         } else if let Some((_, why, issue)) = ACKNOWLEDGED.iter().find(|a| a.0 == sha) {
@@ -329,18 +425,22 @@ pub struct Health {
 /// `verify-main`, avec une *issue* par anomalie ; vrai si l'historique et les réglages GitHub sont
 /// conformes. L'historique passe d'abord : un `-Check` qui échoue ne le cache pas. En `--dry-run`,
 /// un `-Check` qui n'a pas pu conclure compte comme un écart.
-pub fn verify_or_report(repo: &Repo) -> Result<bool, String> {
-    verify_parts(repo).map(|h| h.history && h.settings == Some(true))
+pub fn verify_or_report(repo: &Repo, origin: Option<Origin>) -> Result<bool, String> {
+    health(repo, origin).map(|h| h.history && h.settings == Some(true))
 }
 
-/// [`verify_or_report`], with the history and the settings verdicts apart.
+/// [`verify_or_report`] without `--origin`, with the history and the settings verdicts apart.
 pub fn verify_parts(repo: &Repo) -> Result<Health, String> {
-    let anomalies = check(repo)?;
+    health(repo, None)
+}
+
+fn health(repo: &Repo, origin: Option<Origin>) -> Result<Health, String> {
+    let anomalies = check(repo, origin)?;
     for (sha, bad) in &anomalies {
         let body = format!(
             "`cargo xtask verify-main` : le commit `{sha}` de `main` est en anomalie \
-             (chemin sensible sans ses approbations, ou commit non classable), et les fusions sont \
-             suspendues.\n\n- {}\n\nPour lever l'anomalie : l'inscrire dans `ACKNOWLEDGED` \
+             (chemin sensible sans ses approbations, commit sans PR fusionnée, ou commit non \
+             classable), et les fusions sont suspendues.\n\n- {}\n\nPour lever l'anomalie : l'inscrire dans `ACKNOWLEDGED` \
              (`tools/xtask/src/verify_main.rs`) par une PR de chemin sensible, avec `archsec-ok` (J5).",
             bad.join("\n- ")
         );
@@ -390,20 +490,44 @@ fn refresh(repo: &Repo) -> Result<(), String> {
     Ok(())
 }
 
-pub fn main(args: &[String]) -> ExitCode {
-    let dry_run = args.iter().any(|a| a == "--dry-run");
-    // --no-cache: kept for the nightly job (V3); since T3e-2 there is no cache, every run is full.
-    let no_cache = args.iter().any(|a| a == "--no-cache");
-    if args.iter().any(|a| a != "--dry-run" && a != "--no-cache") {
-        eprintln!("usage : cargo xtask verify-main [--dry-run] [--no-cache]");
-        return ExitCode::from(2);
+/// Wall clock in Unix seconds, for the `--origin <n>d` limit only. Not the tip's date, which a
+/// pusher could set.
+#[allow(clippy::disallowed_methods)] // outil : limite de la fenêtre d'AS-42.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// `--dry-run` and `--origin <since>` (AS-42); `None` on any other argument.
+fn parse_args(args: &[String], now: i64) -> Option<(bool, Option<Origin>)> {
+    let (mut dry_run, mut origin) = (false, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--dry-run" if !dry_run => dry_run = true,
+            "--origin" if origin.is_none() => origin = Some(Origin::parse(it.next()?, now)?),
+            _ => return None,
+        }
     }
+    Some((dry_run, origin))
+}
+
+pub fn main(args: &[String]) -> ExitCode {
+    let Some((dry_run, origin)) = parse_args(args, unix_now()) else {
+        eprintln!("usage : cargo xtask verify-main [--dry-run] [--origin <n>d|all]");
+        return ExitCode::from(2);
+    };
     let result = Repo::open(dry_run, true).and_then(|repo| {
         refresh(&repo)?;
-        if no_cache {
-            println!("  --no-cache: full check (no cache since T3e-2)");
+        match origin {
+            Some(Origin::All) => println!("  --origin all: J3 on every commit (AS-42)"),
+            Some(Origin::Since(t)) => {
+                println!("  --origin: J3 on every commit since Unix time {t} (AS-42)");
+            }
+            None => {}
         }
-        verify_or_report(&repo)
+        verify_or_report(&repo, origin)
     });
     exit_code(result)
 }
@@ -648,8 +772,18 @@ mod tests {
         j4: bool,
         over: &[(String, String)],
     ) -> (Result<Anomalies, String>, Vec<String>) {
+        origin_check(file, j4, None, over)
+    }
+
+    /// [`history_check`] with `--origin`.
+    fn origin_check(
+        file: &str,
+        j4: bool,
+        origin: Option<Origin>,
+        over: &[(String, String)],
+    ) -> (Result<Anomalies, String>, Vec<String>) {
         let (repo, calls) = fake_repo(file, j4, false, over);
-        let result = check(&repo);
+        let result = check(&repo, origin);
         let calls = calls.borrow().clone();
         (result, calls)
     }
@@ -689,7 +823,13 @@ mod tests {
             ("git diff --name-only".to_owned(), format!("{file}\0")),
             (
                 format!("{s}/commits/{COMMIT}/pulls"),
-                json!([{"number": 7, "merge_commit_sha": COMMIT}]).to_string(),
+                json!([{"number": 7, "merge_commit_sha": COMMIT,
+                        "merged_at": "2026-10-30T10:00:00Z", "base": {"ref": "main"}}])
+                .to_string(),
+            ),
+            (
+                "git log --format=%H %ct origin/main".to_owned(),
+                format!("{COMMIT} 2000\n{PARENT} 1000\n"),
             ),
             (
                 "gh api repos/o/r/pulls/7".to_owned(),
@@ -766,6 +906,103 @@ mod tests {
         assert!(reasons(&r).contains("ci-ok absent"), "{r:?}");
     }
 
+    /// `commits/<COMMIT>/pulls` answers `v`.
+    fn pulls(v: &Value) -> Vec<(String, String)> {
+        vec![(
+            format!("gh api --paginate repos/o/r/commits/{COMMIT}/pulls"),
+            v.to_string(),
+        )]
+    }
+
+    /// AS-42: with `--origin`, a non-sensitive commit must be the squash of a PR merged into
+    /// `main`, read with a single request. No PR, an unmerged PR, another merge commit, another
+    /// base or two PRs is an anomaly. A sensitive commit keeps its full check (V5).
+    #[test]
+    fn origin_needs_a_merged_squash_in_one_read() {
+        let all = Some(Origin::All);
+        let (r, calls) = origin_check("docs/a.md", false, all, &[]);
+        assert_eq!(r, Ok(vec![]), "{calls:#?}");
+        assert_eq!(gh_calls(&calls), 1, "{calls:#?}");
+        let merged = json!({"number": 7, "merge_commit_sha": COMMIT,
+                            "merged_at": "2026-10-30T10:00:00Z", "base": {"ref": "main"}});
+        let mut cases = vec![json!([]), json!([merged.clone(), merged.clone()])];
+        for (k, v) in [
+            ("merged_at", Value::Null),
+            ("merge_commit_sha", json!(HEAD)),
+            ("base", json!({"ref": "dev"})),
+        ] {
+            let mut p = merged.clone();
+            p[k] = v;
+            cases.push(json!([p]));
+        }
+        for c in &cases {
+            let (r, calls) = origin_check("docs/a.md", false, all, &pulls(c));
+            assert!(r.as_ref().is_ok_and(|a| a.len() == 1), "{c}: {r:?}");
+            assert!(reasons(&r).contains("(J3, AS-42)"), "{c}: {r:?}");
+            assert_eq!(gh_calls(&calls), 1, "{calls:#?}");
+        }
+        let (r, _) = origin_check("tools/xtask/src/x.rs", true, all, &[]);
+        assert_eq!(r, Ok(vec![]));
+    }
+
+    /// AS-42: `--origin <n>d` checks from the tip down to, and including, the first commit dated
+    /// before the limit (so a backdated tip is still checked); older ones are left to `all`.
+    #[test]
+    fn origin_window_is_respected() {
+        let no_pr = pulls(&json!([]));
+        for cutoff in [1500, 3000] {
+            let (r, _) = origin_check("docs/a.md", false, Some(Origin::Since(cutoff)), &no_pr);
+            assert!(r.as_ref().is_ok_and(|a| a.len() == 1), "{cutoff}: {r:?}");
+        }
+        // A commit already before the limit lies above COMMIT: COMMIT is not read.
+        let mut over = no_pr;
+        over.push((
+            "git log --format=%H %ct origin/main".to_owned(),
+            format!("{} 2500\n{COMMIT} 2000\n", "a".repeat(40)),
+        ));
+        let (r, calls) = origin_check("docs/a.md", false, Some(Origin::Since(3000)), &over);
+        assert_eq!(r, Ok(vec![]));
+        assert_eq!(gh_calls(&calls), 0, "{calls:#?}");
+        assert_eq!(
+            window("a 50\nb 40\nc 10\nd 5\n", 30).unwrap(),
+            ["a", "b", "c"]
+        );
+        assert_eq!(window("a 10\nb 40\n", 30).unwrap(), ["a"]);
+        assert!(window("a x\n", 30).is_err() && window("a\n", 30).is_err());
+        assert_eq!(Origin::parse("7d", 1_000_000), Some(Origin::Since(395_200)));
+        assert_eq!(Origin::parse("all", 0), Some(Origin::All));
+        for bad in ["0d", "367d", "7", "d", "-1d", "7h", ""] {
+            assert_eq!(Origin::parse(bad, 0), None, "{bad}");
+        }
+    }
+
+    /// `--no-cache` is gone (AS-42); `--origin` takes one value.
+    #[test]
+    fn parses_arguments() {
+        let a = |s: &[&str]| {
+            let v: Vec<String> = s.iter().map(|x| (*x).to_owned()).collect();
+            parse_args(&v, 1_000_000)
+        };
+        assert_eq!(a(&[]), Some((false, None)));
+        assert_eq!(
+            a(&["--dry-run", "--origin", "all"]),
+            Some((true, Some(Origin::All)))
+        );
+        assert_eq!(
+            a(&["--origin", "7d"]),
+            Some((false, Some(Origin::Since(395_200))))
+        );
+        for bad in [
+            &["--no-cache"][..],
+            &["--origin"],
+            &["--origin", "7"],
+            &["--dry-run", "--dry-run"],
+            &["--origin", "all", "--origin", "7d"],
+        ] {
+            assert_eq!(a(bad), None, "{bad:?}");
+        }
+    }
+
     /// The sensitivity of a commit is computed against its single parent: a merge commit, or one
     /// without a parent, stays an anomaly even when its files are not sensitive.
     #[test]
@@ -820,12 +1057,12 @@ mod tests {
         }
     }
 
-    /// The nightly job runs `--dry-run --no-cache` in CI mode: an anomaly still makes the run
+    /// The nightly job runs `--dry-run --origin <since>` in CI mode: an anomaly still makes the run
     /// fail (non-zero exit), without opening an issue, so `report` opens `nightly-failure`.
     #[test]
     fn anomaly_fails_the_nightly_run() {
         let (repo, calls) = fake_repo("tools/xtask/src/x.rs", false, true, &[]);
-        let r = verify_or_report(&repo);
+        let r = verify_or_report(&repo, None);
         assert_eq!(r, Ok(false));
         let calls = calls.borrow().clone();
         assert!(
@@ -835,7 +1072,7 @@ mod tests {
         assert!(!calls.iter().any(|c| c.starts_with("pwsh")), "{calls:#?}");
         assert_ne!(exit_code(r), ExitCode::SUCCESS);
         let (repo, _) = fake_repo("tools/xtask/src/x.rs", true, true, &[]);
-        let r = verify_or_report(&repo);
+        let r = verify_or_report(&repo, None);
         assert_eq!(r, Ok(true));
         assert_eq!(exit_code(r), ExitCode::SUCCESS);
         assert_ne!(exit_code(Err("x".to_owned())), ExitCode::SUCCESS);
@@ -893,7 +1130,7 @@ mod tests {
         let rules = sensitive::Rules::parse("tools/xtask/\n").unwrap();
         let j4 = if j4_on_a { &c.a } else { &c.h };
         let section = format!("## 9. Avis\narchsec-ok: {j4}\n");
-        let (bad, note) = check_commit(&repo, &rules, &section, &x).unwrap();
+        let (bad, note) = check_commit(&repo, &rules, &section, &x, false).unwrap();
         if bad.is_empty() {
             let a = &c.a[..7];
             assert!(
