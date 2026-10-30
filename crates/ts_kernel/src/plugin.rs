@@ -9,7 +9,7 @@ use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::world::World;
 
 use crate::state::StateEntry;
-use crate::{Phase, StateHash};
+use crate::{Phase, StateDecode, StateHash};
 
 // spec: revues/architecture.md §5.3
 /// Greffon de règles. `standard_rules()` (`ts_game`) en donne la liste unique.
@@ -109,8 +109,9 @@ impl SimBuilder {
     // spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §9.10 L3
     /// Déclare un composant d'état de la famille `family` : il entre dans l'empreinte et dans
     /// l'instantané, pour les entités qui portent [`crate::StableEntity`]. L'ordre de
-    /// déclaration fixe l'ordre d'encodage.
-    pub fn state_component<C: Component + Clone + StateHash>(
+    /// déclaration fixe l'ordre d'encodage. [`StateDecode`] must read back exactly what
+    /// [`StateHash`] writes: a restore refuses a value that does not re-encode the same.
+    pub fn state_component<C: Component + Clone + StateHash + StateDecode>(
         &mut self,
         family: &'static str,
     ) -> &mut Self {
@@ -131,7 +132,7 @@ impl SimBuilder {
     }
 
     /// Déclare une ressource d'état de la famille `family`, comme [`Self::state_component`].
-    pub fn state_resource<R: Resource + Clone + StateHash>(
+    pub fn state_resource<R: Resource + Clone + StateHash + StateDecode>(
         &mut self,
         family: &'static str,
     ) -> &mut Self {

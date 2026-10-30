@@ -31,7 +31,9 @@ pub const BUILD_PROFILE: &str = if cfg!(feature = "public") {
 /// Fonctionnalités de développement, toutes interdites dans le profil public.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DevFeature {
-    /// `dev-commands` : commandes d'écriture (`SetComponent`, `Spawn`, `AdvanceTime`).
+    /// `dev-commands` : commandes d'écriture `Spawn` et `SetComponent`, seules derrière cette
+    /// fonctionnalité. `AdvanceTime` n'en fait pas partie : c'est une commande normale du solo
+    /// (S8), que la matrice par source refuse aux sessions joueur en ligne (AS-33).
     Commands,
     /// `dev-introspection` : inspection de l'état hors de la vue filtrée.
     Introspection,
@@ -75,6 +77,29 @@ impl DevFeature {
 /// l'artefact (SEC0-20).
 pub fn active_dev_features() -> impl Iterator<Item = DevFeature> {
     DevFeature::ALL.into_iter().filter(|f| f.is_enabled())
+}
+
+// spec: 05-architecture.md §2.3 ; carnet architecture-securite.md SEC0-20, SEC0-24
+/// Items compiled in every profile except `public`: for development code of other crates
+/// (for example the fuzzing body of `ts_persist`), which can test this crate's `public`
+/// feature only through this macro. Clippy sees the items in the default pass.
+///
+/// ```
+/// ts_kernel::not_public! {
+///     pub fn dev_only() {}
+/// }
+/// ```
+#[cfg(not(feature = "public"))]
+#[macro_export]
+macro_rules! not_public {
+    ($($item:item)*) => { $($item)* };
+}
+
+/// Items compiled in every profile except `public` (here, `public`: nothing).
+#[cfg(feature = "public")]
+#[macro_export]
+macro_rules! not_public {
+    ($($item:item)*) => {};
 }
 
 #[cfg(test)]

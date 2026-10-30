@@ -1,5 +1,5 @@
 //! Instantané : le trait `Snapshot` et sa mise en œuvre en mémoire. Le codec en octets vient
-//! avec `ts_persist` (T8).
+//! avec `ts_persist` (T8) ; le décodeur canonique est dans `crate::canonical` (#46).
 
 use core::fmt;
 use std::collections::BTreeMap;
@@ -8,8 +8,9 @@ use super::{
     BuildError, EventQueue, LodComplete, Sim, SimClock, SimConfig, StableIds, TimedEvent,
     complete_ids, write_kernel,
 };
+use crate::canonical::{self, CanonicalError, CanonicalLimits};
 use crate::rng::WorldKey;
-use crate::state::{Boxed, StableIndex, StateKind, encode_world, stable_entities};
+use crate::state::{Captured, StableIndex, StateEntry, StateKind, encode_world, stable_entities};
 use crate::{
     DayOrigin, Plugin, RulesFingerprint, Scheduled, Scheduler, SimTime, StableEntity, StableId,
     StableIdAllocator,
@@ -126,18 +127,14 @@ pub trait Snapshot: Sized {
     ) -> Result<Sim, RestoreError>;
 }
 
-/// Valeurs capturées d'un type d'état.
-enum Captured {
-    Component(Vec<(StableId, Boxed)>),
-    Resource(Option<Boxed>),
-}
-
-// spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §9.10 L4
-/// Instantané en mémoire : copies des valeurs, sans format d'octets. Il sert aux tests et aux
-/// remises à zéro ; [`MemorySnapshot::canonical_bytes`] donne l'encodage canonique de l'état.
+// spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §9.10 L4, §10
+/// Instantané en mémoire : copies des valeurs. [`MemorySnapshot::header_bytes`] and
+/// [`MemorySnapshot::canonical_bytes`] give its bytes, and
+/// [`MemorySnapshot::from_canonical`] decodes them back; a host stores them with
+/// `ts_persist`.
 pub struct MemorySnapshot {
     rules: RulesFingerprint,
-    plugins: Vec<(&'static str, u32)>,
+    plugins: Vec<(String, u32)>,
     tick_ms: i64,
     now: SimTime,
     day_origin: DayOrigin,
@@ -179,6 +176,96 @@ impl MemorySnapshot {
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical
     }
+
+    // spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §10
+    /// What the canonical state does not hold: rules fingerprint, tick length, date and
+    /// active plugins (layout in `crate::canonical`). Never a key (L4).
+    pub fn header_bytes(&self) -> Vec<u8> {
+        canonical::write_header(&self.rules, self.tick_ms, self.now, &self.plugins)
+    }
+
+    // spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §10, SEC0-23
+    /// Decodes a snapshot from [`Self::header_bytes`] and [`Self::canonical_bytes`], read
+    /// against the state types of `layout`. The bytes are untrusted: they are bounded by
+    /// `limits`, checked for canonical form, and the date of the header must equal the date
+    /// of the state. Nothing else is trusted either: [`Snapshot::restore`] keeps all its
+    /// checks (rules fingerprint, layout, tick length, counters, events) and is the only
+    /// path to a [`Sim`]. The snapshot keeps `state` as its canonical bytes: an owned
+    /// buffer is taken without a copy.
+    ///
+    /// # Errors
+    ///
+    /// The first failure, as a typed [`CanonicalError`]; never a panic.
+    pub fn from_canonical(
+        header: &[u8],
+        state: impl Into<Vec<u8>>,
+        layout: &StateLayout,
+        limits: &CanonicalLimits,
+    ) -> Result<Self, CanonicalError> {
+        let state = state.into();
+        let d = canonical::decode(header, &state, &layout.entries, limits)?;
+        Ok(Self {
+            rules: d.header.rules,
+            plugins: d.header.plugins,
+            tick_ms: d.header.tick_ms,
+            now: d.kernel.now,
+            day_origin: d.kernel.day_origin,
+            next_stable_id: d.kernel.next_stable_id,
+            next_seq: d.kernel.next_seq,
+            events: d.kernel.events,
+            entities: d.kernel.entities,
+            complete: d.kernel.complete,
+            layout: layout_of(&layout.entries),
+            captured: d.captured,
+            canonical: state,
+        })
+    }
+}
+
+/// Family and kind (component or not) of each state type, in declaration order.
+fn layout_of(entries: &[StateEntry]) -> Vec<(&'static str, bool)> {
+    entries
+        .iter()
+        .map(|e| (e.family, matches!(e.kind, StateKind::Component { .. })))
+        .collect()
+}
+
+/// Key of the world that `StateLayout::of` builds and drops at once: public, since
+/// nothing of that world is kept but the declared state types.
+const LAYOUT_KEY: [u8; 16] = *b"ts layout only\0\0";
+
+// spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §10
+/// State types declared by a rule set, in declaration order: what decoding a snapshot
+/// needs to read the values of each type.
+pub struct StateLayout {
+    entries: Vec<StateEntry>,
+}
+
+impl fmt::Debug for StateLayout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(layout_of(&self.entries)).finish()
+    }
+}
+
+impl StateLayout {
+    /// Layout of `rules` with `cfg`. The rules are built once into a world that is dropped
+    /// at once (with a fixed public key, private to the kernel): no key is needed to decode.
+    ///
+    /// Contract:
+    /// - `cfg` and `rules` must be those later passed to [`Snapshot::restore`];
+    /// - the state types a plugin declares must not depend on the world key nor on drawn
+    ///   values. Should they, the save is refused by `restore` (value type or re-encoding),
+    ///   never misread;
+    /// - like [`Sim::build`], the first call fixes the global thread pool, to
+    ///   `cfg.threads`.
+    ///
+    /// # Errors
+    ///
+    /// The [`BuildError`] of building these rules.
+    pub fn of(cfg: &SimConfig, rules: &[Box<dyn Plugin>]) -> Result<Self, BuildError> {
+        let sim = Sim::build(cfg.clone(), rules, &WorldKey::from_bytes(LAYOUT_KEY))?;
+        Ok(Self { entries: sim.state })
+    }
 }
 
 fn check_rules(sim: &Sim, snap: &MemorySnapshot) -> Result<(), RestoreError> {
@@ -193,7 +280,7 @@ fn check_rules(sim: &Sim, snap: &MemorySnapshot) -> Result<(), RestoreError> {
         return Err(mismatch);
     }
     for &(name, version) in &sim.active {
-        let Some(&(_, old)) = snap.plugins.iter().find(|(n, _)| *n == name) else {
+        let Some(&(_, old)) = snap.plugins.iter().find(|(n, _)| n == name) else {
             return Err(mismatch);
         };
         if old != version && !sim.migrations.contains(&(name, old)) {
@@ -222,7 +309,7 @@ impl Snapshot for MemorySnapshot {
         let queue = world.resource::<EventQueue>();
         Self {
             rules: sim.rules,
-            plugins: sim.active.clone(),
+            plugins: sim.active.iter().map(|&(n, v)| (n.to_owned(), v)).collect(),
             tick_ms: sim.tick_ms,
             now: clock.now,
             day_origin: clock.day_origin,
@@ -231,11 +318,7 @@ impl Snapshot for MemorySnapshot {
             events: queue.pending().into_iter().cloned().collect(),
             entities: entities.iter().map(|&(id, _)| id).collect(),
             complete: complete_ids(world, &entities),
-            layout: sim
-                .state
-                .iter()
-                .map(|e| (e.family, matches!(e.kind, StateKind::Component { .. })))
-                .collect(),
+            layout: layout_of(&sim.state),
             captured: sim
                 .state
                 .iter()
@@ -258,12 +341,7 @@ impl Snapshot for MemorySnapshot {
     ) -> Result<Sim, RestoreError> {
         let mut sim = Sim::build(cfg, rules, world_key).map_err(RestoreError::Build)?;
         check_rules(&sim, self)?;
-        let layout: Vec<_> = sim
-            .state
-            .iter()
-            .map(|e| (e.family, matches!(e.kind, StateKind::Component { .. })))
-            .collect();
-        if layout != self.layout {
+        if layout_of(&sim.state) != self.layout {
             return Err(RestoreError::StateLayoutMismatch);
         }
         if self.tick_ms != sim.tick_ms {
@@ -330,6 +408,14 @@ impl Snapshot for MemorySnapshot {
             }
         }
         world.clear_trackers();
+        // The restored world must encode to exactly the recorded bytes (F4, AS-36): a value
+        // decoded from bytes that does not encode back the same is refused.
+        let world = &sim.world;
+        if encode_world(world, &sim.state, &|w| write_kernel(world, w)) != self.canonical {
+            return Err(RestoreError::Corrupt(
+                "canonical encoding differs after restore",
+            ));
+        }
         Ok(sim)
     }
 }
@@ -357,3 +443,6 @@ impl Sim {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod canonical_tests;

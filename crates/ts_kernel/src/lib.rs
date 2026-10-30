@@ -3,8 +3,9 @@
 //!
 //! Phase 0 : profil de construction (SEC0-20), temps, identifiants stables, argent, aléa à clé,
 //! ordonnanceur à événements datés, phases du tick, greffons, boucle de simulation, empreinte
-//! d'état, instantané et budgets de calcul. Chemin
-//! sensible : ce fichier déclare le module `build_profile`, qui porte les `compile_error!`.
+//! d'état, instantané, décodeur canonique et budgets de calcul. Chemin
+//! sensible : ce fichier déclare le module `build_profile`, qui porte les `compile_error!`, et
+//! le module `canonical`, qui lit des octets non fiables (AS-36).
 
 #![forbid(unsafe_code)]
 
@@ -30,6 +31,7 @@ macro_rules! assert_size {
 
 mod budget;
 mod build_profile;
+mod canonical;
 mod id;
 mod money;
 mod phase;
@@ -45,6 +47,7 @@ pub use bevy_ecs;
 
 pub use budget::WorkBudget;
 pub use build_profile::{BUILD_PROFILE, DevFeature, active_dev_features};
+pub use canonical::{CanonicalError, CanonicalLimits, StateDecode, StateReader};
 pub use id::{StableId, StableIdAllocator};
 pub use money::{BasisPoints, Money, div_round_half_even};
 pub use phase::Phase;
@@ -52,10 +55,11 @@ pub use plugin::{Plugin, RulesFingerprint, SimBuilder};
 pub use scheduler::{Scheduled, Scheduler};
 pub use sim::{
     BuildError, DueEvents, EventQueue, LodComplete, MemorySnapshot, RestoreError, RunReport, Sim,
-    SimClock, SimConfig, Snapshot, SnapshotScope, StableIds, StepReport, StopCondition, Threads,
-    TimedEvent, WorldStreams,
+    SimClock, SimConfig, Snapshot, SnapshotScope, StableIds, StateLayout, StepReport,
+    StopCondition, Threads, TimedEvent, WorldStreams,
 };
 pub use state::{
     KERNEL_FAMILY, StableEntity, StableIndex, StateDigest, StateHash, StateHashes, StateWriter,
+    state_hash_bytes, state_hash_digest,
 };
 pub use time::{DayOrigin, SimDay, SimTime};

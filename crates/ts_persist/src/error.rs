@@ -2,6 +2,8 @@
 
 use core::fmt;
 
+use ts_kernel::CanonicalError;
+
 // spec: carnet architecture-securite.md SEC0-23 ; revues/securite.md S10
 /// Bound that a decoding or an encoding exceeded (see [`crate::Limits`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +74,8 @@ pub enum DecodeError {
     MissingPart(String),
     /// A part the caller does not know is present.
     UnexpectedPart(String),
+    /// The kernel parts are refused by the kernel's canonical decoder.
+    Kernel(CanonicalError),
 }
 
 impl fmt::Display for DecodeError {
@@ -95,6 +99,7 @@ impl fmt::Display for DecodeError {
             Self::DecodedDigest(p) => write!(f, "part {p}: decoded digest mismatch"),
             Self::MissingPart(p) => write!(f, "missing part {p}"),
             Self::UnexpectedPart(p) => write!(f, "unexpected part {p}"),
+            Self::Kernel(e) => write!(f, "kernel snapshot: {e}"),
         }
     }
 }

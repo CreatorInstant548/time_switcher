@@ -12,9 +12,9 @@ use std::thread::ThreadId;
 use bevy_ecs::prelude::{Component, Query, Res, ResMut, Resource};
 use ts_kernel::rng::{Stream, WorldKey, draw_block};
 use ts_kernel::{
-    BuildError, MemorySnapshot, Phase, Plugin, RestoreError, Sim, SimBuilder, SimClock, SimConfig,
-    SnapshotScope, StableEntity, StableId, StableIds, StableIndex, StateHash, StateWriter, Threads,
-    WorldStreams,
+    BuildError, CanonicalError, MemorySnapshot, Phase, Plugin, RestoreError, Sim, SimBuilder,
+    SimClock, SimConfig, SnapshotScope, StableEntity, StableId, StableIds, StableIndex,
+    StateDecode, StateHash, StateReader, StateWriter, Threads, WorldStreams,
 };
 
 /// Empreinte globale attendue après [`TICKS`] ticks, quel que soit le nombre de fils.
@@ -33,12 +33,24 @@ impl StateHash for Pos {
     }
 }
 
+impl StateDecode for Pos {
+    fn decode_state(r: &mut StateReader<'_>) -> Result<Self, CanonicalError> {
+        r.i64().map(Self)
+    }
+}
+
 #[derive(Component, Clone)]
 struct Heat(f64);
 
 impl StateHash for Heat {
     fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.f64(self.0);
+    }
+}
+
+impl StateDecode for Heat {
+    fn decode_state(r: &mut StateReader<'_>) -> Result<Self, CanonicalError> {
+        r.f64().map(Self)
     }
 }
 

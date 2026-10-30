@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::io::Read;
 
 use ruzstd::decoding::StreamingDecoder;
-use ruzstd::decoding::errors::FrameDecoderError;
+use ruzstd::decoding::errors::{FrameDecoderError, FrameHeaderError};
 use ruzstd::encoding::{CompressionLevel, compress_to_vec};
 
 use crate::envelope::{open, seal};
@@ -212,6 +212,14 @@ fn decompress(
                 len: requested,
                 max,
             },
+            // At or above `ruzstd`'s own maximum, so above any configured bound (m6).
+            FrameDecoderError::FrameHeaderError(FrameHeaderError::WindowTooBig { got }) => {
+                DecodeError::TooLarge {
+                    bound: Bound::Window,
+                    len: got,
+                    max: limits.max_window,
+                }
+            }
             _ => failed(),
         },
     )?;
@@ -229,7 +237,7 @@ fn decompress(
         if n > room {
             return Err(too_long());
         }
-        if out.capacity() - out.len() < n {
+        if out.capacity().saturating_sub(out.len()) < n {
             out.reserve_exact(out.capacity().max(n).min(room));
         }
         out.extend_from_slice(piece);
