@@ -92,3 +92,10 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
     - **Décidé** : le fichier le fixe à false. Aucune approbation n'est exigée, puisqu'un seul compte sert à tout, et cette approbation supplémentaire risquerait de bloquer les fusions.
     - Le dev en fait une PR d'une ligne, avec `archsec-ok` et une exception étroite à la suspension de `merge`. Après sa fusion, l'orchestrateur relance `-Apply` puis `-Check`.
   - **Suite** : T3e-1, puis l'essai de poussée R6.4, puis T3e-2.
+  - **Écart levé** : l'utilisateur a fusionné la #51 depuis le web (db16ab6). `-Apply` puis `-Check` donnent un résultat conforme, sans écart.
+  - **T3e-1 fusionnée** (#62, 8a49c82).
+  - **R6.4** : la poussée directe vers `main` a été refusée en amont par le classifieur de Claude Code (« CI Bypass »). Rien n'a été créé ni poussé, et je n'ai pas contourné ce refus.
+    - **Preuve retenue à la place (décidé)**, lue en `GET` sur GitHub :
+      - les règles effectives sur `main` sont deletion, non_fast_forward, required_linear_history, pull_request et required_status_checks (ruleset 26213563) ;
+      - `enforcement=active`, `bypass_actors` vide, `current_user_can_bypass=never`.
+    - E1 est satisfait, et T3e-2 est lancée.
