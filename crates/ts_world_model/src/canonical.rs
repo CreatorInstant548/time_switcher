@@ -1,81 +1,15 @@
-//! Canonical byte encoding, the input of fingerprints.
+//! Encoding of the map types: the kernel's `StateHash`, the one and only canonical encoding.
+//!
+//! This is the input of fingerprints. There is no second encoding in this crate: a type is
+//! encoded by implementing [`StateHash`], and the bytes are those of the kernel's
+//! [`StateWriter`] (little-endian integers, `u64` counts before sequences).
+
+use ts_kernel::{StateHash, StateWriter};
 
 use crate::{Aabb2, Cm, HeightRange, Level, LevelKind, Point2, Polygon2, Segment2, Vec2};
 
-// spec: revues/generation.md §5.4 ; revues/architecture.md §7.1
-/// Accumulates the canonical encoding: fixed-width little-endian integers, a one-byte tag per
-/// type and a `u32` count before each sequence. No padding, no platform dependence.
-#[derive(Debug, Default)]
-pub struct CanonicalWriter {
-    bytes: Vec<u8>,
-}
-
-impl CanonicalWriter {
-    /// Empty writer.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Appends one byte.
-    pub fn u8(&mut self, v: u8) {
-        self.bytes.push(v);
-    }
-
-    /// Appends a little-endian `u32`.
-    pub fn u32(&mut self, v: u32) {
-        self.bytes.extend_from_slice(&v.to_le_bytes());
-    }
-
-    /// Appends a little-endian `u64`.
-    pub fn u64(&mut self, v: u64) {
-        self.bytes.extend_from_slice(&v.to_le_bytes());
-    }
-
-    /// Appends a little-endian `i32`.
-    pub fn i32(&mut self, v: i32) {
-        self.bytes.extend_from_slice(&v.to_le_bytes());
-    }
-
-    /// Appends the raw value of a centimetre length.
-    pub fn cm(&mut self, v: Cm) {
-        self.i32(v.get());
-    }
-
-    /// Appends a point without a tag (used inside tagged types).
-    pub fn point(&mut self, p: Point2) {
-        self.cm(p.x);
-        self.cm(p.y);
-    }
-
-    /// Appends a sequence length. [`Polygon2`] is capped by [`Polygon2::MAX_VERTICES`]; other
-    /// sequences (such as the places of a `PublicMap`) have no cap yet and are bounded only by
-    /// memory, so the saturation to `u32::MAX` is unreachable in practice (it would take more
-    /// than 4 billion items) but not excluded by construction. A cap comes with the part format.
-    pub fn seq_len(&mut self, n: usize) {
-        self.u32(u32::try_from(n).unwrap_or(u32::MAX));
-    }
-
-    /// The bytes written so far.
-    pub fn finish(self) -> Vec<u8> {
-        self.bytes
-    }
-}
-
-/// Type with a canonical encoding. Changing an encoding changes every fingerprint: the
-/// reference vectors in the tests must then be updated on purpose.
-pub trait Canonical {
-    /// Writes `self` to `w`.
-    fn write_canonical(&self, w: &mut CanonicalWriter);
-}
-
-/// Canonical bytes of `value`.
-pub fn canonical_bytes<T: Canonical + ?Sized>(value: &T) -> Vec<u8> {
-    let mut w = CanonicalWriter::new();
-    value.write_canonical(&mut w);
-    w.finish()
-}
-
-/// Type tags, fixed forever (a reused tag would let two types collide).
+/// Type tags, fixed forever (a reused tag would let two types collide). The kernel's integers
+/// carry no tag, so each type of this crate starts with its own.
 pub(crate) mod tag {
     pub const CM: u8 = 0x01;
     pub const POINT2: u8 = 0x02;
@@ -90,56 +24,65 @@ pub(crate) mod tag {
     pub const CANDIDATE_SPOT: u8 = 0x20;
 }
 
-impl Canonical for Cm {
-    fn write_canonical(&self, w: &mut CanonicalWriter) {
+// spec: revues/generation.md §5.4 ; revues/architecture.md §7.1, §11.3
+/// Writes a point without a tag (used inside tagged types). Inside a tagged type, always use
+/// this, never `Point2::hash_state`, which adds its own tag byte: the two must not be mixed in
+/// one encoding.
+pub(crate) fn write_point(p: Point2, w: &mut StateWriter<'_>) {
+    p.x.get().hash_state(w);
+    p.y.get().hash_state(w);
+}
+
+impl StateHash for Cm {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.u8(tag::CM);
-        w.cm(*self);
+        self.get().hash_state(w);
     }
 }
 
-impl Canonical for Point2 {
-    fn write_canonical(&self, w: &mut CanonicalWriter) {
+impl StateHash for Point2 {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.u8(tag::POINT2);
-        w.point(*self);
+        write_point(*self, w);
     }
 }
 
-impl Canonical for Vec2 {
-    fn write_canonical(&self, w: &mut CanonicalWriter) {
+impl StateHash for Vec2 {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.u8(tag::VEC2);
-        w.cm(self.x);
-        w.cm(self.y);
+        self.x.get().hash_state(w);
+        self.y.get().hash_state(w);
     }
 }
 
-impl Canonical for Aabb2 {
-    fn write_canonical(&self, w: &mut CanonicalWriter) {
+impl StateHash for Aabb2 {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.u8(tag::AABB2);
-        w.point(self.min());
-        w.point(self.max());
+        write_point(self.min(), w);
+        write_point(self.max(), w);
     }
 }
 
-impl Canonical for Segment2 {
-    fn write_canonical(&self, w: &mut CanonicalWriter) {
+impl StateHash for Segment2 {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.u8(tag::SEGMENT2);
-        w.point(self.a());
-        w.point(self.b());
+        write_point(self.a(), w);
+        write_point(self.b(), w);
     }
 }
 
-impl Canonical for Polygon2 {
-    fn write_canonical(&self, w: &mut CanonicalWriter) {
+impl StateHash for Polygon2 {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.u8(tag::POLYGON2);
-        w.seq_len(self.vertices().len());
+        w.count(self.vertices().len());
         for v in self.vertices() {
-            w.point(*v);
+            write_point(*v, w);
         }
     }
 }
 
-impl Canonical for Level {
-    fn write_canonical(&self, w: &mut CanonicalWriter) {
+impl StateHash for Level {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.u8(tag::LEVEL);
         w.u8(match self.kind() {
             LevelKind::Ground => 0,
@@ -151,10 +94,10 @@ impl Canonical for Level {
     }
 }
 
-impl Canonical for HeightRange {
-    fn write_canonical(&self, w: &mut CanonicalWriter) {
+impl StateHash for HeightRange {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.u8(tag::HEIGHT_RANGE);
-        w.cm(self.bottom());
-        w.cm(self.top());
+        self.bottom().get().hash_state(w);
+        self.top().get().hash_state(w);
     }
 }

@@ -2,9 +2,9 @@
 //! caches), drawn per world among the candidates.
 //!
 //! **Rule: nothing from this module is ever serialized to the client** (P12, S33). The types
-//! here implement neither [`Canonical`](crate::Canonical) nor
-//! [`ClientShippable`](crate::ClientShippable), and the latter is sealed to the `public`
-//! module. A fact of this part reaches a client only through the filtered view, one at a time.
+//! here do not implement [`ClientShippable`](crate::ClientShippable), which is sealed to the
+//! `public` module and asserted absent for [`ServerPart`] and [`ServerPlacement`] at compile
+//! time. A fact of this part reaches a client only through the filtered view, one at a time.
 
 use ts_kernel::StableId;
 

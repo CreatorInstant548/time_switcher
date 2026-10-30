@@ -3,13 +3,14 @@
 //! Everything in this module is public by construction: it is identical for all worlds and
 //! reveals nothing about a given world (S33). The sealed marker [`ClientShippable`] is
 //! implemented here and nowhere else: for the types of this module and for the generic
-//! candidates of `candidates` (A13, AS-32), which stay a separate module. Only the per-world
-//! `server` part is excluded.
+//! candidates of `candidates` (generation arbitration A13 (#34), AS-32), which stay a separate
+//! module. Only the per-world `server` part is excluded.
 
-use ts_kernel::StableId;
+use ts_kernel::{StableId, StateHash, StateWriter};
 
 use crate::candidates::CandidateSpot;
-use crate::canonical::{Canonical, CanonicalWriter, tag};
+use crate::canonical::tag;
+use crate::server::{ServerPart, ServerPlacement};
 use crate::{GeometryError, HeightRange, Level, Polygon2, map_id};
 
 /// Private to this module on purpose: neither `candidates`, nor `server`, nor any other crate
@@ -19,8 +20,10 @@ mod sealed {
 }
 
 // spec: revues/generation.md P12 ; revues/securite.md S33
-/// Marker of the types that may be written to the client package. Sealed: only the types of
-/// the `public` module implement it (N3). Any future packager must require it:
+/// Marker of the types that may be written to the client package (N3). Sealed: only
+/// `public.rs` implements it, for the types of the `public` module **and** for the generic
+/// candidates of the `candidates` module (generation arbitration A13 (#34), AS-32). The
+/// per-world `server` part never implements it. Any future packager must require it:
 ///
 /// ```
 /// use ts_world_model::{ClientShippable, public::PublicMap};
@@ -29,27 +32,30 @@ mod sealed {
 /// ```
 ///
 /// **The seal.** The two examples below differ only by the `ClientShippable` line. The first
-/// proves the setup compiles: a local type that satisfies every other bound (`Canonical`).
+/// proves the setup compiles: a local type that satisfies every other bound (`StateHash`).
 /// The second adds the impl and must fail, and the only missing bound is the private
 /// `Sealed` supertrait. (rustdoc stable does not check the error code, which would be E0277;
 /// the passing control is what makes the failing example reliable.)
 ///
 /// ```
-/// use ts_world_model::{Canonical, CanonicalWriter};
+/// use ts_kernel::{StateHash, StateWriter};
 /// struct Mine;
-/// impl Canonical for Mine { fn write_canonical(&self, _: &mut CanonicalWriter) {} }
+/// impl StateHash for Mine { fn hash_state(&self, _: &mut StateWriter<'_>) {} }
 /// ```
 ///
 /// ```compile_fail
-/// use ts_world_model::{Canonical, CanonicalWriter, ClientShippable};
+/// use ts_kernel::{StateHash, StateWriter};
+/// use ts_world_model::ClientShippable;
 /// struct Mine;
-/// impl Canonical for Mine { fn write_canonical(&self, _: &mut CanonicalWriter) {} }
+/// impl StateHash for Mine { fn hash_state(&self, _: &mut StateWriter<'_>) {} }
 /// impl ClientShippable for Mine {} // only `Sealed` is missing
 /// ```
 ///
 /// Inside the crate, `candidates` and `server` cannot name `public::sealed` (module privacy),
 /// which a doctest cannot test: the candidates are shippable only because `public.rs`
-/// implements the marker for them (A13, AS-32), and `server` has no such impl.
+/// implements the marker for them (generation arbitration A13 (#34), AS-32), and `server` has
+/// no such impl. The compile-time assertion `ServerPart: !ClientShippable` at the end of
+/// `public.rs` breaks the build if someone adds that impl there.
 ///
 /// ```
 /// use ts_world_model::{ClientShippable, candidates::CandidateSpot};
@@ -65,7 +71,7 @@ mod sealed {
 /// fn ship<T: ClientShippable>() {}
 /// ship::<ServerPart>();
 /// ```
-pub trait ClientShippable: sealed::Sealed + Canonical {}
+pub trait ClientShippable: sealed::Sealed + StateHash {}
 
 // spec: revues/generation.md P13, V13
 /// A place of the public map: a floor outline on one level with its height range.
@@ -137,22 +143,22 @@ impl PublicMap {
     }
 }
 
-impl Canonical for PublicPlace {
-    fn write_canonical(&self, w: &mut CanonicalWriter) {
+impl StateHash for PublicPlace {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.u8(tag::PUBLIC_PLACE);
-        w.u64(self.id.to_snapshot_raw());
-        self.level.write_canonical(w);
-        self.outline.write_canonical(w);
-        self.height.write_canonical(w);
+        self.id.hash_state(w);
+        self.level.hash_state(w);
+        self.outline.hash_state(w);
+        self.height.hash_state(w);
     }
 }
 
-impl Canonical for PublicMap {
-    fn write_canonical(&self, w: &mut CanonicalWriter) {
+impl StateHash for PublicMap {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
         w.u8(tag::PUBLIC_MAP);
-        w.seq_len(self.places.len());
+        w.count(self.places.len());
         for p in &self.places {
-            p.write_canonical(w);
+            p.hash_state(w);
         }
     }
 }
@@ -162,7 +168,23 @@ impl sealed::Sealed for PublicMap {}
 impl ClientShippable for PublicPlace {}
 impl ClientShippable for PublicMap {}
 
-// A13, AS-32: the generic candidates are public by design. They live in `candidates`, but only
-// this module can name the seal, so the impl is here.
+// Generation arbitration A13 (#34), AS-32: the generic candidates are public by design. They
+// live in `candidates`, but only this module can name the seal, so the impl is here.
 impl sealed::Sealed for CandidateSpot {}
 impl ClientShippable for CandidateSpot {}
+
+// N3, hardening: `ServerPart: !ClientShippable` (and the same for `ServerPlacement`; a new type
+// of `server.rs` is added to the list below), checked at compile time. Hand-written with the
+// trait-ambiguity trick of `static_assertions::assert_not_impl_any!`, without the dependency.
+// `ServerPart` matches the blanket impl (`A = ()`); if it also implemented `ClientShippable`, it
+// would match the second impl (`A = u8`), the call `some_item` could not pick one (E0283) and
+// the build would fail, even for an impl added inside this crate.
+const _: fn() = || {
+    trait AmbiguousIfImpl<A> {
+        fn some_item() {}
+    }
+    impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
+    impl<T: ?Sized + ClientShippable> AmbiguousIfImpl<u8> for T {}
+    let _ = <ServerPart as AmbiguousIfImpl<_>>::some_item;
+    let _ = <ServerPlacement as AmbiguousIfImpl<_>>::some_item;
+};
