@@ -27,6 +27,8 @@ use ts_runner::out_dir::{self, DEFAULT_CACHE, DEFAULT_CACHE_UNDER_HOME};
 use ts_runner::scenario::Scenario;
 use ts_runner::{manifest, metrics, run};
 
+const METRICS: &str = "metrics.parquet";
+const MANIFEST: &str = "manifest.ron";
 const USAGE: &str =
     "usage : ts-sim run <scénario.ron> --seed <n> --out <dossier> [--allow-outside-cache]";
 
@@ -42,15 +44,27 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
         return Err(USAGE.to_owned());
     }
     let (mut scenario, mut seed, mut out, mut outside_allowed) = (None, None, None, false);
+    // Each option once: a repeated `--seed` must not silently replace the first.
+    let once = |slot_is_set: bool, name: &str| match slot_is_set {
+        true => Err(format!("{name} donné deux fois\n{USAGE}")),
+        false => Ok(()),
+    };
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--seed") => {
+                once(seed.is_some(), "--seed")?;
                 let text = args.next().ok_or(USAGE)?;
                 let n = text.to_str().and_then(|t| t.parse::<u64>().ok());
                 seed = Some(n.ok_or("--seed attend un entier de 0 à 2^64 - 1")?);
             }
-            Some("--out") => out = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
-            Some("--allow-outside-cache") => outside_allowed = true,
+            Some("--out") => {
+                once(out.is_some(), "--out")?;
+                out = Some(PathBuf::from(args.next().ok_or(USAGE)?));
+            }
+            Some("--allow-outside-cache") => {
+                once(outside_allowed, "--allow-outside-cache")?;
+                outside_allowed = true;
+            }
             Some(a) if a.starts_with('-') => return Err(format!("option inconnue : {a}\n{USAGE}")),
             _ if scenario.is_none() => scenario = Some(PathBuf::from(arg)),
             _ => return Err(USAGE.to_owned()),
@@ -69,21 +83,23 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
 
 /// `TS_CACHE`, else its default (A6): never a source of key or seed, only of the output root.
 #[allow(clippy::disallowed_methods)] // tool: reads TS_CACHE and HOME.
-fn cache_dir() -> PathBuf {
+fn cache_dir() -> Result<PathBuf, String> {
     let var = |name| std::env::var_os(name).filter(|v| !v.is_empty());
     if let Some(cache) = var("TS_CACHE") {
-        return PathBuf::from(cache);
+        return Ok(PathBuf::from(cache));
     }
-    match var("HOME") {
-        Some(home) if cfg!(not(windows)) => PathBuf::from(home).join(DEFAULT_CACHE_UNDER_HOME),
-        _ => PathBuf::from(DEFAULT_CACHE),
+    if cfg!(windows) {
+        return Ok(PathBuf::from(DEFAULT_CACHE));
     }
+    var("HOME")
+        .map(|home| PathBuf::from(home).join(DEFAULT_CACHE_UNDER_HOME))
+        .ok_or_else(|| "ni TS_CACHE ni HOME ne sont définis".to_owned())
 }
 
 #[allow(clippy::disallowed_methods)] // tool: reads its command line.
 fn main() -> ExitCode {
-    let cache = cache_dir();
-    match parse(std::env::args_os().skip(1)).and_then(|a| run_command(&a, &cache)) {
+    let args = parse(std::env::args_os().skip(1));
+    match args.and_then(|a| run_command(&a, &cache_dir()?)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("ts-sim : {e}");
@@ -98,12 +114,13 @@ fn run_command(args: &Args, cache: &Path) -> Result<(), String> {
     let cache = out_dir::cache_root(cache).map_err(|e| e.to_string())?;
     let dir =
         out_dir::prepare(&args.out, &cache, args.outside_allowed).map_err(|e| e.to_string())?;
+    out_dir::ensure_absent(&dir, &[METRICS, MANIFEST]).map_err(|e| e.to_string())?;
     let outcome = run::run_toy(scenario.days(), args.seed)?;
     let parquet = metrics::encode(&outcome.days).map_err(|e| format!("Parquet : {e}"))?;
     let text = manifest::render(&scenario, &file.bytes, args.seed, &outcome, &parquet)
         .map_err(|e| format!("manifeste : {e}"))?;
-    out_dir::write_new(&dir, "metrics.parquet", &parquet).map_err(|e| e.to_string())?;
-    out_dir::write_new(&dir, "manifest.ron", text.as_bytes()).map_err(|e| e.to_string())?;
+    out_dir::write_new(&dir, METRICS, &parquet).map_err(|e| e.to_string())?;
+    out_dir::write_new(&dir, MANIFEST, text.as_bytes()).map_err(|e| e.to_string())?;
     println!(
         "ts-sim run : {} ({} jours, graine publique {}) : empreinte d'état {}",
         scenario.name,

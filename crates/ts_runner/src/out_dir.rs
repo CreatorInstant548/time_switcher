@@ -106,29 +106,36 @@ pub fn cache_root(cache: &Path) -> Result<PathBuf, OutError> {
 /// directories, and returns the canonical run directory.
 pub fn prepare(out: &Path, cache: &Path, outside_allowed: bool) -> Result<PathBuf, OutError> {
     // In a verbatim path (`\\?\`), `.` and `..` are plain names to `components`, not to Windows.
-    let dotted = |c: Component<'_>| match c {
+    // A `.git` name would turn the run directory into a working copy for `in_repository`.
+    let refused = |c: Component<'_>| match c {
         Component::ParentDir => true,
-        Component::Normal(n) => n == "." || n == "..",
+        Component::Normal(n) => n == "." || n == ".." || n.eq_ignore_ascii_case(".git"),
         _ => false,
     };
-    if out.components().any(dotted) {
+    if out.components().any(refused) {
         return Err(OutError::BadPath);
     }
     let out = std::path::absolute(out).map_err(|_| OutError::BadPath)?;
+    // A link is refused at the deepest existing prefix, and anywhere at or under `TS_CACHE`; a
+    // system link above it (`/var` on some systems) is resolved by `canonicalize` below.
+    let in_cache = |p: &Path| {
+        let parent = p.parent().and_then(|q| fs::canonicalize(q).ok());
+        match (parent, p.file_name()) {
+            (Some(q), Some(name)) => q.join(name).starts_with(cache),
+            _ => true,
+        }
+    };
     // Every existing prefix, from the deepest one; the missing names are kept for creation.
     let mut missing = Vec::new();
     let mut base: Option<&Path> = None;
     for prefix in out.ancestors() {
         match fs::symlink_metadata(prefix) {
-            Ok(md) if is_link(&md) => return Err(OutError::Link),
-            Ok(md) => {
-                if base.is_none() {
-                    if !md.is_dir() {
-                        return Err(OutError::BadPath);
-                    }
-                    base = Some(prefix);
-                }
+            Ok(md) if is_link(&md) && (base.is_none() || in_cache(prefix)) => {
+                return Err(OutError::Link);
             }
+            Ok(_) if base.is_some() => {}
+            Ok(md) if md.is_dir() => base = Some(prefix),
+            Ok(_) => return Err(OutError::BadPath),
             Err(e) if base.is_none() => match e.kind() {
                 ErrorKind::NotFound => missing.push(prefix.file_name().ok_or(OutError::BadPath)?),
                 // Never skip a name below the existing base: the run would land in its parent.
@@ -162,6 +169,18 @@ pub fn prepare(out: &Path, cache: &Path, outside_allowed: bool) -> Result<PathBu
         }
     }
     Ok(dir)
+}
+
+/// Fails if one of `names` already exists in `dir`: checked before a run, so that a run is
+/// never computed for nothing (`write_new` checks again when writing).
+pub fn ensure_absent(dir: &Path, names: &[&str]) -> Result<(), OutError> {
+    match names
+        .iter()
+        .any(|n| fs::symlink_metadata(dir.join(n)).is_ok())
+    {
+        true => Err(OutError::Exists),
+        false => Ok(()),
+    }
 }
 
 /// Writes a new file `name` in the run directory `dir`; an existing file or link is an error.

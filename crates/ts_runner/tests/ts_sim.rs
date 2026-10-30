@@ -64,8 +64,12 @@ fn short_run_gives_the_golden_hash_and_the_same_bytes_twice() {
         ("skipped_ticks", "short.skipped"),
     ] {
         let value = golden(key);
-        assert!(manifest.contains(&format!("{field}: ")), "{field}");
-        assert!(manifest.contains(&value), "{field} {value}\n{manifest}");
+        let quoted = format!("    {field}: \"{value}\",\n");
+        let bare = format!("    {field}: {value},\n");
+        assert!(
+            manifest.contains(&quoted) || manifest.contains(&bare),
+            "{field} {value}\n{manifest}"
+        );
     }
     assert!(manifest.contains("kind: \"public_test\""));
     // SEC0-26: no local path in the manifest.
@@ -145,6 +149,11 @@ fn out_rules() {
     assert_eq!(
         // `raw`: a verbatim `PathBuf` (`\\?\`) would resolve `..` while joining.
         prepare(&raw.join("x").join("..").join("z"), &cache, false),
+        Err(OutError::BadPath)
+    );
+    // Never a `.git` directory created under TS_CACHE.
+    assert_eq!(
+        prepare(&cache.join("x").join(".GIT").join("y"), &cache, false),
         Err(OutError::BadPath)
     );
     // Inside a Git working copy: refused, even with the option (A6), and nothing created.
