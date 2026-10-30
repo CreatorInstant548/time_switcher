@@ -82,11 +82,18 @@ Les valeurs viennent de `tools/dev/tools.lock` (clés `*.linux.*`, même version
   - `advisories` : `cargo audit`, puis `cargo deny --locked check advisories` ;
   - `verify-main` (V3 du §9.14 du carnet d'archi-sécu, T3h) : `cargo xtask verify-main --dry-run --no-cache`, soit l'origine de **chaque** commit de `main` relue sur GitHub, sans le cache local de `TS_CACHE`, que toute session peut écrire (voir `tools/xtask/src/verify_cache.rs`). Détails ci-dessous.
 
+**Cache local et chemins sensibles (V5, AS-39)** : pour tout commit de `main` qui touche un chemin sensible, calculé depuis `sensitive-paths.txt` d'`origin/main`, `verify-main` ne lit **jamais** le cache, même pour une partie des faits, et ce à chaque exécution, `merge` compris. Il relit sur GitHub :
+- `pulls/<n>`, soit la tête, `merged` et `merge_commit_sha` ;
+- G3 sur la tête ;
+- `review-ok` et `archsec-ok` sur la tête ;
+
+puis il fait J4 avec ces faits frais. Une entrée forgée ne peut donc pas rattacher un commit sensible à la tête d'une autre PR approuvée. Les faits d'un commit sensible ne sont **pas écrits** non plus (décidé). Une telle entrée ne serait jamais lue : la sensibilité ne dépend que du commit et des règles d'`origin/main`, et `sensitive-paths.txt` fait partie de la clé du cache. Le cache ne sert qu'aux commits non sensibles.
+
 **Travail `verify-main`** :
 - **Droits** : `actions`, `checks`, `contents`, `issues` et `pull-requests` en lecture, rien en écriture. `GH_TOKEN` vaut le jeton du travail.
 - **Pas de `git fetch`** (décision d'archi-sécu du 30/10, m2 de la relecture de la #52). Le checkout garde `persist-credentials: false` : sur un dépôt privé, un `git fetch` n'aurait donc aucun identifiant. En mode CI (`CI=true` et `GITHUB_ACTIONS=true`), `verify-main` saute le fetch et lit les références du checkout `fetch-depth: 0`, qui apporte `origin/main` et `origin/pilotage` (J4). Il **refuse** si l'une des deux manque. Aucun identifiant Git dans le travail, pas de `gh auth setup-git`.
 - **`TS_CACHE`** vaut `${{ runner.temp }}/ts-cache`, défini sur l'étape : le contexte `runner` n'est pas disponible dans `jobs.<id>.env`. Sans lui, le chemin par défaut `C:/Dev/ts-cache` serait relatif sous Linux. Le cache réécrit par `--no-cache` disparaît avec l'exécuteur.
-- **`--dry-run`** (décidé) : le jeton, en lecture seule, ne peut pas ouvrir d'*issue*. Une anomalie affiche l'*issue* qui serait ouverte, et le travail échoue. `report` ouvre alors `nightly-failure`, avec le lien de l'exécution. L'*issue* `role:architecture` (J5) est ouverte par le prochain `cargo xtask merge` ou `verify-main` lancé en local, qui refait le même contrôle. `--dry-run` ne change rien d'autre ici : en CI, le contrôle des réglages est sauté de toute façon.
+- **`--dry-run`** (décidé) : le jeton, en lecture seule, ne peut pas ouvrir d'*issue*. Une anomalie affiche l'*issue* qui serait ouverte, et le travail échoue : `--dry-run` compris, une anomalie donne un code de sortie non nul (test `anomaly_fails_the_nightly_run`). `report` ouvre alors `nightly-failure`, avec le lien de l'exécution. L'*issue* `role:architecture` (J5) est ouverte par le prochain `cargo xtask merge` ou `verify-main` lancé en local, qui refait le même contrôle. `--dry-run` ne change rien d'autre ici : en CI, le contrôle des réglages est sauté de toute façon.
 - **`repo-settings.ps1 -Check` est sauté en CI** avec un avertissement visible dans le journal et dans le résumé de l'exécution, comme depuis la #42 (`GITHUB_TOKEN` n'a pas les droits d'administration). Il tourne à chaque `cargo xtask merge`.
 - **Vérification** : le travail ne se lance pas en local. À la première nuit après la fusion, ou par `workflow_dispatch`, le journal doit montrer, dans l'ordre :
   - `mode CI : git fetch sauté` ;
