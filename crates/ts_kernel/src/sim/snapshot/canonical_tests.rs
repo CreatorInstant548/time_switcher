@@ -483,3 +483,51 @@ fn dates_are_bounded() {
     let mut sim = restore(&decode(&h, &s).unwrap(), &small()).unwrap();
     sim.step();
 }
+
+/// Offsets of the two counters in [`small_state`].
+const NEXT_STABLE_ID: usize = 30;
+const NEXT_SEQ: usize = 38;
+
+/// The counters and the tick length are bounded: at their maximum, a typed error, never a
+/// later panic (review I1 of #57).
+#[test]
+fn counters_and_tick_are_bounded() {
+    for (at, what) in [
+        (NEXT_STABLE_ID, "StableId counter out of range"),
+        (NEXT_SEQ, "event counter out of range"),
+    ] {
+        for v in [u64::MAX, (1 << 62) + 1] {
+            let mut s = small_state();
+            put(&mut s, at, &v.to_le_bytes());
+            assert_eq!(
+                decode(&small_header(), &s).unwrap_err(),
+                CanonicalError::Invalid(what)
+            );
+        }
+    }
+    for tick in [i64::MIN, -1, 0, 1001, i64::MAX] {
+        let h = header(&[("small", 1)], &[("small", 1)], tick, 0);
+        assert_eq!(
+            decode(&h, &small_state()).unwrap_err(),
+            CanonicalError::Invalid("tick length out of range")
+        );
+    }
+    // At the bound, both counters still work after the restore.
+    let mut s = small_state();
+    put(&mut s, NEXT_STABLE_ID, &(1_u64 << 62).to_le_bytes());
+    put(&mut s, NEXT_SEQ, &(1_u64 << 62).to_le_bytes());
+    let mut sim = restore(&decode(&small_header(), &s).unwrap(), &small()).unwrap();
+    let id = sim.world.resource_mut::<StableIds>().allocate();
+    assert_eq!(id.map(StableId::index), Some(1 << 62));
+    let event = TimedEvent {
+        kind: 2,
+        subject: StableId::from_snapshot_raw(0),
+        arg: 0,
+    };
+    let seq = sim
+        .world
+        .resource_mut::<EventQueue>()
+        .schedule(SimTime::from_millis(500), event);
+    assert_eq!(seq, 1 << 62);
+    sim.step();
+}

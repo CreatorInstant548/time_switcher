@@ -230,7 +230,7 @@ fn layout_of(entries: &[StateEntry]) -> Vec<(&'static str, bool)> {
         .collect()
 }
 
-/// Key of the world that [`StateLayout::of`] builds and drops at once: public, since
+/// Key of the world that `StateLayout::of` builds and drops at once: public, since
 /// nothing of that world is kept but the declared state types.
 const LAYOUT_KEY: [u8; 16] = *b"ts layout only\0\0";
 
@@ -249,7 +249,15 @@ impl fmt::Debug for StateLayout {
 
 impl StateLayout {
     /// Layout of `rules` with `cfg`. The rules are built once into a world that is dropped
-    /// at once (with a fixed public key, [`LAYOUT_KEY`]): no key is needed to decode.
+    /// at once (with a fixed public key, private to the kernel): no key is needed to decode.
+    ///
+    /// Contract:
+    /// - `cfg` and `rules` must be those later passed to [`Snapshot::restore`];
+    /// - the state types a plugin declares must not depend on the world key nor on drawn
+    ///   values. Should they, the save is refused by `restore` (value type or re-encoding),
+    ///   never misread;
+    /// - like [`Sim::build`], the first call fixes the global thread pool, to
+    ///   `cfg.threads`.
     ///
     /// # Errors
     ///

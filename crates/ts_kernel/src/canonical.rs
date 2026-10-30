@@ -10,8 +10,29 @@
 //! - the encoding must be canonical: tags are `0` or `1`, identifiers and events strictly
 //!   increasing, plugin names strictly increasing, families and state indices exactly those
 //!   of the rules;
-//! - dates stay within ±2^62 ms and the day origin within ±2^35 days, so that a forged date
-//!   cannot make a later tick overflow.
+//! - every decoded value that later feeds a computation or a counter is bounded (below), so
+//!   that no later operation can overflow on a forged save.
+//!
+//! **Bounded values** (margin: at least 2^62 between the bound and the first overflow of
+//! any later operation; no genuine world comes near them):
+//!
+//! | Value | Bound | Where | Later use |
+//! |---|---|---|---|
+//! | header tick length | 1 to 1,000 ms | decoder | compared with the configuration by `restore` |
+//! | date (header and state) | ±2^62 ms | decoder | `step` adds the tick length; the time skip |
+//! | day origin | ±2^35 days (about 3 × 10^18 ms) | decoder | day computations |
+//! | `StableId` counter | ≤ 2^62 | decoder | `StableIdAllocator::allocate` (stops at 2^63) |
+//! | event counter `seq` | ≤ 2^62 | decoder | `Scheduler::schedule` adds 1 per event |
+//! | pending event date | ±2^62 ms | decoder | scheduler levels, `day * MILLIS_PER_DAY` |
+//! | pending event rank | < event counter, distinct | `Scheduler::restore` | ordering only |
+//! | stable ids, `LodComplete` | strictly increasing, below the counter (game ids) | decoder, `restore` | lookups only |
+//!
+//! Not bounded, on purpose: the event payload (`kind`, `arg`) and its `subject`, which the
+//! kernel never computes with. **The subject of a pending event may be an entity that no
+//! longer exists** (an event can outlive its subject): a rule plugin looks it up in
+//! [`crate::StableIndex`] and must handle its absence. The values of rule state types are
+//! bounded by their own [`StateDecode`], and their arithmetic stays checked
+//! ([`crate::Money`]).
 //!
 //! **Header** (part `kernel.meta` of a save), written by `MemorySnapshot::header_bytes`:
 //! rules fingerprint (32 raw bytes), tick length (`i64` ms), date (`i64` ms), then the
@@ -500,6 +521,9 @@ fn decode_header(bytes: &[u8], limits: &CanonicalLimits) -> Result<Header, Canon
     let mut r = StateReader::new(bytes, limits)?;
     let rules = RulesFingerprint::from_bytes(r.array()?);
     let tick_ms = r.i64()?;
+    if !(1..=MAX_TICK_MS).contains(&tick_ms) {
+        return Err(CanonicalError::Invalid("tick length out of range"));
+    }
     let now = date(SimTime::decode_state(&mut r)?)?;
     let plugins = r.seq(|r| Ok((r.str()?.to_owned(), r.u32()?)))?;
     r.finish()?;
@@ -546,6 +570,19 @@ pub(crate) struct KernelState {
 const MAX_ABS_MILLIS: u64 = 1 << 62;
 /// Largest absolute day origin, in days (about 94 million years, below `MAX_ABS_MILLIS`).
 const MAX_ABS_DAYS: u64 = 1 << 35;
+/// Largest `StableId` and event counters: 2^62, far below their overflow (`StableId`
+/// allocation stops at 2^63, `seq` overflows at 2^64).
+const MAX_COUNTER: u64 = 1 << 62;
+/// Longest tick a configuration can give: `tick_hz` divides 1,000.
+const MAX_TICK_MS: i64 = 1000;
+
+/// A counter within [`MAX_COUNTER`].
+fn counter(v: u64, what: &'static str) -> Result<u64, CanonicalError> {
+    if v > MAX_COUNTER {
+        return Err(CanonicalError::Invalid(what));
+    }
+    Ok(v)
+}
 
 /// A date within [`MAX_ABS_MILLIS`].
 fn date(t: SimTime) -> Result<SimTime, CanonicalError> {
@@ -561,8 +598,8 @@ fn decode_kernel(r: &mut StateReader<'_>) -> Result<KernelState, CanonicalError>
     if day_origin.days().unsigned_abs() > MAX_ABS_DAYS {
         return Err(CanonicalError::Invalid("day origin out of range"));
     }
-    let next_stable_id = r.u64()?;
-    let next_seq = r.u64()?;
+    let next_stable_id = counter(r.u64()?, "StableId counter out of range")?;
+    let next_seq = counter(r.u64()?, "event counter out of range")?;
     let events = r.seq(|r| {
         let at = date(SimTime::decode_state(r)?)?;
         let seq = r.u64()?;

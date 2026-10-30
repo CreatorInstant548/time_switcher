@@ -426,11 +426,35 @@ fn lod_complete_survives_restore() {
     steps(&mut a, 10);
     let snap: MemorySnapshot = a.snapshot(SnapshotScope::Full);
     let mut b = restore(&snap, &rules).unwrap();
+    // The marker goes through the bytes too (AS-36).
+    let mut c = restore(&through_bytes(&snap, &rules), &rules).unwrap();
+    assert_eq!(c.complete.iter(&c.world).count(), 3);
     let stop = crate::StopCondition::At(SimTime::from_millis(5_000));
-    let (ra, rb) = (a.run_until(stop), b.run_until(stop));
+    let (ra, rb, rc) = (a.run_until(stop), b.run_until(stop), c.run_until(stop));
     assert_eq!(ra, rb);
+    assert_eq!(ra, rc);
     assert_eq!((ra.ticks, ra.skipped_ticks), (90, 0));
     assert_eq!(a.state_hash(), b.state_hash());
+    assert_eq!(a.state_hash(), c.state_hash());
+}
+
+/// A day origin other than the epoch goes through the bytes and is restored.
+#[test]
+fn day_origin_round_trips_through_the_bytes() {
+    let rules = life(1);
+    let mut a = build(&rules);
+    a.world.resource_mut::<SimClock>().day_origin = DayOrigin::from_days(-3);
+    steps(&mut a, 5);
+    let snap: MemorySnapshot = a.snapshot(SnapshotScope::Full);
+    let mut b = restore(&through_bytes(&snap, &rules), &rules).unwrap();
+    assert_eq!(
+        b.world.resource::<SimClock>().day_origin(),
+        DayOrigin::from_days(-3)
+    );
+    assert_eq!(b.state_hash(), a.state_hash());
+    steps(&mut a, 5);
+    steps(&mut b, 5);
+    assert_eq!(b.state_hash(), a.state_hash());
 }
 
 /// I1: the marker is part of the kernel state hash.
