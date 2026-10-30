@@ -237,3 +237,9 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - m4, m5.
 
   m1, m2 et m3 vont dans l'issue #8 (T3b). Les sessions sensibles gardent leurs deux relecteurs jusqu'à ce que les bloquants soient levés.
+- 30/10 : **décision de l'orchestrateur sur la PR #23**. Après ce lot, une seule **vérification ciblée** : chaque correction du lot, avec un test qui reproduit B1, et rien d'autre. Un nouveau constat ne bloque que s'il relève de l'un de ces cas :
+  - une écriture sur `main` hors fusion, y compris l'exécution de code à la fusion ;
+  - une fuite de secret ;
+  - un faux refus d'un travail courant.
+
+  Le reste va dans T3b. Puis fusion de #23, puis de #29.
