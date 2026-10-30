@@ -88,7 +88,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | T2b | `claude/xtask-check`, [#11](https://github.com/CreatorInstant548/time_switcher/pull/11), tête 067a0cb | **Fusionnée** par `merge-pr.ps1` (`review-ok` et `archsec-ok` sur 067a0cb) → **69b4849** | `cargo xtask check --all` vert (11 OK, 2 ignorées : workflows, spec-map) ; 15 tests | `/code-review` et `/security-review` faits par l'auteur | relecture neuve : **changements demandés** (I1 clé YAML explicite, I2 `#[path]`/`cfg(not(clippy))`/macro, I3 fichiers écartés en silence) ; correction en cours ; mineurs → #12 | — |
 | T4 | `claude/xtask-spec-map`, [#15](https://github.com/CreatorInstant548/time_switcher/pull/15), tête **516ff46** | **Fusionnée** par `merge-pr.ps1` (`review-ok` et `archsec-ok` sur 516ff46) → **cea47c8** | `check --all` vert, `spec-map` active ; 36 tests | `/code-review` et `/security-review` par l'auteur | relecteur neuf puis `archsec-ok` | — |
 | T2c | `claude/xtask-disk`, [#16](https://github.com/CreatorInstant548/time_switcher/pull/16), tête 95b66f2 | **Fusionnée** par `merge-pr.ps1` | `check --all` vert ; 30 tests ; jonction réelle non suivie (test) | `/code-review` et `/security-review` par l'auteur | relecture neuve **refusée** : B1 (baux suivis à travers une jonction à la place de `target`), I1 (`TS_CACHE` non validé), I2 (essai jetable qui agit sur le vrai dépôt) ; `review-ok` et `archsec-ok` sur 95b66f2 | **14b6c58** |
-| T13 | `claude/ci`, [#14](https://github.com/CreatorInstant548/time_switcher/pull/14), tête 5a47413 | En relecture | **`ci-ok` vert** (run 41011605890) ; ~9 min facturées par exécution | relecture interne faite par l'auteur | `review-ok` et `archsec-ok` sur 5a47413 ; mise à jour depuis `main` (e3e2f2a), `ci-ok` vert, **`review-ok` du delta** ; nouvel `archsec-ok` demandé | — |
+| T13 | `claude/ci`, [#14](https://github.com/CreatorInstant548/time_switcher/pull/14), tête e3e2f2a | **Fusionnée** par `merge-pr.ps1` | **`ci-ok` vert** (run 41011605890) ; ~9 min facturées par exécution | relecture interne faite par l'auteur | `review-ok` et `archsec-ok` sur 5a47413 ; mise à jour (e3e2f2a), `ci-ok` vert, `review-ok` et `archsec-ok` sur e3e2f2a | **dd83f66** |
 
 ## Sessions et agents actifs
 
@@ -98,7 +98,8 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | sous-agent t1-outillage | T1 | Opus | worktree isolé | 30/10, **terminée** (fusionnée) |
 | sous-agent t2a-espace | T2a | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t2b-check | T2b | Opus | — | 30/10, **terminée** (fusionnée) |
-| sous-agent t13-ci | T13 + A2 | Opus | — | 30/10, **livrée** (PR #14) |
+| sous-agent t13-ci | T13 + A2 | Opus | — | 30/10, **terminée** (fusionnée) |
+| sous-agent t3a-merge | T3a | Opus | worktree isolé, `claude/xtask-merge` | 30/10 |
 | sous-agent t2c-disk | T2c | Opus | — | 30/10, **livrée** (PR #16) |
 | sous-agent t4-spec-map | T4 | Sonnet | — | 30/10, **livrée** (PR #15) |
 
@@ -166,3 +167,4 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
 - 30/10 : PR #16 : `review-ok` sur 95b66f2 (48 tests ; bancs B1, I1 et I2 rejoués et conformes) ; `archsec-ok` demandé.
 - 30/10 : **PR #16 fusionnée** (14b6c58). PR #14 en mise à jour depuis `main` par son auteur ; ensuite, revérification du delta et `archsec-ok`.
 - 30/10 : PR #14 mise à jour (e3e2f2a, fusion de 14b6c58 sans conflit) ; `ci-ok` vert (run 41017429720, environ 10 min ; environ 35 min pour toute la PR) ; `review-ok` du delta posé ; `archsec-ok` demandé.
+- 30/10 : **PR #14 fusionnée** (dd83f66) : la CI est sur `main`, et `ci-ok` sera exigé pour toute fusion. Première CI sur `main` en cours, Dependabot a fait son premier passage. Worktrees et branches de la #14 retirés. Deux faux refus de plus ajoutés à l'issue #7 (`patch-id`, `merge-base` dans une substitution). **T3a lancée.** Reste à faire pour m6 (issue #17) : première analyse gitleaks de tout l'historique, par la tâche périodique ; `gh workflow run` n'est pas dans la liste blanche.
