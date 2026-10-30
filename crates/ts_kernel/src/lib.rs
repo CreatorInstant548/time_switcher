@@ -34,4 +34,4 @@ mod time;
 pub use build_profile::{BUILD_PROFILE, DevFeature, active_dev_features};
 pub use id::{StableId, StableIdAllocator};
 pub use money::{BasisPoints, Money, div_round_half_even};
-pub use time::{SimDay, SimTime};
+pub use time::{DayOrigin, SimDay, SimTime};
