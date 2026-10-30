@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Variables qui changeraient la configuration de Git ou de gitleaks, vidées comme dans les crochets.
 const SCRUBBED_ENV: [&str; 5] = [
@@ -37,6 +37,18 @@ pub fn read_text(path: &Path) -> Result<String, String> {
 pub fn age(path: &Path) -> Option<Duration> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     SystemTime::now().duration_since(modified).ok()
+}
+
+/// Instant présent, pour afficher une durée (`determinism`), jamais pour un résultat.
+#[allow(clippy::disallowed_methods)] // outil : durée mesurée et affichée.
+pub fn now() -> Instant {
+    Instant::now()
+}
+
+/// Durée écoulée depuis `start`.
+#[allow(clippy::disallowed_methods)] // outil : durée mesurée et affichée.
+pub fn elapsed(start: Instant) -> Duration {
+    start.elapsed()
 }
 
 /// Pause before retrying a GitHub read (V4).

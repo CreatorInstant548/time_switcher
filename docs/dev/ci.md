@@ -124,7 +124,7 @@ puis il fait J4 avec ces faits frais. Un commit non sensible ne lit rien sur Git
 
 ## 7. Budget
 
-Offre GitHub Pro (depuis le 30/10/2026) : **3 000 min par mois** (M36). Un travail est compté à la minute supérieure, et une minute Windows compte double. Le responsable développement relève la consommation chaque semaine ; **à 80 % (2 400 min)**, il passe en **mode minimal** : plus de `rust-windows` sur PR (étiquette retirée, chemins sensibles vérifiés sous Windows par la tâche hebdomadaire seulement), et `nightly.yml` réduit à `advisories` et `verify-main`. `verify-main` reste (décidé) : sans lui, le cache local de `verify-main` n'est plus sûr (V3).
+Offre GitHub Pro (depuis le 30/10/2026) : **3 000 min par mois** (M36). Un travail est compté à la minute supérieure, et une minute Windows compte double. Le responsable développement relève la consommation chaque semaine ; **à 80 % (2 400 min)**, il passe en **mode minimal** : plus de `rust-windows` sur PR (étiquette retirée, chemins sensibles vérifiés sous Windows par la tâche hebdomadaire seulement), et `nightly.yml` réduit à `advisories` et `verify-main`. `verify-main` reste (décidé) : c'est le contrôle de nuit des approbations des commits sensibles de `main`.
 
 **Coût estimé par exécution** (minutes facturées, à recaler sur les relevés) :
 

@@ -7,6 +7,7 @@
 
 mod build_inputs;
 mod carry;
+mod determinism;
 mod disk;
 mod exemptions;
 mod github;
@@ -35,7 +36,7 @@ pub const BUILT_FROM: &str = env!("XTASK_INPUTS_SHA256");
 type Step = (&'static str, &'static str, fn(&Ctx) -> Outcome);
 
 /// Étapes de `check`, dans l'ordre d'exécution. Les noms sont stables (`--only`, CI).
-const STEPS: [Step; 13] = [
+const STEPS: [Step; 14] = [
     ("fmt", "formatage (cargo fmt)", steps::fmt),
     (
         "clippy",
@@ -46,6 +47,11 @@ const STEPS: [Step; 13] = [
         "test",
         "tests des crates touchées et de leurs dépendants",
         steps::test,
+    ),
+    (
+        "determinism",
+        "monde-jouet : 1 et 4 fils, valeurs dorées (version courte)",
+        determinism::step,
     ),
     ("deny", "cargo deny", steps::deny),
     ("audit", "cargo audit (base RustSec)", steps::audit),
@@ -83,7 +89,7 @@ const STEPS: [Step; 13] = [
     ("spec-map", "spec-map check", steps::spec_map),
 ];
 
-const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--no-cache] | cargo xtask hooks install|verify [--dry-run]";
+const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask determinism [--full] [--bless] | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--no-cache] | cargo xtask hooks install|verify [--dry-run]";
 
 struct Options {
     all: bool,
@@ -133,6 +139,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("slots") => return slots::main(&args[1..]),
         Some("disk") => return disk::main(&args[1..]),
+        Some("determinism") => return determinism::main(&args[1..]),
         Some("spec-map") => return spec_map::run(&args[1..]),
         Some("merge") => return merge::main(&args[1..]),
         Some("hooks") => return hooks::main(&args[1..]),

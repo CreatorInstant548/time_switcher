@@ -1083,10 +1083,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "ts_world_model"
+name = "ts_toy"
 version = "0.0.0"
 dependencies = [
  "bevy_ecs",
+ "bevy_tasks",
+ "blake3",
+ "ts_kernel",
+ "ts_persist",
+]
+
+[[package]]
+name = "ts_world_model"
+version = "0.0.0"
+dependencies = [
  "ts_kernel",
 ]
 

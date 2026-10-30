@@ -1,9 +1,4 @@
-use bevy_ecs::prelude::Resource;
-use ts_kernel::rng::WorldKey;
-use ts_kernel::{
-    MemorySnapshot, Plugin, Sim, SimBuilder, SimConfig, Snapshot, SnapshotScope, StableId,
-    StateHash,
-};
+use ts_kernel::{StableId, StateHash};
 
 use crate::candidates::{CandidateKind, CandidateSpot};
 use crate::public::{PublicMap, PublicPlace};
@@ -26,67 +21,9 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-// --- Bytes of a `StateHash` value -----------------------------------------------------------
-//
-// The kernel offers no way (yet) to get the bytes of a lone value: a `StateWriter` cannot be
-// built outside it. The value is therefore declared as a state resource of a minimal `Sim`, and
-// its bytes are read from the canonical snapshot. A `Sim` without the resource gives the same
-// bytes up to the "present" flag, which isolates the encoding of the value.
-
-#[derive(Resource, Clone)]
-struct Probe<T: Send + Sync + 'static>(T);
-
-impl<T: StateHash + Send + Sync + 'static> StateHash for Probe<T> {
-    fn hash_state(&self, w: &mut ts_kernel::StateWriter<'_>) {
-        self.0.hash_state(w);
-    }
-}
-
-// The kernel now requires a decoding twin for state types (#46). The probe is never decoded:
-// it refuses. To be replaced by `ts_kernel::state_hash_bytes` (AS-39).
-impl<T: Send + Sync + 'static> ts_kernel::StateDecode for Probe<T> {
-    fn decode_state(_: &mut ts_kernel::StateReader<'_>) -> Result<Self, ts_kernel::CanonicalError> {
-        Err(ts_kernel::CanonicalError::Invalid("test probe"))
-    }
-}
-
-struct ProbePlugin<T>(Option<T>);
-
-impl<T: StateHash + Clone + Send + Sync + 'static> Plugin for ProbePlugin<T> {
-    fn name(&self) -> &'static str {
-        "probe"
-    }
-
-    fn version(&self) -> u32 {
-        1
-    }
-
-    fn build(&self, b: &mut SimBuilder) {
-        b.state_resource::<Probe<T>>("wm");
-        if let Some(v) = &self.0 {
-            b.insert_resource(Probe(v.clone()));
-        }
-    }
-}
-
-fn snapshot_bytes<T: StateHash + Clone + Send + Sync + 'static>(value: Option<T>) -> Vec<u8> {
-    let rules: Vec<Box<dyn Plugin>> = vec![Box::new(ProbePlugin(value))];
-    let sim = Sim::build(SimConfig::default(), &rules, &WorldKey::from_bytes([7; 16])).unwrap();
-    MemorySnapshot::snapshot(&sim, SnapshotScope::Full)
-        .canonical_bytes()
-        .to_vec()
-}
-
-/// The `StateHash` bytes of `value`, and nothing else.
-fn state_bytes<T: StateHash + Clone + Send + Sync + 'static>(value: &T) -> Vec<u8> {
-    let absent = snapshot_bytes::<T>(None);
-    let present = snapshot_bytes(Some(value.clone()));
-    // Layout: <same prefix>, then a flag (0 absent, 1 present), then the value.
-    let (flag, prefix) = absent.split_last().unwrap();
-    assert_eq!(*flag, 0);
-    assert!(present.starts_with(prefix));
-    assert_eq!(present[prefix.len()], 1);
-    present[prefix.len() + 1..].to_vec()
+/// The `StateHash` bytes of `value`, and nothing else (AS-39).
+fn state_bytes<T: StateHash>(value: &T) -> Vec<u8> {
+    ts_kernel::state_hash_bytes(value)
 }
 
 // --- Cm and quantize ---------------------------------------------------------------------
