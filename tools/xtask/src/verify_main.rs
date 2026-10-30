@@ -13,6 +13,7 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
+use crate::carry::{Carry, Pr};
 use crate::github::{Repo, approved, is_sha};
 use crate::verify_cache::{Cache, Facts};
 use crate::{sensitive, sys};
@@ -162,20 +163,43 @@ fn check_commit(
         let bodies = repo.comments(n)?;
         facts.review_ok = approved(&bodies, "review-ok", &head);
         facts.archsec_ok = approved(&bodies, "archsec-ok", &head);
+        // AS-40: the same function as merge (W6), on facts read from GitHub on this run; a
+        // sensitive commit writes no cache entry (V5).
+        let mut carry = Carry::new(
+            repo,
+            Pr {
+                number: n,
+                head: &head,
+                main: &parent,
+                diff: (&parent, sha, &files),
+                local_objects: false,
+            },
+        );
+        let mut j4 = head.clone();
         for (tag, present) in [
             ("review-ok", facts.review_ok),
             ("archsec-ok", facts.archsec_ok),
         ] {
-            if !present {
-                bad.push(format!(
-                    "chemin sensible : commentaire « {tag}: {head} » absent de la PR #{n}"
-                ));
+            if present {
+                continue;
+            }
+            // J4: an archsec-ok SHA recorded in §9 is tried first.
+            let in_section = |s: &str| tag != "archsec-ok" || carnet_approves(section, s);
+            match carry.resolve(tag, &bodies, &in_section)? {
+                Ok(from) => {
+                    note.push_str(&format!(", {tag} carried over from {}", &from[..7]));
+                    if tag == "archsec-ok" {
+                        j4 = from;
+                    }
+                }
+                Err(why) => bad.push(format!("sensitive path, PR #{n}: {why}")),
             }
         }
-        // J4 is never cached: §9 is read again on every run (V1), against a fresh head (V5).
-        if !carnet_approves(section, &head) {
+        // J4 is never cached: §9 is read again on every run (V1), against a fresh head (V5), or
+        // the SHA the archsec-ok was carried over from (W6).
+        if !carnet_approves(section, &j4) {
             bad.push(format!(
-                "chemin sensible : « archsec-ok: {head} » absent du §9 de {CARNET} (J4)"
+                "chemin sensible : « archsec-ok: {j4} » absent du §9 de {CARNET} (J4)"
             ));
         }
     }
@@ -776,6 +800,88 @@ mod tests {
             assert!(gh_calls(&calls) >= 4, "{calls:#?}");
         }
         let _ = std::fs::remove_dir_all(&cache); // temporary files of this test only
+    }
+
+    /// `check_commit` on a lab history: `x` squashes the PR whose head `h` merged `main` after
+    /// both approvals were given on `a`. §9 approves `a` if `j4_on_a`, else `h`; `ci-ok` is green
+    /// on `h` if `ci`.
+    fn carried_check(j4_on_a: bool, ci: bool) -> Vec<String> {
+        let c = crate::carry::lab::case(&format!("vm-carry-{ci}"));
+        let tree = format!("{}^{{tree}}", c.h);
+        let x = c
+            .lab
+            .git(&["commit-tree", &tree, "-p", &c.m1, "-m", "squash"]);
+        let s = "gh api --paginate repos/o/r";
+        let h = c.h.as_str();
+        let runs = if ci {
+            json!({"check_runs": [{"name": "ci-ok", "status": "completed",
+                "conclusion": "success", "head_sha": h, "check_suite": {"id": 5}}]})
+        } else {
+            json!({"check_runs": []})
+        };
+        let wfr = json!({"workflow_runs": [{"path": ".github/workflows/ci.yml", "workflow_id": 9,
+            "head_sha": h, "check_suite_id": 5, "repository": {"full_name": "o/r"}}]});
+        let mut answers = crate::carry::lab::commits(&[&c.a, h]);
+        answers.extend([
+            (
+                format!("{s}/commits/{x}/pulls"),
+                json!([{"number": 7, "merge_commit_sha": x}]).to_string(),
+            ),
+            (
+                "gh api repos/o/r/pulls/7".to_owned(),
+                json!({"number": 7, "merged": true, "merge_commit_sha": x,
+                       "base": {"ref": "main"}, "head": {"sha": h}})
+                .to_string(),
+            ),
+            (
+                "gh api repos/o/r/actions/workflows/ci.yml".to_owned(),
+                json!({"id": 9}).to_string(),
+            ),
+            (format!("{s}/commits/{h}/check-runs"), runs.to_string()),
+            ("gh api repos/o/r/actions/runs".to_owned(), wfr.to_string()),
+            (
+                format!("{s}/issues/7/comments"),
+                json!([{"body": format!("review-ok: {}", c.a)},
+                       {"body": format!("archsec-ok: {}", c.a)}])
+                .to_string(),
+            ),
+        ]);
+        let (repo, _) = c.lab.repo(answers);
+        let rules = sensitive::Rules::parse("tools/xtask/\n").unwrap();
+        let j4 = if j4_on_a { &c.a } else { &c.h };
+        let section = format!("## 9. Avis\narchsec-ok: {j4}\n");
+        let (bad, note, facts) = check_commit(&repo, &rules, &section, &x, None).unwrap();
+        // A sensitive commit, approvals carried over or not, writes no cache entry (V5).
+        assert!(facts.is_none(), "{facts:?}");
+        if bad.is_empty() {
+            let a = &c.a[..7];
+            assert!(
+                note.contains(&format!("archsec-ok carried over from {a}")),
+                "{note}"
+            );
+        }
+        bad
+    }
+
+    /// AS-40 W6: verify-main carries both approvals over with the same function as merge, and
+    /// does J4 on `A`, not on the head.
+    #[test]
+    fn carried_approval_j4_on_a() {
+        assert_eq!(carried_check(true, true), Vec::<String>::new());
+        let bad = carried_check(false, true);
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(
+            bad[0].contains("(J4)") && !bad[0].contains("absent de la PR"),
+            "{bad:?}"
+        );
+    }
+
+    /// AS-40 W7: `ci-ok` stays required on the head itself, approvals carried over or not.
+    #[test]
+    fn carried_approval_needs_ci_ok_on_head() {
+        let bad = carried_check(true, false);
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(bad[0].contains("ci-ok absent"), "{bad:?}");
     }
 
     #[test]

@@ -120,3 +120,44 @@ Pour les étapes 5 et 6, une erreur de mesure (sous-dossier illisible) ou un arb
 3. le lancer **depuis le dépôt jetable**, avec `TS_CACHE` réglé sur `<banc>\cache`.
 
 **Exemptions de clippy** : `slots.rs` et `disk.rs` parcourent `TS_CACHE`, prennent des baux et lisent l'horloge. Ils portent leurs propres exemptions, une par fonction et commentées (E6), en plus de celles de `sys.rs`.
+
+## 6. Approbations de `cargo xtask merge` et `cargo xtask verify-main`
+
+Une PR qui touche un chemin sensible (`tools/ci/sensitive-paths.txt` d'`origin/main`) doit porter deux avis : `review-ok: <sha>` (relecteur neuf) et `archsec-ok: <sha>` (archi-sécu). Chacun compte seulement s'il occupe **la première ligne** d'un commentaire de la PR, exactement sous cette forme, avec un SHA complet (I3). Une ligne citée plus bas ne compte pas.
+
+`merge` (étape 10) et `verify-main` (chaque commit sensible de `main`) appliquent **la même fonction**, `carry::Carry::resolve` (W6). Un avis compte s'il est posé :
+- sur le SHA de tête ;
+- ou sur un SHA antérieur `A` de la même PR, s'il peut être **reporté** (§6.1).
+
+### 6.1 Report d'une approbation après une mise à jour depuis `main` (AS-40)
+
+Un `review-ok` ou un `archsec-ok` posé sur `A` vaut pour la tête `H` seulement si **toutes** ces conditions sont remplies :
+- **W1, même PR** : `A` figure parmi les commits de la PR lus sur GitHub (`pulls/<n>/commits`), et c'est un ancêtre de `H`.
+- **W2, mêmes fichiers, mêmes contenus** : la PR modifie le même ensemble de fichiers en `A` et en `H` (de la base de fusion au commit, sans renommage). Chacun a le même identifiant de blob et le même mode en `A` et en `H`. On compare les blobs, jamais les lignes de diff.
+- **W3, `main` n'a pas touché ces fichiers** : la base de `A` est un ancêtre de celle de `H`, et aucun fichier de la PR n'y diffère entre les deux bases.
+- **W4, rien d'autre ne bouge** : hors des fichiers de la PR, l'arbre de `H` est identique à celui de `main` à sa base. Aucune résolution manuelle ne peut se cacher ailleurs. De plus, la base de `H` doit être le `main` de référence (`origin/main` pour `merge`, le parent du squash pour `verify-main`), et le commit qui arrive sur `main` doit avoir l'arbre de `H` (le squash, pour `verify-main`).
+- **W5, même sensibilité** : c'est d'abord la liste `sensitive-paths.txt` d'`origin/main` qui décide si des avis sont exigés. Si oui, un `archsec-ok` n'est reporté que si la liste de la base de `A` rendait déjà la PR sensible. Sinon, un `archsec-ok` **neuf** sur `H` est exigé. Une liste absente ou illisible à la base de `A` compte comme « non sensible ».
+- **W6, J4** : `verify-main` fait le recoupement J4 sur `A` quand l'`archsec-ok` est reporté. Le §9 du carnet d'archi-sécu doit donc contenir `archsec-ok: <A>`. Parmi plusieurs SHA reportables, celui que le §9 contient passe en premier.
+- **W7, ce qui ne change pas** : `ci-ok` reste exigé sur `H` lui-même.
+
+Si une seule condition échoue, l'approbation doit être **reposée sur `H`**. C'est le cas notamment :
+- d'une **résolution de conflit** dans un fichier de la PR : le blob diffère, W2 échoue ;
+- d'un fichier ajouté à la PR, ou d'un fichier hors PR modifié : W2 et W4 échouent ;
+- d'un fichier retiré de la PR : W2 échoue ;
+- d'un fichier de la PR modifié sur `main`, même si la fusion a gardé la version de la PR : W3 échoue ;
+- d'un rebasage : W1 échoue.
+
+**Affichage.**
+- `merge` affiche, pour chaque avis : `<avis>: <tête>`, ou `<avis> carried over from <A> to the head <tête> (AS-40, W1 to W5 hold)`.
+- Un refus dit, pour chaque SHA candidat, la condition qui a échoué, par exemple `W2: <fichier> has another blob or mode at the head than at <A> (conflict resolution?)`.
+- `verify-main` note `<avis> carried over from <A>` sur la ligne du commit.
+
+**Lectures.**
+- Les arbres de `A` et de `H` :
+  - pour `merge`, sont lus en local (`git ls-tree`), depuis les objets apportés par `git fetch origin pull/<n>/head` ;
+  - pour `verify-main`, viennent de l'API (`git/trees/<sha>?recursive=1`), sans cache. En CI, `verify-main` n'a pas les objets des PR, puisqu'il ne fait pas de `git fetch`.
+- Les bases de fusion viennent de `compare/<x>...<y>`.
+- Les bases sont des commits de `main`, lus dans l'historique local.
+- Au plus 5 SHA candidats sont examinés, du plus récent au plus ancien, après avoir écarté ceux qui ne sont pas dans la PR.
+- Tout est relu sur GitHub à chaque exécution. Un commit sensible n'utilise jamais le cache de `verify-main` (V5).
+- Une lecture qui échoue fait échouer le candidat, jamais l'inverse.

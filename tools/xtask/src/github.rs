@@ -434,10 +434,23 @@ pub fn judge_ci(
 /// Un commentaire dont la **première ligne** est exactement `<tag>: <sha>` (I3) : une ligne citée
 /// plus bas, dans un avis défavorable par exemple, ne vaut pas approbation.
 pub fn approved(bodies: &[String], tag: &str, sha: &str) -> bool {
-    let want = format!("{tag}: {sha}");
-    bodies
-        .iter()
-        .any(|b| b.lines().next().is_some_and(|l| l.trim_end() == want))
+    approved_shas(bodies, tag).iter().any(|s| s == sha)
+}
+
+/// SHAs approved by a comment whose first line is exactly `<tag>: <sha>` (I3), most recent
+/// first, without repeats (AS-40).
+pub fn approved_shas(bodies: &[String], tag: &str) -> Vec<String> {
+    let prefix = format!("{tag}: ");
+    let mut out: Vec<String> = Vec::new();
+    for b in bodies.iter().rev() {
+        let line = b.lines().next().map(str::trim_end).unwrap_or_default();
+        if let Some(sha) = line.strip_prefix(prefix.as_str()).filter(|s| is_sha(s))
+            && !out.iter().any(|s| s == sha)
+        {
+            out.push(sha.to_owned());
+        }
+    }
+    out
 }
 
 /// SHA de commit complet, en hexadécimal minuscule.

@@ -6,6 +6,7 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 mod build_inputs;
+mod carry;
 mod disk;
 mod exemptions;
 mod github;
