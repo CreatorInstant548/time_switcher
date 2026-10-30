@@ -1,7 +1,10 @@
 #!/bin/sh
-# pre-push : refus de pousser vers main (SEC0-13), de forcer, de supprimer pilotage ;
-# gitleaks sur la plage poussée (SEC0-08).
-# spec: carnet architecture-securite.md SEC0-08, SEC0-13
+# pre-push : refus de forcer vers une autre branche que main, de supprimer main ou pilotage ;
+# gitleaks sur la plage poussée, main comprise (SEC0-08).
+# La poussée directe et la poussée forcée vers main du distant origin ne sont plus refusées ici :
+# le ruleset main (26213563) de GitHub les refuse pour tout le monde, sans contournement (AS-31,
+# T3e-1). Vers le main de tout autre distant (nom ou URL), la poussée reste refusée.
+# spec: carnet architecture-securite.md SEC0-08, SEC0-13, AS-31
 . "$(dirname "$0")/common.sh"
 remote=$1
 ZERO=0000000000000000000000000000000000000000
@@ -9,13 +12,22 @@ gitleaks_checked
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   dest=$(printf '%s' "$remote_ref" | tr 'A-Z' 'a-z')
-  [ "$dest" = "refs/heads/main" ] && fail "poussée vers main interdite (SEC0-13) : passez par une PR."
+  [ "$dest" = "refs/heads/main" ] && [ "$remote" != "origin" ] &&
+    fail "poussée vers main permise seulement vers le distant origin, que garde le ruleset de GitHub (SEC0-13, AS-31)."
   if [ "$local_sha" = "$ZERO" ]; then
+    [ "$dest" = "refs/heads/main" ] && fail "suppression de la branche main interdite (SEC0-13)."
     [ "$dest" = "refs/heads/pilotage" ] && fail "suppression de la branche pilotage interdite."
     continue   # suppression d'une branche de tâche
   fi
   if [ "$remote_sha" = "$ZERO" ]; then
     range="$local_sha --not --remotes=$remote"   # branche nouvelle : commits absents du distant
+  elif [ "$dest" = "refs/heads/main" ]; then
+    # main : GitHub juge l'avance rapide ; gitleaks lit tout ce qui n'est pas déjà sur le distant.
+    if git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+      range="$remote_sha..$local_sha"
+    else
+      range="$local_sha --not --remotes=$remote"
+    fi
   else
     git cat-file -e "$remote_sha^{commit}" 2>/dev/null ||
       fail "$remote_ref a bougé sur $remote ($remote_sha inconnu ici) : git fetch, puis intégrez sans forcer."
