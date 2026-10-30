@@ -75,3 +75,12 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
     - le dev prépare une PR d'amorçage, qui contient le code et `tools/ci/degraded-mode.txt`, et la laisse ouverte ;
     - seul l'utilisateur peut la fusionner depuis GitHub, ou rétablir Actions. Il en est informé, sans qu'on lui demande rien ;
     - si Actions revient, le fichier est retiré et la PR est fusionnée normalement.
+- **GitHub Pro (30/10, après-midi)**
+  - L'utilisateur est passé à Pro et autorise l'usage de ses fonctions. Actions fonctionne de nouveau, et les exécutions 41051384808, 41053714027 et 41050288846 sont relancées.
+  - Le mode dégradé (AS-29, T3c) est abandonné. L'issue #32 sera fermée quand `ci-ok` repassera au vert.
+  - **Décidé : T3d**, réglages GitHub décrits dans des fichiers (`tools/github/*.json` et `tools/dev/repo-settings.ps1` avec `-Check` et `-Apply`) :
+    - ruleset sur `main` : PR obligatoire, `ci-ok` requis, historique linéaire, poussée forcée et suppression interdites, liste de contournement vide, 0 approbation ;
+    - ruleset sur `pilotage` : poussée forcée et suppression interdites ;
+    - Actions : la liste fermée de SEC0-30, épinglage par SHA, jeton en lecture seule.
+  - `guard-git` n'autorise que `pwsh tools/dev/repo-settings.ps1 -Apply`, et c'est l'orchestrateur qui le lance. Pas de fusion automatique GitHub. Le quota passe à 3 000 minutes par mois (M36).
+  - Reste à faire : la mise à jour de CLAUDE.md (GitHub gratuit → Pro), après la fusion de la #29.
