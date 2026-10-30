@@ -42,6 +42,14 @@ impl<T: StateHash + Send + Sync + 'static> StateHash for Probe<T> {
     }
 }
 
+// The kernel now requires a decoding twin for state types (#46). The probe is never decoded:
+// it refuses. To be replaced by `ts_kernel::state_hash_bytes` (AS-39).
+impl<T: Send + Sync + 'static> ts_kernel::StateDecode for Probe<T> {
+    fn decode_state(_: &mut ts_kernel::StateReader<'_>) -> Result<Self, ts_kernel::CanonicalError> {
+        Err(ts_kernel::CanonicalError::Invalid("test probe"))
+    }
+}
+
 struct ProbePlugin<T>(Option<T>);
 
 impl<T: StateHash + Clone + Send + Sync + 'static> Plugin for ProbePlugin<T> {
