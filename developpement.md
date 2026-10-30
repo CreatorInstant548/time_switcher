@@ -107,6 +107,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | sous-agent t3a-merge | T3a | Opus | — | 30/10, **livrée** (PR #23 et #25) |
 | sous-agent t5a-kernel | T5a | Opus | — | 30/10, **terminée** (fusionnée) |
 | sous-agent t5b-rng | T5b | Opus | — | 30/10, **terminée** (fusionnée) |
+| sous-agent t6-kernel | T6 (T6a, puis T6b si plus de 600 lignes) | Opus | worktree isolé, `claude/ts-kernel-2` | 30/10 |
 | sous-agent t2c-disk | T2c | Opus | — | 30/10, **livrée** (PR #16) |
 | sous-agent t4-spec-map | T4 | Sonnet | — | 30/10, **livrée** (PR #15) |
 
@@ -197,3 +198,12 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
 - 30/10 : PR #23, 1er relecteur : 4 bloquants et 3 importants. Lot envoyé à l'auteur. **Décidé pour B2** : empreinte des entrées de construction de xtask inscrite dans le binaire par un `build.rs` sans dépendance, comparée à `HEAD` par `merge`, à la place de la comparaison de dates. m2, m5 et m6 vont à T3b.
 - 30/10 : PR #24 : deux `review-ok` sur e5af3b3 ; le relecteur 2 confirme le modèle de menace (pas de remontée vers une clé, pas de prédiction d'un autre flux) et le déterminisme. Garde-fous de l'API ouverts en **issue #26** (`DrawSite`, `PublicSeed`, constructeurs bruts réservés, primitives interdites hors de `rng/`), à faire avant le premier appelant. `archsec-ok` demandé. Signal : `git fetch origin` aurait été refusé par `guard-git` ; forme exacte demandée au relecteur (faux refus bloquant pour T3 si c'est la forme simple).
 - 30/10 : **PR #24 fusionnée** (ef0f2a4). AS-24 accepte la sonde C de `blake3`. L'issue #26 (garde-fous de l'aléa) est **bloquante pour la phase 1** : aucune règle ne tire avant `DrawSite`. Le faux refus de `git fetch origin 2>&1` est transmis à archi-sécu, sans effet bloquant (les consignes disent `git fetch origin`). Worktrees et branches de la #24 retirés. Consigne T6 (ordonnanceur, phases, greffons, boucle, empreinte, trait d'instantané, `bevy_ecs`) envoyée à archi-sécu.
+- 30/10 : consigne T6 **validée avec corrections L1 à L8** (archi-sécu §9.10) :
+  - L1 : `bevy_ecs` en version exacte, avec `std` et `multi_threaded` seulement, sans `bevy_reflect`, `serialize` ni `trace`.
+  - L2 : `LodComplete` défini une seule fois, dans le noyau.
+  - L4 : la clé du monde n'est jamais dans l'instantané, et `restore` la prend en argument.
+  - L5 : une empreinte de règles différente fait refuser la restauration.
+  - L6 : le test 1 fil contre 4 fils se fait en deux processus.
+  - L8 : découpage en T6a et T6b au-delà de 600 lignes.
+
+  **T6 lancée.**
