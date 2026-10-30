@@ -219,6 +219,28 @@ fn state_hash_does_not_read_keys() {
     assert_ne!(a.state_hash().family("life"), b.state_hash().family("life"));
 }
 
+/// L4: `WorldStreams` is excluded from the snapshot. Two worlds that differ only by their
+/// key give byte-identical snapshots, and a restore takes its stream keys from the key it
+/// is given, never from the snapshot.
+#[test]
+fn snapshot_excludes_stream_keys() {
+    let other = WorldKey::insecure_from_u64_for_tests(12);
+    let a = Sim::build(SimConfig::default(), &life(1), &key()).unwrap();
+    let b = Sim::build(SimConfig::default(), &life(1), &other).unwrap();
+    let snap_a: MemorySnapshot = a.snapshot(SnapshotScope::Full);
+    let snap_b: MemorySnapshot = b.snapshot(SnapshotScope::Full);
+    assert_eq!(snap_a.canonical_bytes(), snap_b.canonical_bytes());
+
+    let subject = StableId::from_snapshot_raw(3);
+    let sample = |sim: &Sim| {
+        let streams = sim.world.resource::<WorldStreams>();
+        draw(streams.get(Stream::Population), subject, 1, 1)
+    };
+    let restored = Sim::restore(&snap_a, SimConfig::default(), &life(1), &other).unwrap();
+    assert_eq!(sample(&restored), sample(&b));
+    assert_ne!(sample(&restored), sample(&a));
+}
+
 #[test]
 fn families_are_sorted_and_separate() {
     let mut sim = build(&life(1));
