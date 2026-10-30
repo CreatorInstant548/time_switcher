@@ -34,6 +34,7 @@
 | M13 | Fidélité de la population aux tables cibles | Écart aux marges ≤ 3 % ; ≥ 80 % de chaque rôle dans sa fourchette de palier | population §1.3 | Validateurs de `ts-worldbuild` | 1 |
 | M14 | Réseau social de départ | Plages cibles du [social](domaines/social.md) §10.2, dont ≥ 98 % des adultes et ≥ 90 % des liens au-dessus de « connaissance » | social §10.2 ; population §5.3 | Validateur du réseau, puis `ts-sim` au fil des années | 1 |
 | M15 | Robustesse des plans directeurs | 95 % de réussite sur 32 × 32 graines | [ville](domaines/ville.md) §4.6 (P37) | Campagne de graines | 5 |
+| M37 | Part serveur tirée par monde (W2) : pose réelle des caméras, coffres, caches et alarmes | ≤ 1/3 des candidats de chaque sorte, par secteur **[à calibrer]** | [README](README.md), A13 (C2) ; [revues/generation.md](revues/generation.md) V12, W2 | Validateur bloquant de la création du monde | 1 |
 
 ## 4. Indistinguabilité et esprit des PNJ
 
