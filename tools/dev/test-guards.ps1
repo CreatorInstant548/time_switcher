@@ -15,6 +15,9 @@ foreach ($r in @(@('main', 'main'), @('feat', 'claude/x'), @('tool', 'claude/out
   $repos[$r[0]] = $d
 }
 $M = $repos.main; $F = $repos.feat; $T = $repos.tool
+# J2 : worktree du dépôt jetable « main », qui joue la copie principale de cargo xtask merge.
+& git -C $M -c user.name=essai -c user.email=essai@example.invalid -c core.hooksPath=NUL commit -q --allow-empty -m 'docs(essai): base'
+$W = Join-Path $tmp 'wt'; & git -C $M worktree add -q -b claude/wt $W 2>$null; $repos['wt'] = $W
 # Le vrai worktree pilotage, s'il existe : verdicts seulement, aucune commande n'y est lancée.
 $wl = @(& git -C $dev worktree list --porcelain)
 for ($k = 0; $k -lt $wl.Count; $k++) { if ($wl[$k] -eq 'branch refs/heads/pilotage') { $repos['realpil'] = $wl[$k - 2].Substring(9) } }
@@ -391,7 +394,66 @@ $cases = @(
   @('Bash', 'feat', 'gh api -X GET repos/o/r/pulls', 'A'),
   @('Bash', 'feat', 'gh pr view 5 --json state', 'A'),
   @('Bash', 'feat', 'gh pr comment 5 --body-file x.md', 'A'),
-  @('Bash', 'feat', 'pwsh -NoProfile -File tools/dev/merge-pr.ps1 5', 'A'),
+  # J2 : cargo xtask merge seulement depuis la racine de la copie principale ; --dry-run partout.
+  @('Bash', 'main', 'cargo xtask merge 5', 'A'),
+  @('PowerShell', 'main', 'cargo xtask merge 5', 'A'),
+  @('Bash', 'wt', 'cargo xtask merge 5 --dry-run', 'A'),
+  @('Bash', 'main', 'cargo xtask merge 5 --dry-run', 'A'),
+  @('Bash', 'wt', "cd '$M' && cargo xtask merge 5", 'A'),
+  @('Bash', 'wt', 'cargo xtask check --all', 'A'),
+  @('Bash', 'wt', 'cargo test -p xtask', 'A'),
+  @('Bash', 'wt', 'cargo clippy -p xtask --all-targets --locked -- -D warnings', 'A'),
+  @('Bash', 'wt', 'cargo xtask verify-main --dry-run', 'A'),
+  @('Bash', 'wt', 'cargo xtask hooks verify --dry-run', 'A'),
+  @('Bash', 'wt', 'cargo xtask merge 5 --dry-run > out.txt 2>&1', 'A'),
+  @('Bash', 'wt', 'cat tools/xtask/src/merge.rs', 'A'),
+  @('Bash', 'wt', 'grep -n merge tools/xtask/src/merge.rs', 'A'),
+  @('Bash', 'wt', 'git diff -- tools/xtask/src/merge.rs', 'A'),
+  @('Bash', 'wt', 'gh pr create --base main --title "feat(xtask): cargo xtask merge et hooks" --body-file b.md', 'A'),
+  @('Bash', 'main', 'cargo xtask hooks install', 'A'),
+  @('Bash', 'main', 'cargo xtask merge 5; cargo xtask merge 6', 'A'),
+  # I1 : autres formes et variables de cargo ; m4 : hooks install hors de la copie principale.
+  @('Bash', 'wt', 'cargo test -p xtask merge', 'D'),
+  @('Bash', 'wt', 'cargo xtask hooks install', 'D'),
+  @('Bash', 'main', 'cargo xtask hooks install --force', 'D'),
+  @('PowerShell', 'wt', "Start-Process cargo -ArgumentList 'xtask merge 5' -Wait", 'D'),
+  @('PowerShell', 'wt', "Start-Process cargo -ArgumentList 'xtask','merge','5' -Wait", 'D'),
+  @('PowerShell', 'main', "Start-Process cargo -ArgumentList 'xtask','merge','5' -Wait", 'D'),
+  @('PowerShell', 'wt', 'cmd /c cargo xtask merge 5', 'D'),
+  @('PowerShell', 'wt', 'iex "cargo xtask merge 5"', 'D'),
+  @('Bash', 'main', "a=xtask; cargo `$a merge 5", 'D'),
+  @('Bash', 'main', "export CARGO_ALIAS_XTASK='run --manifest-path $W/Cargo.toml -p xtask --'; cargo xtask merge 5", 'D'),
+  @('Bash', 'main', 'CARGO_ALIAS_XTASK=x; export CARGO_ALIAS_XTASK; cargo xtask merge 5', 'D'),
+  @('PowerShell', 'main', "`$env:CARGO_ALIAS_XTASK = 'run -p xtask --'; cargo xtask merge 5", 'D'),
+  @('PowerShell', 'main', "`$env:CARGO_TARGET_DIR = 'x'; cargo xtask merge 5", 'D'),
+  @('PowerShell', 'main', "Set-Item env:RUSTC_WRAPPER x; cargo xtask merge 5", 'D'),
+  @('PowerShell', 'main', "[Environment]::SetEnvironmentVariable('RUSTFLAGS', 'x'); cargo build", 'D'),
+  @('Bash', 'main', 'RUSTUP_TOOLCHAIN=nightly cargo xtask check', 'D'),
+  @('Bash', 'feat', 'RUSTFLAGS=-Cx cargo build', 'D'),
+  @('Bash', 'feat', 'export CARGO_ALIAS_B=run; cargo b', 'D'),
+  @('Bash', 'feat', "export CARGO_TARGET_DIR='C:/Dev/ts-cache/target/w1'; cargo xtask check", 'D'),
+  @('Bash', 'wt', 'cargo xtask merge 5 --dry-run; cargo xtask merge 5', 'D'),
+  @('Bash', 'wt', "(cd '$M' && cargo xtask merge 5)", 'A'),
+  # Redirections : un descripteur collé (2>, 2>&1) n'est pas un argument de git.
+  @('Bash', 'feat', 'git fetch origin 2>&1 | tail -3', 'A'),
+  @('Bash', 'feat', 'git status 2>/dev/null', 'A'),
+  @('Bash', 'feat', 'git log -1 2>&1', 'A'),
+  @('Bash', 'feat', 'git fetch origin main 2>&1', 'D'),
+  @('Bash', 'wt', 'cargo xtask merge 5', 'D'),
+  @('Bash', 'feat', 'cd .claude && cargo xtask merge 5', 'D'),
+  @('Bash', 'main', 'cd .claude && cargo xtask merge 5', 'D'),
+  @('Bash', 'wt', "cd '$W' && cargo xtask merge 5", 'D'),
+  @('Bash', 'wt', 'bash -c "cargo xtask merge 5"', 'D'),
+  @('PowerShell', 'wt', 'pwsh -NoProfile -Command "cargo xtask merge 5"', 'D'),
+  @('Bash', 'main', 'cargo run -p xtask -- merge 5', 'D'),
+  @('Bash', 'main', 'cargo run --package xtask -- merge 5', 'D'),
+  @('Bash', 'main', 'cargo r -p xtask -- merge 5 --dry-run', 'D'),
+  @('Bash', 'main', 'cargo +nightly xtask merge 5', 'D'),
+  @('Bash', 'main', 'CARGO_TARGET_DIR=x cargo xtask merge 5', 'D'),
+  @('Bash', 'main', 'cargo xtask merge 5 --manifest-path x/Cargo.toml', 'D'),
+  @('Bash', 'main', 'cargo xtask merge --dry-run 5', 'D'),
+  @('Bash', 'main', 'target/debug/xtask.exe merge 5', 'D'),
+  @('PowerShell', 'main', '& .\target\debug\xtask merge 5 --dry-run', 'D'),
   @('Bash', 'feat', 'ls -la .claude', 'A'),
   @('Bash', 'feat', 'cd .claude', 'A'),
   @('Bash', 'feat', 'cat .claude/settings.local.json', 'A'),
@@ -499,20 +561,7 @@ foreach ($e in $edits) {
   if ($got -ne $e[1]) { $fail++; "ÉCHEC guard-main $($e[0]) : attendu $($e[1]), obtenu $got $v" }
 }
 
-# 3e relecture, point 5 (I10) : merge-pr.ps1 compte les deux chemins d'un renommage (fonction pure).
-. (Join-Path $dev 'merge-pr.ps1')
-$list = ConvertFrom-PrFileLines @("docs/x.ps1`ttools/dev/guard-git.ps1", "README.md`t", '')
-$n++; if (-not ($list.Count -eq 2 -and $list.Paths -contains 'tools/dev/guard-git.ps1' -and $list.Paths -contains 'docs/x.ps1' -and ($list.Paths -match $sensitive))) {
-  $fail++; "ÉCHEC merge-pr : renommage hors d'un chemin sensible non vu ($($list.Count) ; $($list.Paths -join ', '))"
-}
-$list = ConvertFrom-PrFileLines @('src/a.rs', 'src/b.rs')
-$n++; if ($list.Count -ne 2 -or ($list.Paths -match $sensitive)) { $fail++; "ÉCHEC merge-pr : PR sans chemin sensible mal lue" }
-# Lecture réelle de la PR #5 par l'API paginée (lecture seule), si gh répond : le compte égale changedFiles.
-$live = @(& gh api 'repos/{owner}/{repo}/pulls/5/files' --paginate --jq '.[] | [.filename, (.previous_filename // "")] | @tsv' 2>$null)
-if ($LASTEXITCODE -eq 0) {
-  $changed = "$(& gh pr view 5 --json changedFiles --jq .changedFiles 2>$null)".Trim()
-  $n++; if ((ConvertFrom-PrFileLines $live).Count -ne [int]$changed) { $fail++; "ÉCHEC merge-pr : lecture paginée de la PR #5 ($((ConvertFrom-PrFileLines $live).Count) / $changed)" }
-}
+# Le décompte des fichiers d'une PR (renommages compris, I10) est testé dans tools/xtask/src/merge.rs.
 
 # Bout en bout : JSON sur l'entrée standard, code de sortie 2 ou 0 (I1 : tous les outils qui lancent une commande).
 function Invoke-Hook([string]$Script, $Payload) {
@@ -533,6 +582,13 @@ $e2e = @(
   @('guard-git.ps1', @{ tool_name = 'mcp__terminal__run_in_terminal'; cwd = $F; tool_input = @{ cmd = 'git push -f' } }, 2),
   @('guard-git.ps1', @{ tool_name = 'Read'; cwd = $F; tool_input = @{ file_path = 'x' } }, 0),
   @('guard-git.ps1', 'pas du JSON', 2),
+  # J2 par l'entrée JSON du crochet : dossier courant (cwd), ou tool_input.cwd qui le remplace.
+  @('guard-git.ps1', @{ tool_name = 'PowerShell'; cwd = $M; tool_input = @{ command = 'cargo xtask merge 5' } }, 0),
+  @('guard-git.ps1', @{ tool_name = 'Bash'; cwd = $W; tool_input = @{ command = 'cargo xtask merge 5' } }, 2),
+  @('guard-git.ps1', @{ tool_name = 'Bash'; cwd = $W; tool_input = @{ command = 'cargo xtask merge 5 --dry-run' } }, 0),
+  @('guard-git.ps1', @{ tool_name = 'mcp__terminal__run_in_terminal'; cwd = $M; tool_input = @{ command = 'cargo xtask merge 5'; cwd = $W } }, 2),
+  @('guard-git.ps1', @{ tool_name = 'Monitor'; cwd = $M; tool_input = @{ command = 'cargo run -p xtask -- merge 5'; description = 'd' } }, 2),
+  @('guard-git.ps1', @{ tool_name = 'Bash'; cwd = $F; tool_input = @{ command = 'gh pr merge 5 --squash' } }, 2),
   @('guard-main.ps1', @{ tool_name = 'Write'; cwd = $F; tool_input = @{ file_path = "$F\.claude\settings.json" } }, 2),
   @('guard-main.ps1', @{ tool_name = 'Edit'; cwd = $F; tool_input = @{ file_path = "$F\src\lib.rs" } }, 0),
   @('guard-main.ps1', 'pas du JSON', 2)
