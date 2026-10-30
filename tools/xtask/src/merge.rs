@@ -13,7 +13,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use serde_json::Value;
 
 use crate::github::{Repo, approved, is_sha, same_path};
-use crate::{hooks, sensitive, sys, workflows};
+use crate::{hooks, sensitive, sys, verify_main, workflows};
 
 /// Entrées dont tout changement fait recompiler `xtask` : ses sources et la chaîne de compilation.
 /// Un binaire plus ancien que leur dernier commit n'a pas été compilé depuis le code de `main`
@@ -316,15 +316,13 @@ fn run(repo: &Repo, pr: u64) -> Result<(), String> {
         "copie principale propre, sur main, à jour ; binaire compilé depuis main (J2)",
     );
     main_copy(repo)?;
-    step("2", "hooks verify (verify-main : PR suivante de T3a)");
-    println!(
-        "  AVERTISSEMENT : contrôle de l'origine de main (verify-main, SEC0-17) pas encore en place."
-    );
+    step("2", "verify-main (SEC0-17) et hooks verify (SEC0-35)");
+    let history = verify_main::verify_or_report(repo)?;
     let hooks_ok = hooks::verify_or_report(repo)?;
-    let suspended = (!hooks_ok).then(|| {
+    let suspended = (!history || !hooks_ok).then(|| {
         refuse(
-            "fusions suspendues : configuration des crochets non conforme",
-            "lever l'écart (issue role:architecture), puis cargo xtask hooks verify",
+            "fusions suspendues : anomalie de l'historique ou des crochets",
+            "lever l'anomalie (issue role:architecture), puis cargo xtask verify-main et cargo xtask hooks verify",
         )
     });
     match &suspended {
