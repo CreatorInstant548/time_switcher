@@ -462,6 +462,64 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | Consigne T3a (`xtask merge`, `verify-main`, `hooks` ; V et S) | `scratchpad/…/consigne-T3a.md` du responsable développement | **Validé avec corrections J1 à J8** (§9.8) ; `merge-pr.ps1` et `install-hooks.ps1` supprimés ; deux relecteurs neufs ; lancement après la fusion des PR #16 et #14 |
 | 30/10 | **PR #16 (T2b, `slots` et `disk`), fusion** | SHA de tête `95b66f2fdd6a43a47cb68cefcb7ec5d4890c172b` ; `review-ok` du relecteur neuf (delta revérifié) | **`archsec-ok: 95b66f2fdd6a43a47cb68cefcb7ec5d4890c172b`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/16#issuecomment-6516870411)) : F8 respecté (tout point de réanalyse traité comme lien, `within` canonique, bail atomique, orphelins après 24 h) ; non bloquant : m3, m7 ; délai entre contrôle et suppression accepté |
 | 30/10 | **PR #14 (T13, CI), fusion** | SHA de tête `e3e2f2a842612bebfba1a8388f86fd296f64344c`, fusion de `5a47413` et de `main` (`14b6c58`) ; `ci-ok` vert ; `review-ok` du delta | **`archsec-ok: e3e2f2a842612bebfba1a8388f86fd296f64344c`** ([commentaire](https://github.com/CreatorInstant548/time_switcher/pull/14#issuecomment-6517058986)) : fichiers de la PR identiques à `5a47413` ; apport identique ligne pour ligne avant et après la fusion |
+| 30/10 | Consigne T5 (noyau, première partie ; V et S) | `scratchpad/…/consigne-T5.md` du responsable développement | **Validé avec corrections K1 à K10** (§9.9) ; chemins sensibles `rng/` et `build_profile.rs` validés ; deux PR (T5a, puis T5b pour l'aléa en XChaCha8) ; travail en parallèle de T3a accepté, fusion après T3a |
+
+### 9.9 Consigne T5 : noyau, première partie (30/10)
+
+**Réponses aux deux questions :**
+1. **Chemins sensibles : validés.** `crates/ts_kernel/src/rng/` et `crates/ts_kernel/src/build_profile.rs` sont ajoutés à `sensitive-paths.txt` dans la même PR. Les quatre `compile_error!` **déménagent aussi** dans `build_profile.rs`, avec leurs messages inchangés : l'étape `profiles` de `xtask` les cherche mot pour mot.
+2. **Parallélisme : accepté.** T5 peut tourner pendant T3a, pour le travail seulement. Sa fusion vient après celle de T3a. *Pourquoi :*
+   - les deux tâches ne partagent aucun fichier, puisque T3a lit `sensitive-paths.txt` sans l'écrire ;
+   - deux compilations en même temps restent sous la limite de trois ;
+   - l'ordre qui compte pour la sécurité, celui des fusions, est conservé.
+
+Avis **validé avec corrections K1 à K10**, toutes décidées.
+
+- **K1. Deux PR d'emblée.**
+  - **T5a :** `SimTime`, `SimDay`, `StableId`, `Money`, M7 et le déplacement vers `build_profile.rs`.
+  - **T5b :** l'aléa (`rng/`), avec `chacha20` et `blake3`.
+
+  *Pourquoi :* l'aléa est le cœur de SEC0-22. Il mérite sa propre revue, et l'ensemble dépasserait 400 lignes. T5b peut partir dès la fusion de T5a.
+- **K2. Les clés de flux sont dérivées une fois, puis gardées.**
+  - `WorldKey` donne, à la création du monde, une table `StreamKeys` : une `StreamKey` de 256 bits par flux, obtenue par BLAKE3 `derive_key`.
+  - Le tirage prend `&StreamKey`, sans redériver la clé à chaque appel : `draw(&StreamKey, subject, slot, purpose) -> u64`. La fonction reste pure.
+  - *Pourquoi : une dérivation BLAKE3 à chaque tirage multiplierait le coût.*
+- **K3. Disposition du bloc ChaCha : XChaCha8.**
+  - Le *nonce* de 192 bits vaut `subject (u64 LE) ‖ slot (u64 LE) ‖ purpose (u32 LE) ‖ 0u32`. Le compteur de bloc désigne le bloc suivant quand on veut plus de valeurs.
+  - Un bloc donne 8 valeurs `u64` en petit-boutiste : `draw` rend la première, `draw_block` rend les 8.
+  - *Pourquoi :* le triplet (sujet, créneau, usage) fait 160 bits. Il n'entre pas dans les 128 bits de *nonce* et de compteur de ChaCha8, qu'il soit IETF ou d'origine. XChaCha8 l'accepte tel quel, et la disposition est injective.
+  - Le coût de l'étape HChaCha est inclus dans la mesure R5.
+- **K4. Contextes de dérivation.**
+  - Chaque contexte est une chaîne fixe et unique, construite à partir du **nom** du flux, jamais de son rang : `"time_switcher 2026-10-30 stream <Nom> v1"`, et `"time_switcher 2026-10-30 cosmetic v1"` pour le domaine cosmétique.
+  - Ajouter un flux ne change aucun autre flux.
+  - Les vecteurs de référence figés sont placés **dans `rng/`**, chemin sensible. Les modifier rompt la reproductibilité de tous les mondes.
+- **K5. `WorldKey`.**
+  - **Construction :** un seul constructeur public, `from_bytes([u8; 16])`, pour l'hôte qui charge ou tire la clé. La clé de test `insecure_from_u64_for_tests` est réservée à `cfg(any(test, feature = "dev-commands", feature = "external-pilot"))`.
+  - **Ce que le type n'a pas :** ni `Copy`, ni `Clone` public, ni `Serialize`, ni `PartialEq`, ni `Hash`. Son `Debug` affiche `WorldKey(..)`.
+  - **Clés de flux :** les `StreamKey` suivent les mêmes règles.
+  - **Preuve de l'absence de la clé de test :** un *doctest* `compile_fail` suffit. Il est compilé sans fonctionnalité de développement, ce qui couvre `public`.
+- **K6. Domaine cosmétique.**
+  - **Dérivation :** une clé cosmétique racine, de type privé, est dérivée de `WorldKey` par son contexte propre. `CosmeticSeed(u64)` est tiré de cette racine, par usage et par sujet.
+  - **Isolement :** `CosmeticSeed` ne se convertit ni en `WorldKey` ni en `StreamKey`, et aucune fonction de tirage ne l'accepte en entrée.
+  - **Vérification :** le test M27 porte sur au moins 10⁵ valeurs.
+- **K7. `Money`.**
+  - Les barèmes s'expriment en **points de base**, en `i64`.
+  - Le calcul passe par un intermédiaire `i128`. L'arrondi au pair le plus proche est symétrique pour les montants négatifs, et le résultat est vérifié : `Option`, jamais d'enroulement.
+  - Les tests couvrent les cas `.5`, les montants négatifs et les bornes.
+- **K8. `SimDay(u16)` et temps antérieur à l'époque.** Les dates de naissance générées précèdent l'époque du monde, donc `SimTime` peut être négatif. La conversion `SimTime → SimDay` rend une `Option`, ou une erreur typée, hors de `0..=u16::MAX`. On ne tronque jamais en silence.
+- **K9. `StableId`.**
+  - **Carte :** le bit 63 marque l'espace de noms réservé à la carte (P28), et le constructeur `StableId::map(index)` en est le seul accès.
+  - **Allocateur :** il refuse de dépasser `2^63 − 1`.
+  - **Instantanés :** le décodage passe par un constructeur public nommé `from_snapshot_raw`, documenté comme réservé à `ts_persist`.
+  - **Rappel (architecture §6.1) :** `StableId` n'est jamais envoyé au client. C'est le rôle de `ViewHandle`, hors du périmètre de T5.
+- **K10. Dépendances.**
+  - `chacha20` sans les fonctionnalités par défaut, avec seulement ce qu'exige XChaCha8.
+  - `blake3` avec `default-features = false` et `features = ["pure"]`. *Pourquoi :* sans le code C et assembleur SIMD, le `build.rs` n'appelle plus de compilateur C. Il y a donc moins de code exécuté à la construction, et rien à installer. La perte de vitesse est sans effet, puisqu'on ne dérive des clés qu'à la création du monde.
+  - Les deux crates sont dans la liste pré-approuvée de SEC0-05, et la PR donne leur justification.
+
+**Revue :** T5a passe par `/security-review`, à cause de `build_profile.rs` et de `sensitive-paths.txt`, puis un relecteur neuf et mon `archsec-ok`. T5b demande en plus un deuxième relecteur neuf, chargé de l'aléa. Critères bloquants :
+- pour T5a : SEC0-20, K8 et K9 ;
+- pour T5b : SEC0-22, AS-12, M27 et K2 à K6.
 
 ### 9.8 Consigne T3a : `xtask merge`, `verify-main` et `hooks` (30/10)
 
