@@ -83,4 +83,12 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
     - ruleset sur `pilotage` : poussée forcée et suppression interdites ;
     - Actions : la liste fermée de SEC0-30, épinglage par SHA, jeton en lecture seule.
   - `guard-git` n'autorise que `pwsh tools/dev/repo-settings.ps1 -Apply`, et c'est l'orchestrateur qui le lance. Pas de fusion automatique GitHub. Le quota passe à 3 000 minutes par mois (M36).
-  - Reste à faire : la mise à jour de CLAUDE.md (GitHub gratuit → Pro), après la fusion de la #29.
+  - CLAUDE.md passé à Pro par la PR #41 (fusionnée).
+  - **Protection appliquée** : T3d fusionnée (#42, 3c80c9d), puis `-Apply` lancé par l'orchestrateur.
+    - Rulesets actifs : `main` (26213563) et `pilotage` (26213564), avec une liste de contournement vide.
+    - `ci-ok` est lié à `integration_id` 15368, ce que GitHub accepte : E5 est sans objet.
+    - Les permissions Actions sont appliquées.
+  - **Écart relevé par `-Check`** : GitHub ajoute d'office `require_extra_approval_for_unattributed_changes: true`, un paramètre non documenté.
+    - **Décidé** : le fichier le fixe à false. Aucune approbation n'est exigée, puisqu'un seul compte sert à tout, et cette approbation supplémentaire risquerait de bloquer les fusions.
+    - Le dev en fait une PR d'une ligne, avec `archsec-ok` et une exception étroite à la suspension de `merge`. Après sa fusion, l'orchestrateur relance `-Apply` puis `-Check`.
+  - **Suite** : T3e-1, puis l'essai de poussée R6.4, puis T3e-2.
