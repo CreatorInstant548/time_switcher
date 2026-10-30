@@ -502,7 +502,32 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | **PR #54 (T3h, `verify-main` de nuit et V5), fusion** | SHA de tête `737a6e8495cfbd523e4cd25d4b55fbd32660f29b`, `ci-ok` vert | **`archsec-ok: 737a6e8495cfbd523e4cd25d4b55fbd32660f29b`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/54#issuecomment-6530344995)) : V5 (AS-39) et V3 conformes. Le travail de nuit est en lecture seule, sans *fetch*, en `--dry-run --no-cache`, et il est dans `report`. La résolution `--ours` ne défait rien de la #52 |
 | 30/10 | **PR #60 (T3i, report des approbations), fusion** | SHA de tête `1147c1126529dbe4c6d697fac355abeb52fbcb7f`, `ci-ok` vert, 99 tests `xtask` | **`archsec-ok: 1147c1126529dbe4c6d697fac355abeb52fbcb7f`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/60#issuecomment-6530897162)) : W1 à W7 d'AS-40 conformes. La comparaison porte sur le mode et le blob. W5 lit la liste sensible de base(A), et une liste absente impose un `archsec-ok` neuf. Le trou m1 est fermé (base de H = `main` de référence ; arbre du squash = arbre de H). Le report n'est jamais mis en cache (V5) |
 | 30/10 | **PR #62, après mise à jour depuis `main` (#60)** | SHA de tête `66236a49e6ffa16d2be15bbb5122499fc9506de9`, `ci-ok` vert | **`archsec-ok: 66236a49e6ffa16d2be15bbb5122499fc9506de9`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/62#issuecomment-6531431337)) : le report automatique a refusé à juste titre (W2), car la #60 a aussi modifié `docs/dev/outillage.md` sur `main`. Vérifié à la main : lignes ajoutées et retirées identiques octet pour octet, `tools/dev/` inchangé |
+| 30/10 | PR #57, fusion par report automatique (AS-40) | Commit `db8ff13` ; report de `2512136` vers `6653d36` | **Premier report automatique** de `archsec-ok` et `review-ok`, avec W1 à W5 vérifiées par `merge`. Mon avis sur `2512136` est conservé, et aucun nouvel avis n'a été nécessaire |
+| 30/10 | Consigne T9 (monde-jouet, `ts-sim`, déterminisme ; V) | `scratchpad/…/consigne-T9.md` | **Validée avec Y1 à Y6** (§9.15). Parquet : crate `parquet` sans `arrow` et sans compression. La clé de `ts-sim` ne vient que d'une graine publique de test. `--out` est strictement sous `TS_CACHE`. Le scénario est borné comme `ts_data`. L'an complet tourne chaque semaine en CI. Un test prouve que `ts_toy` est refusé dans un hôte |
 | 30/10 | Consigne T3f (cache de `verify-main`, reprises ; V et S) | `scratchpad/…/consigne-T3f.md` | **Validée avec V1 à V4** (§9.14). Le cache garde les faits lus sur GitHub, pas le verdict ; J4 est recalculé à chaque fois. La clé contient la version de `xtask`. `--no-cache` tourne chaque nuit en CI. Les reprises bornées peuvent entrer dans la #42 si les 500 persistent |
+
+### 9.15 Consigne T9 : monde-jouet, lanceur minimal et déterminisme (30/10)
+
+**Validée avec les corrections Y1 à Y6**, toutes décidées.
+
+- **Y1, Parquet (question posée) : la crate officielle `parquet`, sans `arrow`,** avec `default-features = false`, **aucune fonctionnalité de compression**, et l'écrivain bas niveau (`SerializedFileWriter`).
+  - *Pourquoi :*
+    - `parquet` est pré-approuvée (SEC0-05) ;
+    - ses fonctionnalités de compression tirent du C (`zstd-sys`, et d'autres), déjà écarté par K10 et Q1 ;
+    - `arrow` n'apporte rien pour quelques colonnes de mesures ;
+    - des fichiers non compressés restent petits et se lisent par `pyarrow`.
+  - La PR liste le graphe ajouté, les `build.rs` et l'`unsafe`, avec un `cargo deny` vert. `ts_runner` est une crate d'outil, absente des binaires publics : l'`unsafe` interne d'une dépendance pré-approuvée y est accepté.
+- **Y2, clé de monde de `ts-sim`.**
+  - **Origine :** elle vient **seulement** d'une graine publique de test, par `WorldKey::from_bytes(derive_key("time_switcher public test seed v1", seed))`.
+  - **Refus :** `ts-sim` n'accepte jamais une clé tirée d'un fichier ou de l'environnement, et ne lit ni n'écrit aucune graine en ligne.
+  - **Profil :** il n'utilise pas `insecure_from_u64_for_tests`, ce qui lui évite d'activer une fonctionnalité de développement dans une dépendance normale.
+- **Y3, `--out`.**
+  - **Résolution :** le chemin est mis sous forme canonique, et son préfixe est vérifié **strictement sous `TS_CACHE`**, comme `within` de F8.
+  - **Liens :** aucun lien n'est suivi lors de la création.
+  - **Option explicite :** l'option qui permet un dossier hors de `TS_CACHE` refuse toujours un chemin à l'intérieur du dépôt, pour qu'aucun artefact n'y soit écrit (A6).
+- **Y4, scénario.** Le scénario RON passe par les **mêmes bornes** que `ts_data` (T2 et T3), y compris la profondeur et la taille, avec des erreurs typées, sans panique.
+- **Y5, déterminisme long.** La version courte tourne dans `xtask check`. **L'an complet tourne chaque semaine dans la CI**, dans la tâche de nuit du dimanche, par une PR `.github/` à part, et la PR de T9a le signale. L'empreinte dorée de `data/golden/` est vérifiée par les deux versions, chacune contre sa propre valeur.
+- **Y6, `ts_toy`.** Le contrôle `cargo tree` de `xtask check` (F4, D-DEV-02) doit refuser `ts_toy` dans une dépendance normale d'un hôte ou d'une crate de règles. La PR le prouve par un test.
 
 ### 9.14 Consigne T3f : `verify-main` robuste aux erreurs passagères de GitHub (30/10)
 
