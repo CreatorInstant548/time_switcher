@@ -84,7 +84,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | (orchestrateur) | `claude/sous-agents`, #3 | Fusionnée | sans objet (documentation) | relue | sans objet | 4991209 |
 | T1 | `claude/outillage-agents`, [#5](https://github.com/CreatorInstant548/time_switcher/pull/5), tête 92ecc11 | **Fusionnée** | sans objet (pas encore de xtask) ; tests 451/451, 57/57, 12/12 ; `merge-pr.ps1 5 -DryRun` conforme | 9 constats, traités | 3 relectures neuves ; `review-ok` et `archsec-ok` sur 92ecc11 | **93fc98a** |
 | (orchestrateur) | #9 (`CLAUDE.md`, règles de l'outillage) | Fusionnée par `merge-pr.ps1` (premier usage) | sans objet (documentation, pas de CI) | relue | sans objet | 2362c64 |
-| T2a | `claude/espace-travail`, [#10](https://github.com/CreatorInstant548/time_switcher/pull/10), tête 6dff621 | En relecture | équivalents (fmt, clippy `-D warnings`, tests, `deny`, `audit`, 4 `compile_error!` E8) verts selon l'auteur | lu par le responsable : rien de bloquant | `review-ok: 6dff621` (relecteur neuf) ; mise à jour depuis `main` + m1, m2 en cours, puis revérification du delta et `archsec-ok` | — |
+| T2a | `claude/espace-travail`, [#10](https://github.com/CreatorInstant548/time_switcher/pull/10), tête f14fb96 | **Fusionnée** par `merge-pr.ps1` | équivalents (fmt, clippy `-D warnings`, tests, `deny`, `audit`, 4 `compile_error!` E8) verts selon l'auteur | lu par le responsable : rien de bloquant | `review-ok` et `archsec-ok` sur f14fb96 | **5209fd2** |
 
 ## Sessions et agents actifs
 
@@ -92,7 +92,8 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 |---|---|---|---|---|
 | sous-agent t0-machine | T0 | Sonnet | aucun (hors dépôt) | 30/10, **terminée** |
 | sous-agent t1-outillage | T1 | Opus | worktree isolé | 30/10, **terminée** (fusionnée) |
-| sous-agent t2a-espace | T2a | Opus | worktree isolé ; emplacement w1 libéré | 30/10, **livrée** (PR #10) |
+| sous-agent t2a-espace | T2a | Opus | — | 30/10, **terminée** (fusionnée) |
+| sous-agent t2b-check | T2b | Opus | worktree isolé, `claude/xtask-check`, emplacement par `-Acquire` | 30/10 |
 
 ## Demandes envoyées
 
@@ -135,3 +136,4 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 - 30/10 : T2a livrée, PR #10 (354 lignes hors `Cargo.lock`, écart accepté : listes de `deny.toml` et `clippy.toml` une entrée par ligne). Relecture neuve lancée.
 - 30/10 : PR #10 : `review-ok` sur 6dff621 ; branche en retard d'un commit (#9) : mise à jour + m1 (`maximum-db-staleness = "P7D"`) et m2 (interdictions clippy de plus) demandées à l'auteur. m4 (fonctionnalités dans les manifestes) reporté dans T2b ; m3, m5 notés. Consigne T2b écrite (`consigne-T2b.md`) et envoyée à archi-sécu. Note : un sous-agent n'a pas pu lire le dossier des notes partagées ; les prochaines consignes seront aussi recopiées dans le message de lancement.
 - 30/10 : consigne T2b **validée avec corrections F1 à F10** (archi-sécu §9.5). Découpage : T2b (`check`) puis T2c (`slots`, `disk`). `serde_json` pré-approuvée pour les crates d'outil (AS-17).
+- 30/10 : **PR #10 fusionnée** (5209fd2), `review-ok` et `archsec-ok` sur f14fb96 ; worktrees des sous-agents retirés. **T2b lancée** (consigne copiée dans le scratchpad). Consigne T13 (CI) écrite et envoyée à archi-sécu ; lancement après T2b.
