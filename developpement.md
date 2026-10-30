@@ -89,6 +89,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | T4 | `claude/xtask-spec-map`, [#15](https://github.com/CreatorInstant548/time_switcher/pull/15), tête **516ff46** | **Fusionnée** par `merge-pr.ps1` (`review-ok` et `archsec-ok` sur 516ff46) → **cea47c8** | `check --all` vert, `spec-map` active ; 36 tests | `/code-review` et `/security-review` par l'auteur | relecteur neuf puis `archsec-ok` | — |
 | T2c | `claude/xtask-disk`, [#16](https://github.com/CreatorInstant548/time_switcher/pull/16), tête 95b66f2 | **Fusionnée** par `merge-pr.ps1` | `check --all` vert ; 30 tests ; jonction réelle non suivie (test) | `/code-review` et `/security-review` par l'auteur | relecture neuve **refusée** : B1 (baux suivis à travers une jonction à la place de `target`), I1 (`TS_CACHE` non validé), I2 (essai jetable qui agit sur le vrai dépôt) ; `review-ok` et `archsec-ok` sur 95b66f2 | **14b6c58** |
 | T13 | `claude/ci`, [#14](https://github.com/CreatorInstant548/time_switcher/pull/14), tête e3e2f2a | **Fusionnée** par `merge-pr.ps1` | **`ci-ok` vert** (run 41011605890) ; ~9 min facturées par exécution | relecture interne faite par l'auteur | `review-ok` et `archsec-ok` sur 5a47413 ; mise à jour (e3e2f2a), `ci-ok` vert, `review-ok` et `archsec-ok` sur e3e2f2a | **dd83f66** |
+| (conception) | `#22` (A12, documentation) | **Fusionnée** par `merge-pr.ps1`, `ci-ok` vert | — | relue | sans objet | 60aedbe |
 | T5a | `claude/ts-kernel-1`, [#20](https://github.com/CreatorInstant548/time_switcher/pull/20), tête 027d344 | En relecture | **`ci-ok` vert** ; `check --all` (13 étapes) | `/security-review` et relecture interne par l'auteur | relecture neuve : I1 (`Default` de l'allocateur, qui duplique les `StableId`) ; correction en cours ; fusion **après T3a** | — |
 
 ## Sessions et agents actifs
@@ -122,7 +123,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 
 | Date | Signal | Résumé | État |
 |---|---|---|---|
-| 30/10 | Trou dans la conception | `SimDay` u16 non signé : pas de représentation pour les dates de relation antérieures à l'époque ([#21](https://github.com/CreatorInstant548/time_switcher/issues/21)) | Ouverte ; valeur provisoire : `None` |
+| 30/10 | Trou dans la conception | `SimDay` u16 non signé : pas de représentation pour les dates de relation antérieures à l'époque ([#21](https://github.com/CreatorInstant548/time_switcher/issues/21)) | **Tranchée : arbitrage A12** (`SimDay` sur i16 signé, saturé ; PR #22 fusionnée, 60aedbe) ; appliqué dans T5a ; borne haute : archi-sécu |
 
 ## Journal
 
@@ -174,3 +175,4 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
 - 30/10 : consigne T5 **validée avec corrections K1 à K10** (archi-sécu §9.9). **T5 scindée** : T5a (`SimTime` négatif possible, `SimDay` en `Option`, `StableId` avec bit 63 réservé à la carte, `Money` en points de base avec intermédiaire `i128`, M7, `build_profile.rs`) puis T5b (aléa XChaCha8 avec nonce de 192 bits, `StreamKeys` dérivées par BLAKE3, `CosmeticSeed`, M27 ; deux relecteurs neufs). Travail en parallèle de T3a accepté, fusion après T3a. **T5a lancée.**
 - 30/10 : T5a livrée, PR #20, `ci-ok` vert. Décisions de l'auteur : `SimTime::add_millis` panique au dépassement et `checked_*` rend une `Option` ; `StableId` : bit 63 à 1 pour la carte, allocateur sans `Clone` ; `Money` : une seule fonction `div_round_half_even`, sans opérateurs `+` ni `-`. **Règle (décidé)** : le `review-ok` vient toujours d'un relecteur neuf lancé par moi, pas par l'auteur ; relecteur lancé.
 - 30/10 : relecture de la PR #20 : aucun bloquant (SEC0-20, K8, K9 tenus), mais I1 : `StableIdAllocator: Default` permet de dupliquer des identifiants ; correction demandée, avec m1 (codes d'erreur des doctests `compile_fail`). **Remontée #21** (`role:conception`, `ecart`) sur `SimDay` et les dates antérieures à l'époque. m2 (exposition de l'entier brut de `StableId`) à contrôler avant `ts_persist` et `ts_protocol`.
+- 30/10 : arbitrage A12 de la conception (#21) : `SimDay(i16)` avec conversion saturante. PR #22 (documentation) fusionnée, 60aedbe : première fusion où `merge-pr.ps1` a exigé `ci-ok`. A12 transmis à T5a (borne haute saturée provisoirement, `PROVISOIRE(conception #21)`).
