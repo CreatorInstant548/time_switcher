@@ -15,10 +15,41 @@ use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 
 use crate::phase::phase_schedule;
 use crate::rng::{StreamKeys, WorldKey};
+use crate::state::{StateEntry, StateWriter, hash_world};
 use crate::{
     DayOrigin, Phase, Plugin, RulesFingerprint, Scheduled, Scheduler, SimBuilder, SimTime,
-    StableId, StableIdAllocator,
+    StableEntity, StableId, StableIdAllocator, StateHash, StateHashes,
 };
+
+mod snapshot;
+pub use snapshot::{MemorySnapshot, RestoreError, Snapshot, SnapshotScope};
+
+// spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §9.10 L4, L5
+/// Encode l'état du noyau : date, origine des jours, compteur de [`StableId`], compteur `seq`
+/// et événements en attente. Jamais les clés de flux.
+fn write_kernel(world: &World, w: &mut StateWriter<'_>) {
+    let clock = world.resource::<SimClock>();
+    clock.now.hash_state(w);
+    clock.day_origin.hash_state(w);
+    w.u64(world.resource::<StableIds>().0.to_snapshot_raw());
+    let queue = world.resource::<EventQueue>();
+    w.u64(queue.next_seq());
+    let pending = queue.pending();
+    w.count(pending.len());
+    for e in pending {
+        e.at.hash_state(w);
+        w.u64(e.seq);
+        e.event.hash_state(w);
+    }
+}
+
+impl StateHash for TimedEvent {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
+        w.u32(self.kind);
+        self.subject.hash_state(w);
+        w.u64(self.arg);
+    }
+}
 
 // spec: revues/architecture.md §7.1, §9.2 ; carnet architecture-securite.md §9.10 L6
 /// Nombre de fils de calcul. **Sans effet sur le résultat** (R1).
@@ -268,6 +299,8 @@ pub struct Sim {
     active: Vec<(&'static str, u32)>,
     rules: RulesFingerprint,
     complete: QueryState<Entity, With<LodComplete>>,
+    state: Vec<StateEntry>,
+    migrations: Vec<(&'static str, u32)>,
 }
 
 impl fmt::Debug for Sim {
@@ -346,6 +379,7 @@ impl Sim {
 
         let mut world = World::new();
         world.register_component::<LodComplete>();
+        world.register_component::<StableEntity>();
         world.insert_resource(SimClock {
             now: SimTime::EPOCH,
             tick_ms,
@@ -364,6 +398,8 @@ impl Sim {
                 .collect(),
             current: "",
             dependencies: Vec::new(),
+            state: Vec::new(),
+            migrations: Vec::new(),
         };
         for p in &plugins {
             b.current = p.name();
@@ -381,6 +417,8 @@ impl Sim {
         let SimBuilder {
             mut world,
             mut phases,
+            state,
+            migrations,
             ..
         } = b;
         for (schedule, &phase) in phases.iter_mut().zip(Phase::ALL.iter()) {
@@ -399,7 +437,17 @@ impl Sim {
             active,
             rules,
             complete,
+            state,
+            migrations,
         })
+    }
+
+    // spec: revues/architecture.md §7.1, §11.3 ; carnet architecture-securite.md §9.10 L3, L4
+    /// Empreintes d'état, par famille et globale. La famille `kernel` couvre l'horloge,
+    /// l'origine des jours, l'allocateur de [`StableId`] et les événements en attente ; les
+    /// autres, les types d'état déclarés par les greffons. Les clés de flux n'y entrent pas.
+    pub fn state_hash(&self) -> StateHashes {
+        hash_world(&self.world, &self.state, &|w| write_kernel(&self.world, w))
     }
 
     /// Début du tick suivant : la date courante du monde.

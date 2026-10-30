@@ -8,7 +8,8 @@ use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule};
 use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::world::World;
 
-use crate::Phase;
+use crate::state::StateEntry;
+use crate::{Phase, StateHash};
 
 // spec: revues/architecture.md §5.3
 /// Greffon de règles. `standard_rules()` (`ts_game`) en donne la liste unique.
@@ -41,6 +42,10 @@ pub struct SimBuilder {
     pub(crate) current: &'static str,
     /// Dépendances déclarées, `(greffon, greffon requis)`.
     pub(crate) dependencies: Vec<(&'static str, &'static str)>,
+    /// Types d'état, dans l'ordre de déclaration.
+    pub(crate) state: Vec<StateEntry>,
+    /// Migrations déclarées, `(greffon, version d'origine)`.
+    pub(crate) migrations: Vec<(&'static str, u32)>,
 }
 
 impl SimBuilder {
@@ -69,6 +74,36 @@ impl SimBuilder {
     /// Déclare que le greffon en construction a besoin du greffon `plugin`.
     pub fn depends_on(&mut self, plugin: &'static str) -> &mut Self {
         self.dependencies.push((self.current, plugin));
+        self
+    }
+
+    // spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §9.10 L3
+    /// Déclare un composant d'état de la famille `family` : il entre dans l'empreinte et dans
+    /// l'instantané, pour les entités qui portent [`crate::StableEntity`]. L'ordre de
+    /// déclaration fixe l'ordre d'encodage.
+    pub fn state_component<C: Component + Clone + StateHash>(
+        &mut self,
+        family: &'static str,
+    ) -> &mut Self {
+        self.world.register_component::<C>();
+        self.state.push(StateEntry::component::<C>(family));
+        self
+    }
+
+    /// Déclare une ressource d'état de la famille `family`, comme [`Self::state_component`].
+    pub fn state_resource<R: Resource + Clone + StateHash>(
+        &mut self,
+        family: &'static str,
+    ) -> &mut Self {
+        self.state.push(StateEntry::resource::<R>(family));
+        self
+    }
+
+    // spec: revues/architecture.md §12.5 ; carnet architecture-securite.md §9.10 L5
+    /// Déclare que le greffon en construction sait reprendre un instantané de sa version
+    /// `version`. Sans cette déclaration, une autre version fait refuser la restauration.
+    pub fn migrates_from(&mut self, version: u32) -> &mut Self {
+        self.migrations.push((self.current, version));
         self
     }
 
