@@ -1,0 +1,63 @@
+# Espace de travail Cargo (T2a). Mode d'emploi : docs/dev/espace-travail.md.
+# Interdits ici (E7) : sections patch et replace, toute source ou registre hors de crates.io.
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = [".claude", "fuzz", "target"]
+# Cœur seulement (A13). Restent hors de cette liste, une fois créées : ts_viz, ts_py,
+# ts_client_native et xtask (cette dernière ajoutée à `members` par T2b).
+default-members = ["crates/ts_kernel"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+license = "LicenseRef-Proprietary"
+publish = false
+
+# Une ligne triée par dépendance, justifiée dans la PR (SEC0-05).
+[workspace.dependencies]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+expect_used = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+# Profils (A12). `overflow-checks = true` partout (E2) : un dépassement d'entier panique au lieu
+# d'enrouler. `test` hérite de `dev`, `bench` de `release`.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+incremental = true
+overflow-checks = true
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+[profile.ci]
+inherits = "dev"
+incremental = false
+debug = false
+overflow-checks = true
+
+# Copie principale et CI seulement, jamais dans un worktree.
+[profile.sim]
+inherits = "release"
+codegen-units = 16
+incremental = false
+debug = false
+overflow-checks = true
+
+[profile.release]
+lto = "thin"
+debug = false
+overflow-checks = true

@@ -1,0 +1,21 @@
+[package]
+name = "ts_kernel"
+version = "0.0.0"
+description = "Noyau de simulation de time_switcher : bibliothèque sans affichage ni E/S."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# Profils de construction (SEC0-20) : aucune fonctionnalité par défaut. `public` ne s'active
+# qu'en ligne de commande, jamais depuis un autre Cargo.toml ; elle exclut les quatre autres.
+[features]
+default = []
+dev-bench = []
+dev-commands = []
+dev-introspection = []
+external-pilot = []
+public = []
+
+[lints]
+workspace = true
