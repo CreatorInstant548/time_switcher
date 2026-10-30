@@ -29,6 +29,7 @@ macro_rules! assert_size {
 mod build_profile;
 mod id;
 mod money;
+pub mod rng;
 mod time;
 
 pub use build_profile::{BUILD_PROFILE, DevFeature, active_dev_features};
