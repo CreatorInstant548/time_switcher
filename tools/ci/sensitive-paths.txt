@@ -30,6 +30,10 @@ crates/ts_kernel/src/rng/
 # Décodeur canonique : lit des octets non fiables (sauvegarde solo), AS-36.
 crates/ts_kernel/src/canonical.rs
 
+# ts_world_model : le scellé de `ClientShippable` (N3, #37). Toute nouvelle impl de `Sealed`
+# (par exemple pour `ServerPart`) demande un avis archi-sécu.
+crates/ts_world_model/src/public.rs
+
 # Configuration et outillage
 .github/
 .claude/
