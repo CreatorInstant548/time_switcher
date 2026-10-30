@@ -357,3 +357,7 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - **#66** (T3g, avec AS-41 : S2 complet évalué par le script d'`origin/main`) ;
   - **T9b** (`ts-sim run`, Parquet) ;
   - **T9c** (CI : `determinism` dans `rust-linux` et `rust-windows`, l'an complet le dimanche, délai de `ci-ok`, issue #61).
+- 30/10 : **#65 fusionnée** (62a32a1, T3e-2) : J3 et G3 retirés pour les commits non sensibles, cache local supprimé, `-Check` exige `current_user_can_bypass == never` et les 5 règles effectives. R6.4 est remplacé par l'attestation de GitHub (AS-42).
+  - Risque résiduel accepté jusqu'à **T3j** : J3 de nuit en CI sur 7 jours, l'historique complet le dimanche, à faire avant la fin de la phase 0.
+  - **#66** (T3g, AS-38 + AS-41) et **#69** (T9c) : approbations obtenues, mais mises à jour avec conflits après la #65, donc avis à reposer.
+  - **T9b** en cours.
