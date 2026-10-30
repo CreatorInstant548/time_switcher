@@ -1,0 +1,222 @@
+# .github/workflows/nightly.yml : tâche périodique sur main. Mode d'emploi : docs/dev/ci.md §4.
+# Chaque nuit : cargo audit et cargo deny check advisories.
+# Le dimanche, en plus, si main a changé depuis la dernière exécution hebdomadaire réussie :
+# Windows complet, gitleaks sur tout l'historique, fuzzing (sauté tant que fuzz/ n'existe pas).
+# En cas d'échec, le travail report ouvre ou complète une issue nightly-failure.
+# Contrôlé par cargo xtask check --only workflows (SEC0-29 à 31, G7).
+# spec: carnet architecture-securite.md SEC0-29, SEC0-30, SEC0-33 ; §9.6 G6, G9, G10
+name: nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * 1-6'
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # Nightly datée du fuzzing (G6) : elle s'avance par une PR, comme tools.lock.
+  FUZZ_TOOLCHAIN: nightly-2026-10-01
+  FUZZ_TOTAL_SECONDS: "3600"
+
+jobs:
+  advisories:
+    name: advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          lfs: false
+      - name: Outils épinglés
+        id: audit
+        run: |
+          echo "TS_CACHE=$RUNNER_TEMP/ts-cache" >> "$GITHUB_ENV"
+          export TS_CACHE="$RUNNER_TEMP/ts-cache"
+          bash tools/ci/install-tools.sh rust
+          bash tools/ci/install-tools.sh cargo-deny
+          bash tools/ci/install-tools.sh version cargo-audit
+      - name: Cache de cargo-audit
+        id: audit-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/ts-tools/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ steps.audit.outputs.version }}
+      - name: cargo-audit épinglé
+        run: bash tools/ci/install-tools.sh cargo-audit
+      - name: Enregistrement du cache de cargo-audit (main seulement)
+        if: github.ref == 'refs/heads/main' && steps.audit-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/ts-tools/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ steps.audit.outputs.version }}
+      - name: cargo audit
+        run: cargo audit
+      - name: cargo deny check advisories
+        run: cargo deny --locked check advisories
+
+  windows:
+    name: windows
+    if: github.event.schedule == '17 3 * * 0' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+      - name: main a-t-il changé ?
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash tools/ci/main-changed.sh
+      - name: Chaîne Rust
+        if: steps.gate.outputs.changed == 'true'
+        run: bash tools/ci/install-tools.sh rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: steps.gate.outputs.changed == 'true'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: xtask check --all (hors étapes de sécurité de ci.yml)
+        if: steps.gate.outputs.changed == 'true'
+        run: cargo xtask check --all --only fmt,clippy,test,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map
+
+  gitleaks-history:
+    name: gitleaks-history
+    if: github.event.schedule == '17 3 * * 0' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+      - name: main a-t-il changé ?
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash tools/ci/main-changed.sh
+      - name: gitleaks épinglé et auto-test
+        if: steps.gate.outputs.changed == 'true'
+        run: |
+          echo "TS_CACHE=$RUNNER_TEMP/ts-cache" >> "$GITHUB_ENV"
+          export TS_CACHE="$RUNNER_TEMP/ts-cache"
+          bash tools/ci/install-tools.sh gitleaks
+          bash tools/ci/install-tools.sh gitleaks-selftest
+      - name: gitleaks sur tout l'historique, toutes les branches
+        if: steps.gate.outputs.changed == 'true'
+        run: |
+          if [ -e .gitleaksignore ]; then
+            echo "::error::.gitleaksignore à la racine refusé (SEC0-08)."
+            exit 1
+          fi
+          gl="$TS_GITLEAKS_DIR"
+          "$gl/gitleaks" git --config "$gl/gitleaks.toml" --gitleaks-ignore-path "$gl" --ignore-gitleaks-allow \
+            --redact --no-banner --log-level warn \
+            --log-opts="--all --text --no-ext-diff --no-textconv" .
+
+  fuzz:
+    name: fuzz
+    if: github.event.schedule == '17 3 * * 0' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          lfs: false
+      - name: Cibles de fuzzing présentes ?
+        id: present
+        run: |
+          if [ -d fuzz ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Pas de dossier fuzz/ : fuzzing sauté."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: main a-t-il changé ?
+        id: gate
+        if: steps.present.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash tools/ci/main-changed.sh
+      - name: cargo-fuzz épinglé
+        if: steps.gate.outputs.changed == 'true'
+        run: bash tools/ci/install-tools.sh cargo-fuzz
+      - name: Fuzzing de toutes les cibles
+        if: steps.gate.outputs.changed == 'true'
+        run: |
+          mapfile -t targets < <(cargo "+$FUZZ_TOOLCHAIN" fuzz list)
+          [ "${#targets[@]}" -gt 0 ] || { echo "::error::aucune cible dans fuzz/."; exit 1; }
+          per=$(( FUZZ_TOTAL_SECONDS / ${#targets[@]} ))
+          for t in "${targets[@]}"; do
+            echo "Cible $t : $per s"
+            cargo "+$FUZZ_TOOLCHAIN" fuzz run "$t" -- "-max_total_time=$per"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure() && steps.gate.outputs.changed == 'true'
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  report:
+    name: report
+    if: failure() || cancelled()
+    needs: [advisories, windows, gitleaks-history, fuzz]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Issue nightly-failure (sans checkout, G9)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          R_ADVISORIES: ${{ needs.advisories.result }}
+          R_WINDOWS: ${{ needs.windows.result }}
+          R_GITLEAKS: ${{ needs.gitleaks-history.result }}
+          R_FUZZ: ${{ needs.fuzz.result }}
+        run: |
+          failed=""
+          for pair in "advisories=$R_ADVISORIES" "windows=$R_WINDOWS" "gitleaks-history=$R_GITLEAKS" "fuzz=$R_FUZZ"; do
+            case ${pair#*=} in failure|cancelled) failed="$failed ${pair%%=*} (${pair#*=})" ;; esac
+          done
+          body=$(printf 'Échec de la tâche périodique.\n\n- Travaux en échec :%s\n- Exécution : %s\n' "$failed" "$RUN_URL")
+          gh label create nightly-failure --color B60205 --description "Échec de nightly.yml" 2>/dev/null || true
+          num=$(gh issue list --label nightly-failure --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "$body"
+          else
+            gh issue create --title "Tâche périodique en échec" --label nightly-failure --body "$body"
+          fi

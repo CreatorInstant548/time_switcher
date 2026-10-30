@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# tools/ci/changes.sh : zones touchées par une plage de commits (G7, G8). Mode d'emploi : docs/dev/ci.md §2.
+# Entrées, par l'environnement (jamais par ${{ }} dans un run:, SEC0-31) :
+#   BASE_SHA, HEAD_SHA : plage lue depuis leur base commune (git diff base...tête).
+# Si la base est absente, nulle ou inconnue, toutes les zones valent true (choix sûr).
+# Sortie : une ligne <zone>=true|false par zone, dans GITHUB_OUTPUT (sinon la sortie standard).
+# --summary : écrit aussi le tableau des zones et les chemins sensibles touchés dans GITHUB_STEP_SUMMARY.
+# spec: carnet architecture-securite.md §5, SEC0-32 ; §9.6 G7, G8
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+ZERO=0000000000000000000000000000000000000000
+ZONES="rust python web client ci docs sensitive lock gitleaks_config"
+summary=0
+[ "${1:-}" = --summary ] && summary=1
+
+fail() { printf 'ÉCHEC (changes) : %s\n' "$*" >&2; exit 1; }
+commit_ok() { [ -n "$1" ] && [ "$1" != "$ZERO" ] && git cat-file -e "$1^{commit}" 2>/dev/null; }
+
+base=${BASE_SHA:-}
+head=${HEAD_SHA:-}
+commit_ok "$head" || fail "HEAD_SHA absent ou inconnu."
+for z in $ZONES; do printf -v "z_$z" false; done
+
+all=0
+reason=""
+files=()
+if commit_ok "$base" && mb=$(git merge-base "$base" "$head"); then
+  while IFS= read -r -d '' f; do files+=("$f"); done < <(git diff --name-only -z --no-renames "$mb" "$head")
+else
+  all=1
+  reason="base absente ou inconnue : toutes les zones sont retenues"
+  mb=""
+fi
+
+# Liste des chemins sensibles : union de celle d'origin/main et de celle de la copie de travail.
+# Une PR ne peut donc pas se retirer d'elle-même de la liste (même raison que G5).
+entries=$({ git show origin/main:tools/ci/sensitive-paths.txt 2>/dev/null || true
+            cat tools/ci/sensitive-paths.txt; } |
+          sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' | sort -u)
+
+prefixes=(); exact=(); regex=""; first=""; lock_rule=0
+while IFS= read -r e; do
+  case $e in
+    section:*)
+      # « profile.* » vaut aussi « [profile] » nu (clés pointées dessous) : motif ^profile([.].+)?$.
+      p=${e#section:}
+      case $p in *.\*) r="${p%.\*}"; r="${r//./[.]}([.].+)?" ;; *) r=${p//./[.]}; r=${r//\*/.+} ;; esac
+      regex="${regex:+$regex|}$r"; first="${first:+$first|}${p%%.*}" ;;
+    cargo-lock:new-crate) lock_rule=1 ;;
+    */) prefixes+=("$e") ;;
+    *) exact+=("$e") ;;
+  esac
+done <<< "$entries"
+
+# Lignes des sections retenues d'un Cargo.toml, en-têtes normalisés ; à la racine du fichier,
+# les clés pointées ou en ligne de même premier segment (features.x = …, profile = { … }).
+sections_of() { # sections_of <révision> <fichier>
+  [ -n "$regex" ] || return 0
+  { git show "$1:$2" 2>/dev/null || true; } | awk -v re="^($regex)\$" -v re1="^($first)\$" '
+    function name(l) { sub(/^[[:space:]]*\[+[[:space:]]*/, "", l); sub(/[[:space:]]*\]+.*$/, "", l)
+                       gsub(/[[:space:]"'\'']/, "", l); return l }
+    BEGIN { root = 1 }
+    /^[[:space:]]*\[/ { cur = name($0); root = 0; keep = (cur ~ re); if (keep) print "[" cur "]"; next }
+    root { k = $0; gsub(/[[:space:]"'\'']/, "", k); split(k, a, /[.=]/); if (a[1] ~ re1) print "racine:" $0; next }
+    keep { print }'
+}
+
+crate_names() { # crate_names <révision>
+  { git show "$1:Cargo.lock" 2>/dev/null || true; } | sed -n 's/^name = "\(.*\)"$/\1/p' | sort -u
+}
+
+sensitive_hits=()
+is_sensitive() { # is_sensitive <fichier>
+  local f=$1 e
+  for e in "${prefixes[@]}"; do [[ $f == "$e"* ]] && return 0; done
+  for e in "${exact[@]}"; do [[ $f == "$e" ]] && return 0; done
+  case $f in
+    Cargo.toml|*/Cargo.toml)
+      [ "$(sections_of "$mb" "$f")" != "$(sections_of "$head" "$f")" ] && return 0 ;;
+    Cargo.lock)
+      [ "$lock_rule" = 1 ] && [ -n "$(comm -13 <(crate_names "$mb") <(crate_names "$head"))" ] && return 0 ;;
+  esac
+  return 1
+}
+
+for f in "${files[@]}"; do
+  case $f in
+    crates/*|tools/xtask/*|fuzz/*|.cargo/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|clippy.toml|rustfmt.toml|deny.toml)
+      z_rust=true ;;
+  esac
+  case $f in python/*|*.py|pyproject.toml|uv.lock) z_python=true ;; esac
+  case $f in admin-web/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml) z_web=true ;; esac
+  case $f in client/*) z_client=true ;; esac
+  # Code ou configuration que la CI exécute pour se contrôler elle-même.
+  case $f in .github/*|tools/ci/*|tools/xtask/*|tools/dev/tools.lock|tools/dev/hooks/gitleaks.toml) z_ci=true ;; esac
+  case $f in docs/*|*.md) z_docs=true ;; esac
+  case $f in Cargo.lock) z_lock=true ;; esac
+  case $f in tools/dev/hooks/gitleaks.toml|tools/dev/tools.lock) z_gitleaks_config=true ;; esac
+  if is_sensitive "$f"; then z_sensitive=true; sensitive_hits+=("$f"); fi
+done
+if [ "$all" = 1 ]; then
+  for z in $ZONES; do printf -v "z_$z" true; done
+fi
+
+result=$(for z in $ZONES; do v="z_$z"; printf '%s=%s\n' "$z" "${!v}"; done)
+printf '%s\n' "$result"
+[ -z "${GITHUB_OUTPUT:-}" ] || printf '%s\n' "$result" >> "$GITHUB_OUTPUT"
+
+if [ "$summary" = 1 ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  {
+    echo "### Zones touchées"
+    echo
+    [ -n "$reason" ] && { echo "$reason."; echo; }
+    echo "${#files[@]} fichier(s) dans la plage."
+    echo
+    echo "| Zone | Touchée |"
+    echo "|---|---|"
+    for z in $ZONES; do v="z_$z"; echo "| $z | ${!v} |"; done
+    if [ "${#sensitive_hits[@]}" -gt 0 ]; then
+      echo
+      echo "**Chemins sensibles touchés** : /security-review, relecteur neuf et archsec-ok requis."
+      for f in "${sensitive_hits[@]}"; do printf -- '- `%s`\n' "$f"; done
+    fi
+  } >> "$GITHUB_STEP_SUMMARY"
+fi

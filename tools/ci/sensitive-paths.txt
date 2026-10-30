@@ -1,0 +1,41 @@
+# tools/ci/sensitive-paths.txt : chemins sensibles (G8), reprise du §5 du carnet du responsable
+# architecture et sécurité. Fichier de données unique, lu par tools/ci/changes.sh, puis par
+# xtask merge et origin-check (T3). Toute modification est elle-même sensible (tools/ci/).
+#
+# Format : une entrée par ligne ; « # » commente jusqu'à la fin de la ligne.
+#   dossier/               tout fichier sous ce dossier (préfixe)
+#   fichier                ce fichier exactement
+#   section:<motif>        section d'un Cargo.toml (toute crate), « * » pour un segment ou plus
+#   cargo-lock:new-crate   Cargo.lock qui ajoute une crate (nom absent de la base)
+
+# Crates
+crates/ts_net/
+crates/ts_pilot/
+crates/ts_persist/
+crates/ts_client_native/
+crates/ts_accounts/
+crates/ts_admin/
+crates/ts_protocol/
+crates/ts_view/
+
+# ts_kernel : déclaration des fonctionnalités et du profil (compile_error! de SEC0-20), dans la
+# racine de la crate jusqu'à ce que T5 fixe ses modules d'aléa et de profil (à remplacer alors).
+crates/ts_kernel/src/lib.rs
+
+# Configuration et outillage
+.github/
+.claude/
+.cargo/
+tools/xtask/
+tools/hooks/
+tools/dev/
+tools/ci/
+deny.toml
+.gitleaks.toml
+rust-toolchain.toml
+fuzz/
+
+# Sections des Cargo.toml, et Cargo.lock quand il ajoute une crate
+section:features
+section:profile.*
+cargo-lock:new-crate
