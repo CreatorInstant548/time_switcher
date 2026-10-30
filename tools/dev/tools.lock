@@ -1,0 +1,22 @@
+# tools/dev/tools.lock : outils tiers épinglés (SEC0-06). Format TOML à clés pointées, une clé par ligne,
+# lu par les crochets Git (sed) et par install-hooks.ps1 ; toute mise à jour passe par une PR de chemin sensible.
+# gitleaks.sha256 est l'empreinte de l'exécutable, vérifiée avant chaque usage ;
+# gitleaks.archive_sha256 celle de l'archive officielle, contrôlée contre le fichier de sommes de la version.
+
+gitleaks.version = "8.30.1"
+gitleaks.source = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip"
+gitleaks.archive_sha256 = "d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e"
+gitleaks.path = "C:/Dev/tools/gitleaks/gitleaks.exe"
+gitleaks.sha256 = "17157e2ee8b76fc8b1d8bee607a250e34b8a8023c8bc81822d4b5ee4d78fcb7c"
+
+cargo-deny.version = "0.20.2"
+cargo-deny.source = "crates.io (cargo install --locked --version 0.20.2 cargo-deny)"
+
+cargo-audit.version = "0.22.2"
+cargo-audit.source = "crates.io (cargo install --locked --version 0.22.2 cargo-audit)"
+
+# Places réservées, à remplir à l'installation de l'outil (même forme) :
+# cargo-fuzz.version = ""
+# cargo-fuzz.source = "crates.io (cargo install --locked --version <v> cargo-fuzz)"
+# maturin.version = ""
+# maturin.source = "crates.io (cargo install --locked --version <v> maturin)"

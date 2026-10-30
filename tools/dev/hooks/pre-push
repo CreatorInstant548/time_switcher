@@ -1,0 +1,30 @@
+#!/bin/sh
+# pre-push : refus de pousser vers main (SEC0-13), de forcer, de supprimer pilotage ;
+# gitleaks sur la plage poussée (SEC0-08).
+# spec: carnet architecture-securite.md SEC0-08, SEC0-13
+. "$(dirname "$0")/common.sh"
+remote=$1
+ZERO=0000000000000000000000000000000000000000
+gitleaks_checked
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  dest=$(printf '%s' "$remote_ref" | tr 'A-Z' 'a-z')
+  [ "$dest" = "refs/heads/main" ] && fail "poussée vers main interdite (SEC0-13) : passez par une PR."
+  if [ "$local_sha" = "$ZERO" ]; then
+    [ "$dest" = "refs/heads/pilotage" ] && fail "suppression de la branche pilotage interdite."
+    continue   # suppression d'une branche de tâche
+  fi
+  if [ "$remote_sha" = "$ZERO" ]; then
+    range="$local_sha --not --remotes=$remote"   # branche nouvelle : commits absents du distant
+  else
+    git cat-file -e "$remote_sha^{commit}" 2>/dev/null ||
+      fail "$remote_ref a bougé sur $remote ($remote_sha inconnu ici) : git fetch, puis intégrez sans forcer."
+    git merge-base --is-ancestor "$remote_sha" "$local_sha" ||
+      fail "poussée forcée vers $remote_ref interdite (SEC0-13) : l'historique distant serait réécrit."
+    range="$remote_sha..$local_sha"
+  fi
+  # --text : un attribut -diff ou binary ne masque pas le contenu ; ni diff externe ni textconv (I3 bis).
+  gitleaks_run git --log-opts="--text --no-ext-diff --no-textconv $range" ||
+    fail "gitleaks a trouvé un secret probable dans $range (SEC0-08). Il est tenu pour fuité s'il a quitté le poste."
+done
+exit 0

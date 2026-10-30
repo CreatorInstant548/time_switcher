@@ -1,0 +1,36 @@
+#!/bin/sh
+# reference-transaction : refs/heads/main ne bouge que vers la valeur de main sur le distant origin
+# (git ls-remote, qui fait foi), c'est-à-dire par avance rapide (git pull --ff-only). Refus de sa
+# suppression, de toute mise à jour si refs/remotes/origin/main est absente ou si le distant ne répond
+# pas. Couvre ce que pre-commit ne voit pas :
+# revert, cherry-pick, rebase, am, reset, update-ref, branch -f (SEC0-13).
+# spec: carnet architecture-securite.md SEC0-13
+[ "$1" = "prepared" ] || exit 0
+. "$(dirname "$0")/common.sh"
+
+common=$(git rev-parse --git-common-dir)
+while read -r old new ref; do
+  [ "$(printf '%s' "$ref" | tr 'A-Z' 'a-z')" = "refs/heads/main" ] || continue
+  # Suppression : nouvelle valeur nulle (Git envoie aussi une ancienne valeur nulle, « peu importe »).
+  # Seule exception, l'élagage de git pack-refs ou git gc : la référence libre disparaît alors que
+  # packed-refs contient déjà la même valeur, et packed-refs n'est pas en cours de réécriture.
+  # Une vraie suppression (branch -D, update-ref -d) tient packed-refs.lock (constaté en 2.56).
+  case $new in
+    *[!0]*) ;;
+    *) case $old in *[!0]*)
+         [ ! -e "$common/packed-refs.lock" ] && grep -qx "$old refs/heads/main" "$common/packed-refs" 2>/dev/null && continue ;;
+       esac
+       fail "suppression de main interdite (SEC0-13)." ;;
+  esac
+  [ "$old" = "$new" ] && continue   # valeur inchangée
+  [ "$new" = "$(git rev-parse -q --verify refs/heads/main 2>/dev/null)" ] && continue   # même valeur (écriture de packed-refs)
+  git rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1 ||
+    fail "main ne bouge pas tant que refs/remotes/origin/main est absente (SEC0-13) : git fetch origin d'abord."
+  # La référence locale origin/main peut être déplacée à la main : seule fait foi la valeur du distant.
+  upstream=$(git ls-remote origin refs/heads/main 2>/dev/null | cut -f 1)
+  [ -n "$upstream" ] ||
+    fail "distant origin injoignable (git ls-remote) : main ne bouge pas sans vérification (SEC0-13)."
+  [ "$new" = "$upstream" ] ||
+    fail "main ne bouge que vers le main du distant, par git pull --ff-only (SEC0-13) ; tout autre changement passe par une branche et une PR."
+done
+exit 0
