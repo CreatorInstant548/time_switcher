@@ -278,3 +278,12 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - `-Check` dans `verify-main`.
 
   T3d est lancée (Opus). Ensuite, AS-31 : T3e-1 (refus de poussée vers `main` retirés de `pre-push` et de `guard-git`), puis l'essai R6.4 de l'orchestrateur, puis T3e-2 (contrôle d'origine de `verify-main`, qui garde le contrôle `review-ok` et `archsec-ok` sur les chemins sensibles, E3). `gitleaks`, `guard-main`, la liste blanche et `xtask merge` restent.
+- 30/10 : fusions par `cargo xtask merge` :
+  - **#33** (906b700, `clippy.toml`) ;
+  - **#29** (fcd84c1, règle de l'anglais ; branche mise à jour par moi, avec l'autorisation de l'orchestrateur) ;
+  - **#38** (f7df157, quota de 3 000 min dans `docs/dev/ci.md`) ;
+  - **#35** (37c337a, T9w `ts_world_model`) : relecture neuve, contre-relecture `review-ok` et `archsec-ok` sur af8d499.
+
+  Pour #35 : I1 corrigé (le doctest `Mine` échoue uniquement par `Sealed`, preuve par mutation). `Polygon2` a une forme canonique, et AS-32 rend `candidates` expédiable. Mineurs dans l'issue #37.
+- 30/10 : **#40** (T7a `ts_model`/`ts_game`) : `review-ok` sur 0011347, AS-33 (`AdvanceTime` reste hors de `dev-commands` ; `Position` en `f32` conforme à §6.3, avec la règle de frontière documentée). Docs ajoutées (3b26339), puis dernière fusion de `main` en cours ; ensuite vérification du delta et `archsec-ok`. Doc de `DevFeature::Commands` à corriger au prochain passage dans le noyau (noté dans l'issue #31). Issue #36 : xtask ne voit pas `ts_model/dev-commands`, à régler avant le premier hôte.
+- 30/10 : file restante : #40, puis T3d (priorité 1, en cours), puis #39 (conception, A13) et #41 (orchestrateur, `CLAUDE.md` pour GitHub Pro).
