@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use serde_json::Value;
 
 use crate::github::{Repo, approved, is_sha, same_path};
-use crate::{build_inputs, hooks, sensitive, workflows};
+use crate::{build_inputs, hooks, sensitive, verify_main, workflows};
 
 /// Empreinte des entrées de construction, inscrite par `build.rs` (J2, AS-23 point 1).
 const BUILT_FROM: &str = env!("XTASK_INPUTS_SHA256");
@@ -346,15 +346,13 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
         "copie principale propre, sur main, à jour ; binaire construit depuis main (J2)",
     );
     let j2 = main_copy(repo, j2_check)?;
-    step("2", "hooks verify (verify-main : PR suivante de T3a)");
-    println!(
-        "  AVERTISSEMENT : contrôle de l'origine de main (verify-main, SEC0-17) pas encore en place."
-    );
+    step("2", "verify-main (SEC0-17) et hooks verify (SEC0-35)");
+    let history = verify_main::verify_or_report(repo)?;
     let hooks_ok = hooks::verify_or_report(repo)?;
-    let suspended = (!hooks_ok).then(|| {
+    let suspended = (!history || !hooks_ok).then(|| {
         refuse(
-            "fusions suspendues : configuration des crochets non conforme",
-            "lever l'écart (issue role:architecture), puis cargo xtask hooks verify",
+            "fusions suspendues : anomalie de l'historique ou des crochets",
+            "lever l'anomalie (issue role:architecture), puis cargo xtask verify-main et cargo xtask hooks verify",
         )
     });
     match &suspended {
@@ -731,6 +729,15 @@ mod tests {
                 include_str!("../../ci/sensitive-paths.txt").to_owned(),
             ),
             ("git worktree list", String::new()),
+            (
+                "git cat-file blob origin/pilotage:architecture-securite.md",
+                "## 9. Avis\n".to_owned(),
+            ),
+            (
+                "git rev-list --reverse origin/main",
+                "8ca4088bd38829d6c5aaa9281c4fa32b33a95e35\n2b5681461e46cc1cc008e786b8b04ccd22b4993f\n"
+                    .to_owned(),
+            ),
             ("git merge-base", MAIN.to_owned()),
             ("git diff --name-only", "docs/a.md\0".to_owned()),
             (
