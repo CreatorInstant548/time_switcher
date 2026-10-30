@@ -85,7 +85,7 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | T1 | `claude/outillage-agents`, [#5](https://github.com/CreatorInstant548/time_switcher/pull/5), tête 92ecc11 | **Fusionnée** | sans objet (pas encore de xtask) ; tests 451/451, 57/57, 12/12 ; `merge-pr.ps1 5 -DryRun` conforme | 9 constats, traités | 3 relectures neuves ; `review-ok` et `archsec-ok` sur 92ecc11 | **93fc98a** |
 | (orchestrateur) | #9 (`CLAUDE.md`, règles de l'outillage) | Fusionnée par `merge-pr.ps1` (premier usage) | sans objet (documentation, pas de CI) | relue | sans objet | 2362c64 |
 | T2a | `claude/espace-travail`, [#10](https://github.com/CreatorInstant548/time_switcher/pull/10), tête f14fb96 | **Fusionnée** par `merge-pr.ps1` | équivalents (fmt, clippy `-D warnings`, tests, `deny`, `audit`, 4 `compile_error!` E8) verts selon l'auteur | lu par le responsable : rien de bloquant | `review-ok` et `archsec-ok` sur f14fb96 | **5209fd2** |
-| T2b | `claude/xtask-check`, [#11](https://github.com/CreatorInstant548/time_switcher/pull/11), tête **067a0cb** | `review-ok` posé (vérificateur neuf, 2ᵉ tour) ; `archsec-ok` demandé | `cargo xtask check --all` vert (11 OK, 2 ignorées : workflows, spec-map) ; 15 tests | `/code-review` et `/security-review` faits par l'auteur | relecture neuve : **changements demandés** (I1 clé YAML explicite, I2 `#[path]`/`cfg(not(clippy))`/macro, I3 fichiers écartés en silence) ; correction en cours ; mineurs → #12 | — |
+| T2b | `claude/xtask-check`, [#11](https://github.com/CreatorInstant548/time_switcher/pull/11), tête 067a0cb | **Fusionnée** par `merge-pr.ps1` (`review-ok` et `archsec-ok` sur 067a0cb) → **69b4849** | `cargo xtask check --all` vert (11 OK, 2 ignorées : workflows, spec-map) ; 15 tests | `/code-review` et `/security-review` faits par l'auteur | relecture neuve : **changements demandés** (I1 clé YAML explicite, I2 `#[path]`/`cfg(not(clippy))`/macro, I3 fichiers écartés en silence) ; correction en cours ; mineurs → #12 | — |
 
 ## Sessions et agents actifs
 
@@ -94,7 +94,9 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 | sous-agent t0-machine | T0 | Sonnet | aucun (hors dépôt) | 30/10, **terminée** |
 | sous-agent t1-outillage | T1 | Opus | worktree isolé | 30/10, **terminée** (fusionnée) |
 | sous-agent t2a-espace | T2a | Opus | — | 30/10, **terminée** (fusionnée) |
-| sous-agent t2b-check | T2b | Opus | — | 30/10, **livrée** (PR #11) |
+| sous-agent t2b-check | T2b | Opus | — | 30/10, **terminée** (fusionnée) |
+| sous-agent t13-ci | T13 + A2 (mode CI de l'étape gitleaks) | Opus | worktree isolé, `claude/ci` | 30/10 |
+| sous-agent t2c-disk | T2c | Opus | worktree isolé, `claude/xtask-disk` | 30/10 |
 
 ## Demandes envoyées
 
@@ -145,3 +147,4 @@ Une session lancée par une autre session ne peut pas lancer elle-même de sessi
 - 30/10 : PR #11 corrigée (b419a5f : I1 lignes non reconnues refusées, I2 `#[path]`/`include!`/`cfg(clippy)`/`$` refusés, I3 `ls-files -z`, m4) ; `check --all` vert, 18 tests. Le premier relecteur n'a pas pu reprendre, son worktree ayant été retiré : **règle (décidé) : ne jamais retirer le worktree d'un relecteur avant la fusion de sa PR.** Vérificateur neuf lancé sur le delta.
 - 30/10 : vérification du delta de la PR #11 : I1, I3, m4 réglés ; I2 incomplet (commentaires qui coupent les motifs, `r#`, `include` renommé, macro entre accolades, `cfg(debug_assertions)`, code sous fonctionnalité de développement). **Décidé** : correction structurelle et dernière passe (normalisation, refus textuel des lints `disallowed_*`, liste fermée de prédicats `cfg`, refus de `include`, clippy par fonctionnalité de développement). m11 ajouté à l'issue #12. Le garde est actif dans ma session : commentaires `gh` par `--body-file`.
 - 30/10 : PR #11 : correction structurelle de I2 (067a0cb, module `exemptions.rs`) ; `review-ok: 067a0cb` posé, aucun faux refus sur du code ordinaire ; m12 à m14 ajoutés à l'issue #12 ; `archsec-ok` demandé. Consigne T4 (`spec-map`, Sonnet) envoyée à archi-sécu.
+- 30/10 : **PR #11 fusionnée** (69b4849). Archi-sécu ajoute A1 (AS-18 à l'arrivée de `ts_py`), A2 (mode CI de l'étape gitleaks : confié à T13) et A3 (`git ls-tree` à permettre dans `guard-git`) à l'issue #12. **T13 et T2c lancées en parallèle** ; T4 attend la validation de sa consigne. Sessions qui compilent : 2 sur 3.
