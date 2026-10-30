@@ -18,6 +18,8 @@ external-pilot = []
 public = []
 
 [dependencies]
+bevy_ecs.workspace = true
+bevy_tasks.workspace = true
 blake3.workspace = true
 chacha20.workspace = true
 
