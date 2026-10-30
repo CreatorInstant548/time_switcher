@@ -103,13 +103,26 @@ try {
   G switch -q -c claude/cache | Out-Null
   & git -C $repo -c "core.hooksPath=$none" commit -q -m 'chore(essai): secret caché' 2>&1 | Out-Null
   Expect 'secret refusé malgré binary (pre-push, --text)' $true { G push origin claude/cache } 'gitleaks a trouv'
+  # AS-31 E2 : gitleaks garde aussi la poussée vers main, directe ou forcée (--dry-run : pre-push tourne, rien n'est écrit).
+  Expect 'secret refusé en poussée vers main (pre-push)' $true { G push --dry-run origin claude/cache:main } 'gitleaks a trouv'
+  $orphanSecret = "$(G commit-tree 'claude/cache^{tree}' -m 'docs(essai): orphelin avec secret')".Trim()
+  Expect 'secret refusé en poussée forcée vers main (pre-push)' $true { G push --dry-run -f origin "${orphanSecret}:refs/heads/main" } 'gitleaks a trouv'
   Remove-Item (Join-Path $info 'attributes')
   G switch -q claude/essai | Out-Null; G branch -q -D claude/cache | Out-Null
   G rm -q --cached config.txt 2>&1 | Out-Null; Remove-Item (Join-Path $repo 'config.txt') -ErrorAction SilentlyContinue
 
   Expect 'poussée d''une branche de tâche acceptée' $false { G push -q origin claude/essai }
-  Expect 'poussée vers main refusée' $true { G push origin HEAD:main } 'vers main interdite'
-  Expect 'poussée vers heads/main refusée' $true { G push origin HEAD:heads/main } 'vers main interdite'
+  # AS-31, T3e-1 : poussée directe et forcée vers main laissées au ruleset main de GitHub ; --dry-run :
+  # pre-push tourne, le distant jetable ne bouge pas.
+  $remoteMain = "$(& git -C $remote rev-parse main)".Trim()
+  Expect 'poussée vers main acceptée par pre-push' $false { G push --dry-run origin HEAD:main }
+  Expect 'poussée vers heads/main acceptée par pre-push' $false { G push --dry-run origin HEAD:heads/main }
+  $orphan = "$(G commit-tree 'HEAD^{tree}' -m 'docs(essai): orphelin')".Trim()
+  Expect 'poussée forcée vers main acceptée par pre-push' $false { G push --dry-run -f origin "${orphan}:refs/heads/main" }
+  Expect 'suppression de main refusée (pre-push)' $true { G push --dry-run origin :main } 'suppression de la branche main'
+  Expect 'variante de casse de main refusée (pre-push)' $true { G push --dry-run origin HEAD:refs/heads/Main } 'variante de casse'
+  Expect 'poussée vers le main d''un distant autre qu''origin refusée (pre-push)' $true { G push --dry-run $remote HEAD:main } 'distant origin'
+  Check 'main du distant inchangé par les essais en --dry-run' ("$(& git -C $remote rev-parse main)".Trim() -eq $remoteMain)
   Add 'b.txt' (Text "b`n"); G commit -q --amend -m 'docs(essai): réécrit' | Out-Null
   Expect 'poussée forcée refusée' $true { G push -f origin claude/essai } 'forc'
 
