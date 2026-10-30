@@ -484,6 +484,36 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | Consigne T3d (réglages GitHub en fichiers ; V et S) | `scratchpad/…/consigne-T3d.md` | **Validée avec S1 à S6** (§9.12) : `ci-ok` lié à `integration_id`, réglages de fusion du dépôt, invariants codés dans le script, *rulesets* inconnus signalés, invocation depuis la copie principale seulement |
 | 30/10 | **PR #35 (T9w, `ts_world_model`), fusion** | SHA de tête `af8d4998e5d86275afb3992c9286e2d67c56b106`, `ci-ok` vert | **`archsec-ok: af8d4998e5d86275afb3992c9286e2d67c56b106`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/35#issuecomment-6523537014)) : N1 à N4 conformes, avec N3 révisé par AS-32. Le scellé de `ClientShippable` est prouvé par un exemple témoin et une mutation ; `candidates` est livrable, `server` non. Aucune dépendance externe |
 | 30/10 | **PR #40 (T7a, `ts_model` et `ts_game`), fusion** | SHA de tête `b045727636888a8114eb75a442d064af5d449826`, `ci-ok` vert | **`archsec-ok: b045727636888a8114eb75a442d064af5d449826`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/40#issuecomment-6523778994)) : M1 à M3 et AS-33 conformes ; `Pilot` reste hors de `ts_model`. Les crates sont identiques à `3b26339` ; `Cargo.lock` n'ajoute que les deux crates de l'espace de travail |
+| 30/10 | Consignes T8 (`ts_persist` ; V et S) et T7b (`ts_data` ; V) | `scratchpad/…/consigne-T8.md`, `consigne-T7b.md` | **T8 validée avec Q1 à Q6** : `ruzstd` en pur Rust, tailles annoncées jamais crues, chaîne enveloppe → manifeste → parts. **T7b validée avec T1 à T4** : empreinte en BLAKE3 et non en SHA-256, lecture bornée sans faille entre contrôle et lecture (§9.13) |
+
+### 9.13 Consignes T8 (`ts_persist`) et T7b (`ts_data`) (30/10)
+
+**T8 : validée avec les corrections Q1 à Q6.**
+- **Q1, `zstd` ou `ruzstd` : `ruzstd`, en pur Rust, pour le décodage *et* l'encodage en phase 0** (décidé).
+  - *Pourquoi :*
+    - le décodeur lit des données que l'on ne contrôle pas : un fichier de sauvegarde du solo, modifiable par le joueur. Un analyseur sans risque mémoire vaut mieux qu'un taux de compression ;
+    - `zstd-sys` exécuterait un compilateur C à la construction, ce que K10 a déjà écarté.
+  - Le taux de compression est mesuré dans la PR. Si le budget de l'architecture §12.3 (60 à 120 Mo compressés pour 10 000 habitants) n'est pas tenu, un encodeur C pourra être proposé **pour l'encodage seulement**, dans les crates d'hôte, par une PR sensible. Le décodage reste toujours `ruzstd`.
+- **Q2, ne jamais faire confiance à une taille annoncée.**
+  - Aucun `Vec::with_capacity` tiré d'une longueur lue dans l'entrée.
+  - La décompression passe par un lecteur limité, de type `take(borne + 1)`, et le dépassement est une erreur.
+  - `postcard` ne décode qu'un tampon déjà borné.
+  - Le schéma de l'instantané ne contient **aucun type récursif** : la profondeur est ainsi bornée par construction. On le documente et on le teste.
+- **Q3, chaîne de vérification.** L'enveloppe porte l'empreinte du **manifeste** ; le manifeste porte celle de chaque part. Le chargement vérifie dans cet ordre (enveloppe, manifeste, parts) et **avant** tout décodage `postcard` d'une part. La place de la signature est réservée sur l'empreinte du manifeste, l'endroit que P30 désigne.
+- **Q4, pont avec le noyau.** Le décodage rend un `MemorySnapshot`, puis l'hôte appelle `restore(…, &WorldKey)`. `ts_persist` ne voit jamais la clé, et un test vérifie qu'elle est absente des octets (L4).
+- **Q5, fuzzing.** La tâche hebdomadaire `fuzz` de `nightly.yml` se lancera **d'elle-même** dès que `fuzz/` existera, puisqu'elle est sautée tant que le dossier manque. La PR `.github/` à venir n'aura donc qu'à ajuster les cibles et le temps (SEC0-24 : 60 min sans plantage, corpus en artefact). La PR de T8 dit ce qu'il faudra changer.
+- **Q6, dépendances.** `postcard` et `ruzstd` sans fonctionnalités par défaut. Le graphe complet est listé, avec un `cargo deny` vert et sans exception.
+
+**T7b : validée avec les corrections T1 à T4.**
+- **T1, l'empreinte du paquet est en BLAKE3, pas en SHA-256** (décidé) : `derive_key` avec le contexte `"time_switcher content pack v1"`.
+  - *Pourquoi :* A4 n'exige pas SHA-256, seulement une empreinte sur le **paquet compilé**. BLAKE3 est déjà dans le graphe et sert aux parts (P30), alors que `sha2` n'est pas dans la liste pré-approuvée.
+- **T2, lecture bornée sans faille entre contrôle et lecture.**
+  - La taille est vérifiée par les métadonnées, puis la lecture se fait par `take(max + 1)`, et le dépassement est une erreur : un fichier qui grandit entre les deux est quand même refusé.
+  - Le nombre de fichiers est borné.
+  - La profondeur passe par la limite de récursion de `ron`, si la version choisie l'offre.
+  - Les liens symboliques sont refusés.
+- **T3, le paquet est une entrée non fiable.** En solo, le joueur peut modifier les fichiers de contenu. Le chargeur ne doit **jamais paniquer**, et une fiche invalide ne casse que le chargement, jamais le processus. Les lints anti-panique sont les mêmes que pour C6.
+- **T4, encodage canonique.** `ts_data` n'utilise ni `ts_persist` ni `postcard` : son encodage canonique est le sien, préfixé par un numéro de version. Changer cet encodage change l'identité de tous les paquets.
 
 ### 9.12 Consigne T3d : réglages GitHub décrits dans des fichiers (30/10)
 
