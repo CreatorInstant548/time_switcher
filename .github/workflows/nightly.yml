@@ -191,7 +191,7 @@ jobs:
 
   report:
     name: report
-    if: failure()
+    if: failure() || cancelled()
     needs: [advisories, windows, gitleaks-history, fuzz]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -210,7 +210,7 @@ jobs:
         run: |
           failed=""
           for pair in "advisories=$R_ADVISORIES" "windows=$R_WINDOWS" "gitleaks-history=$R_GITLEAKS" "fuzz=$R_FUZZ"; do
-            if [ "${pair#*=}" = failure ]; then failed="$failed ${pair%%=*}"; fi
+            case ${pair#*=} in failure|cancelled) failed="$failed ${pair%%=*} (${pair#*=})" ;; esac
           done
           body=$(printf 'Échec de la tâche périodique.\n\n- Travaux en échec :%s\n- Exécution : %s\n' "$failed" "$RUN_URL")
           gh label create nightly-failure --color B60205 --description "Échec de nightly.yml" 2>/dev/null || true

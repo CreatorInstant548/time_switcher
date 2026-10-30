@@ -44,7 +44,9 @@ prefixes=(); exact=(); regex=""; first=""; lock_rule=0
 while IFS= read -r e; do
   case $e in
     section:*)
-      p=${e#section:}; r=${p//./[.]}; r=${r//\*/.+}
+      # « profile.* » vaut aussi « [profile] » nu (clés pointées dessous) : motif ^profile([.].+)?$.
+      p=${e#section:}
+      case $p in *.\*) r="${p%.\*}"; r="${r//./[.]}([.].+)?" ;; *) r=${p//./[.]}; r=${r//\*/.+} ;; esac
       regex="${regex:+$regex|}$r"; first="${first:+$first|}${p%%.*}" ;;
     cargo-lock:new-crate) lock_rule=1 ;;
     */) prefixes+=("$e") ;;
@@ -91,7 +93,8 @@ for f in "${files[@]}"; do
   case $f in python/*|*.py|pyproject.toml|uv.lock) z_python=true ;; esac
   case $f in admin-web/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml) z_web=true ;; esac
   case $f in client/*) z_client=true ;; esac
-  case $f in .github/*|tools/ci/*|tools/dev/tools.lock) z_ci=true ;; esac
+  # Code ou configuration que la CI exécute pour se contrôler elle-même.
+  case $f in .github/*|tools/ci/*|tools/xtask/*|tools/dev/tools.lock|tools/dev/hooks/gitleaks.toml) z_ci=true ;; esac
   case $f in docs/*|*.md) z_docs=true ;; esac
   case $f in Cargo.lock) z_lock=true ;; esac
   case $f in tools/dev/hooks/gitleaks.toml|tools/dev/tools.lock) z_gitleaks_config=true ;; esac

@@ -13,9 +13,10 @@ set -euo pipefail
 
 root=$(git rev-parse --show-toplevel)
 lock="$root/tools/dev/tools.lock"
-cache="${TS_CACHE:?TS_CACHE non défini}"
+cache=${TS_CACHE:-}
 
 fail() { printf 'ÉCHEC (install-tools) : %s\n' "$*" >&2; exit 1; }
+need_cache() { [ -n "$cache" ] || fail "TS_CACHE non défini."; }
 
 lock_value() { # lock_value <clé> : valeur non vide de tools.lock, sans guillemets
   local v
@@ -26,9 +27,14 @@ lock_value() { # lock_value <clé> : valeur non vide de tools.lock, sans guillem
 
 sha256_of() { sha256sum "$1" | cut -d ' ' -f 1; }
 
-# download <url> <sha256 attendu> <fichier> : HTTPS seulement, depuis github.com.
+# download <url> <sha256 attendu> <fichier> : HTTPS seulement, depuis les publications officielles
+# de l'outil (liste fermée : une PR ne peut pas désigner un autre dépôt).
 download() {
-  case $1 in https://github.com/*) ;; *) fail "source refusée : $1 (github.com en HTTPS seulement)." ;; esac
+  case $1 in
+    https://github.com/gitleaks/gitleaks/releases/download/*) ;;
+    https://github.com/EmbarkStudios/cargo-deny/releases/download/*) ;;
+    *) fail "source refusée : $1 (publications officielles de gitleaks ou cargo-deny seulement)." ;;
+  esac
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$3" "$1" || fail "téléchargement impossible : $1"
   local actual
   actual=$(sha256_of "$3")
@@ -45,6 +51,7 @@ install_rust() {
 
 install_gitleaks() {
   local version src archive_sha rel expected dir tmp actual
+  need_cache
   version=$(lock_value 'gitleaks\.linux\.version')
   [ "$version" = "$(lock_value 'gitleaks\.version')" ] || fail "gitleaks.linux.version différente de gitleaks.version (G6)."
   src=$(lock_value 'gitleaks\.linux\.source')
@@ -73,6 +80,7 @@ install_gitleaks() {
 # xtask check, doit trouver un faux secret dans un dossier, puis dans un commit sous l'attribut -diff.
 selftest_gitleaks() {
   local bin dir tmp token code
+  need_cache
   bin="$cache/$(lock_value 'gitleaks\.linux\.path')"
   dir=$(dirname "$bin")
   tmp=$(mktemp -d)
@@ -105,6 +113,7 @@ selftest_gitleaks() {
 
 install_cargo_deny() {
   local version src archive_sha dir tmp name
+  need_cache
   version=$(lock_value 'cargo-deny\.linux\.version')
   [ "$version" = "$(lock_value 'cargo-deny\.version')" ] || fail "cargo-deny.linux.version différente de cargo-deny.version (G6)."
   src=$(lock_value 'cargo-deny\.linux\.source')

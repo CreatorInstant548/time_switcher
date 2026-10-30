@@ -48,8 +48,8 @@ jobs:
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
-          re='^(feat|fix|refactor|perf|test|docs|build|ci|chore)\([A-Za-z0-9_./-]+\)!?: [^ ].*'
-          if printf '%s\n' "$TITLE" | grep -Eq "$re"; then
+          re='^(feat|fix|refactor|perf|test|docs|build|ci|chore)\([A-Za-z0-9_./-]+\)!?: [^ ].*$'
+          if [[ "$TITLE" != *$'\n'* && "$TITLE" =~ $re ]]; then
             echo "Titre conforme."
           else
             echo "::error::Titre attendu : type(portée): description, type parmi feat fix refactor perf test docs build ci chore."
@@ -77,10 +77,15 @@ jobs:
         run: |
           bash tools/ci/changes.sh
           echo "TS_CACHE=$RUNNER_TEMP/ts-cache" >> "$GITHUB_ENV"
-      - name: Configuration de gitleaks ou tools.lock modifiés (G5)
-        if: steps.zones.outputs.gitleaks_config == 'true'
+      - name: Outillage de contrôle modifié (G5)
+        if: steps.zones.outputs.gitleaks_config == 'true' || steps.zones.outputs.ci == 'true'
+        env:
+          GITLEAKS_CONFIG: ${{ steps.zones.outputs.gitleaks_config }}
         run: |
-          msg="Cette PR modifie tools/dev/hooks/gitleaks.toml ou tools/dev/tools.lock : la CI analyse avec la configuration d'origin/main ; relecture d'archi-sécu requise."
+          msg="Cette PR modifie le code ou la configuration que la CI exécute pour se contrôler (.github/, tools/ci/, tools/xtask/, tools.lock) : ci-ok n'en garantit rien ; relecture d'archi-sécu requise."
+          if [ "$GITLEAKS_CONFIG" = true ]; then
+            msg="$msg gitleaks.toml ou tools.lock modifié : gitleaks analyse avec la configuration d'origin/main."
+          fi
           echo "::warning::$msg"
           printf '### Attention (G5)\n\n%s\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
       - name: Chaîne Rust
@@ -218,7 +223,7 @@ jobs:
 
   ci-ok:
     name: ci-ok
-    if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    if: always()
     needs: [changes, pr-title, security, rust-linux, rust-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -227,12 +232,19 @@ jobs:
       - name: Résultat des travaux (G2)
         env:
           EVENT: ${{ github.event_name }}
+          DRAFT: ${{ github.event.pull_request.draft }}
           R_CHANGES: ${{ needs.changes.result }}
           R_PR_TITLE: ${{ needs.pr-title.result }}
           R_SECURITY: ${{ needs.security.result }}
           R_RUST_LINUX: ${{ needs.rust-linux.result }}
           R_RUST_WINDOWS: ${{ needs.rust-windows.result }}
         run: |
+          # Un brouillon ne lance rien ; ci-ok échoue plutôt que d'être sauté, car un contrôle
+          # sauté passe pour réussi auprès de GitHub.
+          if [ "$EVENT" = pull_request ] && [ "$DRAFT" = true ]; then
+            echo "::error::PR en brouillon : CI non lancée."
+            exit 1
+          fi
           bad=0
           need() { # need <travail> <résultat> <résultats permis…>
             local job=$1 got=$2 ok; shift 2

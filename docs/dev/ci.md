@@ -29,19 +29,21 @@ Déclencheurs : `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_
 |---|---|---|
 | `changes` | toujours | `tools/ci/changes.sh --summary` : tableau des zones et chemins sensibles touchés, dans le résumé de l'exécution |
 | `pr-title` | PR seulement | titre au format `type(portée): description`, même motif que le crochet `commit-msg` ; le titre passe par `env:` (SEC0-31) |
-| `security` | toujours, quels que soient les chemins | gitleaks épinglé et son auto-test ; `cargo xtask check --only workflows,gitleaks,deny`, plus `audit` si `Cargo.lock` change. Avertit si la PR modifie `tools/dev/hooks/gitleaks.toml` ou `tools/dev/tools.lock` (G5) |
+| `security` | toujours, quels que soient les chemins | gitleaks épinglé et son auto-test ; `cargo xtask check --only workflows,gitleaks,deny`, plus `audit` si `Cargo.lock` change. Avertit si la PR touche la zone `ci` (G5 étendu, voir plus bas) |
 | `rust-linux` | zone `rust` ou `ci` | `cargo xtask check --all --only fmt,clippy,test,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map` |
 | `rust-windows` | push sur `main`, étiquette `ci:windows`, ou zone `sensitive` | même chose, sans `fmt` |
-| `ci-ok` | toujours (`always()`), hors brouillon | lit `needs.<travail>.result` (G2) : `changes`, `security` et, sur une PR, `pr-title` doivent valoir `success` ; `rust-linux` et `rust-windows` peuvent valoir `skipped` |
+| `ci-ok` | toujours (`always()`) | lit `needs.<travail>.result` (G2) : `changes`, `security` et, sur une PR, `pr-title` doivent valoir `success` ; `rust-linux` et `rust-windows` peuvent valoir `skipped`. Sur un brouillon, il **échoue** au lieu d'être sauté, car GitHub tient un contrôle sauté pour réussi |
 
 **Zones** (`changes.sh`), calculées sur `git diff <base commune> <tête>` ; une base absente ou inconnue retient toutes les zones :
 - `rust` : `crates/`, `tools/xtask/`, `fuzz/`, `.cargo/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml`, `deny.toml` ;
 - `python` : `python/`, `*.py`, `pyproject.toml`, `uv.lock` ; `web` : `admin-web/`, `package.json`, `pnpm-*.yaml` ; `client` : `client/` (aucun travail encore) ;
-- `ci` : `.github/`, `tools/ci/`, `tools/dev/tools.lock` ; `docs` : `docs/`, `*.md` ;
+- `ci` : ce que la CI exécute pour se contrôler, soit `.github/`, `tools/ci/`, `tools/xtask/`, `tools/dev/tools.lock`, `tools/dev/hooks/gitleaks.toml` ; `docs` : `docs/`, `*.md` ;
 - `sensitive` : `tools/ci/sensitive-paths.txt`, **union** de sa version d'`origin/main` et de celle de la PR (une PR ne peut pas s'en retirer). Les sections `[features]` et `[profile.*]` d'un `Cargo.toml` sont comparées entre la base et la tête, clés pointées de la racine comprises ; `Cargo.lock` est sensible quand il ajoute un nom de crate ;
 - `lock` : `Cargo.lock` ; `gitleaks_config` : `tools/dev/hooks/gitleaks.toml`, `tools/dev/tools.lock`.
 
 **Pourquoi chaque travail recalcule ses zones** (décidé) : l'étape `workflows` de `xtask check` refuse toute interpolation hors de `env:`, `with:` et `if:`, donc aussi dans `jobs.<id>.outputs` et `concurrency.group`. Un travail ne peut donc pas transmettre ses zones aux autres, et `ci.yml` n'a pas de `concurrency`. `rust-linux` et `rust-windows` démarrent toujours, recalculent les zones, puis sautent leurs étapes si rien ne les concerne : ils valent alors `success`. L'ajout de ces deux clés au contrôle est demandé (§7).
+
+**Limite de confiance** (relecture neuve, I1) : sur `pull_request`, GitHub exécute le `ci.yml`, les scripts, `xtask` et `tools.lock` **de la PR**. Pour une PR de la zone `ci`, `ci-ok` ne garantit donc rien : le travail `security` l'avertit dans le résumé, et la protection repose sur la relecture des chemins sensibles et `archsec-ok`. Les sources des archives sont limitées aux publications officielles de gitleaks et de cargo-deny. **Demandé à T3** (`xtask merge`, `origin-check`) : recalculer les chemins sensibles avec le code et la liste d'`origin/main`, et **revérifier le titre** de la PR juste avant la fusion (il devient le message du squash, SEC0-16, et peut être modifié après un `ci-ok` vert, l'événement `edited` n'étant pas écouté pour ne pas tout relancer à chaque retouche du corps).
 
 **L'étiquette `ci:windows`** est lue au prochain push de la PR : l'événement `labeled` ne relance pas la CI (décidé, pour ne pas payer une exécution par étiquette).
 
@@ -82,7 +84,9 @@ Les valeurs viennent de `tools/dev/tools.lock` (clés `*.linux.*`, même version
   - `gitleaks-history` : gitleaks sur tout l'historique de toutes les branches, `--text`, avec son auto-test ;
   - `fuzz` : 60 min réparties entre les cibles de `fuzz/`. **Sauté** tant que `fuzz/` n'existe pas. Les plantages sont téléversés, gardés 7 jours.
 - **`workflow_dispatch`** (essais) lance tout, sans contrôle de changement de `main`. Aucune entrée (`inputs`).
-- **Échec** : le travail `report`, seul avec `issues: write`, sans checkout, ouvre l'*issue* `nightly-failure` ou la complète d'un commentaire. Le texte ne contient que les noms des travaux en échec et le lien de l'exécution (G9).
+- **Limite acceptée** (décidé) : « réussie » porte sur toute l'exécution. Tant qu'`advisories` échoue sur un avis RustSec, les travaux hebdomadaires repassent chaque dimanche, même sans changement de `main` (≈ 30 min de plus par semaine). L'*issue* `nightly-failure` signale déjà la cause.
+- Un push sur `main` n'analyse que l'arbre (plage `origin/main..HEAD` vide) : ses commits ont été analysés dans la PR, et le seront dans l'historique complet du dimanche.
+- **Échec ou annulation** (dépassement de délai compris) : le travail `report`, seul avec `issues: write`, sans checkout, ouvre l'*issue* `nightly-failure` ou la complète d'un commentaire. Le texte ne contient que les noms des travaux en échec et le lien de l'exécution (G9).
 
 ## 5. Dependabot
 
