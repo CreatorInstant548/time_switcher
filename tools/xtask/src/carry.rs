@@ -1,0 +1,665 @@
+//! Approval carried over a pure update from `main` (AS-40, W1 to W7). A `review-ok` or
+//! `archsec-ok` comment on an earlier SHA `A` of a PR counts for its head `H` only when every
+//! condition holds:
+//! - W1: `A` is among the PR's commits listed by GitHub, and an ancestor of `H`;
+//! - W2: the PR changes the same files at `A` and at `H` (merge base to commit, no renames), each
+//!   with the same blob id and mode;
+//! - W3: none of those files changed on `main` between the base of `A` and the base of `H`;
+//! - W4: outside those files, the tree of `H` equals the tree of `main` at its base;
+//! - W5: an `archsec-ok` is not carried over when `sensitive-paths.txt` at the base of `A` did not
+//!   make the change sensitive.
+//!
+//! `merge` and `verify-main` call this same code (W6); `verify-main` then does J4 on `A`. `ci-ok`
+//! stays required on `H` itself, by the callers (W7). Every PR fact is read on GitHub on each run
+//! and nothing is cached (V5, AS-39). The trees of `A` and `H` come from the API, because
+//! `verify-main` in CI has no PR objects (no `git fetch`); the bases are `main` commits, read from
+//! the local history.
+//! spec: carnet architecture-securite.md §10 ; §9.8 J4
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde_json::Value;
+
+use crate::github::{Repo, is_sha};
+use crate::sensitive;
+
+/// Path to (mode, object id), for blobs and submodules.
+type Tree = BTreeMap<String, (String, String)>;
+
+/// Earlier approved SHAs looked at, most recent first: bounds the GitHub reads.
+const MAX_CANDIDATES: usize = 5;
+
+/// SHAs approved by a comment whose first line is exactly `<tag>: <sha>` (I3, as
+/// [`crate::github::approved`]), most recent first, without repeats.
+pub fn approved_shas(bodies: &[String], tag: &str) -> Vec<String> {
+    let prefix = format!("{tag}: ");
+    let mut out: Vec<String> = Vec::new();
+    for b in bodies.iter().rev() {
+        let line = b.lines().next().map(str::trim_end).unwrap_or_default();
+        if let Some(sha) = line.strip_prefix(prefix.as_str()).filter(|s| is_sha(s))
+            && !out.iter().any(|s| s == sha)
+        {
+            out.push(sha.to_owned());
+        }
+    }
+    out
+}
+
+/// Paths whose entry differs between two trees.
+fn changed(a: &Tree, b: &Tree) -> BTreeSet<String> {
+    a.keys()
+        .chain(b.keys())
+        .filter(|p| a.get(*p) != b.get(*p))
+        .cloned()
+        .collect()
+}
+
+/// The PR as its caller checks it.
+pub struct Pr<'a> {
+    pub number: u64,
+    pub head: &'a str,
+    /// `main` commit the head is checked against: `origin/main` for `merge`, the parent of the
+    /// squash for `verify-main`.
+    pub main: &'a str,
+    /// Change whose sensitivity the caller found with the current list: `(from, to, paths)` (W5).
+    pub diff: (&'a str, &'a str, &'a [String]),
+}
+
+/// Head side, read once: base, tree, tree of the base, files changed by the PR.
+struct HeadSide {
+    base: String,
+    tree: Tree,
+    base_tree: Tree,
+    files: BTreeSet<String>,
+}
+
+pub struct Carry<'a> {
+    repo: &'a Repo,
+    pr: Pr<'a>,
+    commits: Option<Vec<String>>,
+    head: Option<HeadSide>,
+}
+
+impl<'a> Carry<'a> {
+    pub fn new(repo: &'a Repo, pr: Pr<'a>) -> Self {
+        Self {
+            repo,
+            pr,
+            commits: None,
+            head: None,
+        }
+    }
+
+    /// SHA whose `<tag>` comment counts for the head: the head itself, else the most recent
+    /// earlier SHA for which W1 to W5 hold. `Ok(Err(why))` names the failed condition of each
+    /// candidate; `Err` when a read failed.
+    pub fn resolve(
+        &mut self,
+        tag: &str,
+        bodies: &[String],
+    ) -> Result<Result<String, String>, String> {
+        let head = self.pr.head;
+        let shas = approved_shas(bodies, tag);
+        if shas.iter().any(|s| s == head) {
+            return Ok(Ok(head.to_owned()));
+        }
+        let mut why = Vec::new();
+        for a in shas.iter().take(MAX_CANDIDATES) {
+            match self.check(tag, a)? {
+                Ok(()) => return Ok(Ok(a.clone())),
+                Err(e) => why.push(format!("{a}: {e}")),
+            }
+        }
+        let missing = format!("comment « {tag}: {head} » absent");
+        Ok(Err(if why.is_empty() {
+            format!("{missing}, and no earlier « {tag} » to carry over (AS-40)")
+        } else {
+            format!("{missing}; not carried over (AS-40): {}", why.join("; "))
+        }))
+    }
+
+    /// W1 to W5 for the candidate `a`: `Ok(Err(condition))` on the first one that fails.
+    fn check(&mut self, tag: &str, a: &str) -> Result<Result<(), String>, String> {
+        let fail = |w: String| Ok(Err(w));
+        if self.commits.is_none() {
+            self.commits = Some(self.pr_commits()?);
+        }
+        if !self.commits.iter().flatten().any(|c| c == a) {
+            return fail("W1: not among the PR's commits listed by GitHub".to_owned());
+        }
+        if self.merge_base(a, self.pr.head)? != a {
+            return fail("W1: not an ancestor of the head".to_owned());
+        }
+        if self.head.is_none() {
+            let base = self.merge_base(self.pr.main, self.pr.head)?;
+            let (tree, base_tree) = (self.api_tree(self.pr.head)?, self.local_tree(&base)?);
+            let files = changed(&base_tree, &tree);
+            self.head = Some(HeadSide {
+                base,
+                tree,
+                base_tree,
+                files,
+            });
+        }
+        let base = self.merge_base(self.pr.main, a)?;
+        let (tree, base_tree) = (self.api_tree(a)?, self.local_tree(&base)?);
+        let files = changed(&base_tree, &tree);
+        let Some(h) = &self.head else {
+            return Err("head side not read".to_owned());
+        };
+        let main = &self.repo.main;
+        if !self.repo.ok(
+            main,
+            "git",
+            &["merge-base", "--is-ancestor", &base, &h.base],
+        )? {
+            return fail(format!(
+                "W3: its base {base} is not an ancestor of the head's base {} on main",
+                h.base
+            ));
+        }
+        // `h.files` is every path where the head differs from its base: W4 is `h.files ⊆ files`.
+        if let Some(p) = h.files.difference(&files).next() {
+            return fail(format!(
+                "W2, W4: {p} differs between the head and main at its base, but is not changed at \
+                 {a} (file added to the PR, or changed outside its files)"
+            ));
+        }
+        if let Some(p) = files.difference(&h.files).next() {
+            return fail(format!(
+                "W2: {p} is changed at {a} but no longer at the head (file removed from the PR)"
+            ));
+        }
+        if let Some(p) = files.iter().find(|f| tree.get(*f) != h.tree.get(*f)) {
+            return fail(format!(
+                "W2: {p} has another blob or mode at the head than at {a} (conflict resolution?)"
+            ));
+        }
+        if let Some(p) = files
+            .iter()
+            .find(|f| base_tree.get(*f) != h.base_tree.get(*f))
+        {
+            return fail(format!(
+                "W3: {p} changed on main between {base} and the head's base {}",
+                h.base
+            ));
+        }
+        if tag == "archsec-ok" && !self.sensitive_under(&base)? {
+            return fail(format!(
+                "W5: {} at {base} did not make the PR sensitive: a fresh archsec-ok is required",
+                sensitive::LIST
+            ));
+        }
+        Ok(Ok(()))
+    }
+
+    /// W5: the caller's change is sensitive under the list of `base`. A missing or unreadable
+    /// list counts as « not sensitive », which requires a fresh `archsec-ok`.
+    fn sensitive_under(&self, base: &str) -> Result<bool, String> {
+        let text = self.repo.blob(&self.repo.main, base, sensitive::LIST)?;
+        let rules = text
+            .and_then(|t| String::from_utf8(t).ok())
+            .and_then(|t| sensitive::Rules::parse(&t).ok());
+        let Some(rules) = rules else {
+            return Ok(false);
+        };
+        let (from, to, paths) = self.pr.diff;
+        Ok(!sensitive::hits(self.repo, &rules, from, to, paths)?.is_empty())
+    }
+
+    /// Commits of the PR, as GitHub lists them (W1; at most 250).
+    fn pr_commits(&self) -> Result<Vec<String>, String> {
+        let (s, n) = (&self.repo.slug, self.pr.number);
+        let list = self
+            .repo
+            .api_all(&format!("repos/{s}/pulls/{n}/commits?per_page=100"))?;
+        list.iter()
+            .map(|c| {
+                c["sha"]
+                    .as_str()
+                    .filter(|s| is_sha(s))
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("unreadable commit in the list of PR #{n}"))
+            })
+            .collect()
+    }
+
+    /// Merge base of `a` and `b`, by the GitHub compare API.
+    fn merge_base(&self, a: &str, b: &str) -> Result<String, String> {
+        let s = &self.repo.slug;
+        let c = self
+            .repo
+            .api(&format!("repos/{s}/compare/{a}...{b}?per_page=1"))?;
+        c["merge_base_commit"]["sha"]
+            .as_str()
+            .filter(|s| is_sha(s))
+            .map(str::to_owned)
+            .ok_or_else(|| format!("unreadable merge base of {a} and {b}"))
+    }
+
+    /// Tree of a PR commit, by the API; a truncated answer is an error.
+    fn api_tree(&self, sha: &str) -> Result<Tree, String> {
+        let s = &self.repo.slug;
+        let v = self
+            .repo
+            .api(&format!("repos/{s}/git/trees/{sha}?recursive=1"))?;
+        if v["truncated"] != Value::Bool(false) {
+            return Err(format!("tree of {sha} truncated or unreadable"));
+        }
+        let mut tree = Tree::new();
+        for e in v["tree"].as_array().ok_or("tree without entries")? {
+            let field = |k: &str| {
+                e[k].as_str()
+                    .ok_or_else(|| format!("tree entry without {k}"))
+            };
+            if matches!(field("type")?, "blob" | "commit") {
+                let entry = (field("mode")?.to_owned(), field("sha")?.to_owned());
+                tree.insert(field("path")?.to_owned(), entry);
+            }
+        }
+        Ok(tree)
+    }
+
+    /// Tree of a `main` commit, from the local history.
+    fn local_tree(&self, sha: &str) -> Result<Tree, String> {
+        let ls = self
+            .repo
+            .git(&["ls-tree", "-r", "-z", "--full-tree", sha])?;
+        let mut tree = Tree::new();
+        for entry in ls.split('\0').filter(|e| !e.is_empty()) {
+            let parsed = entry.split_once('\t').and_then(|(meta, path)| {
+                match meta.split(' ').collect::<Vec<_>>()[..] {
+                    [mode, _, oid] => Some((path, mode, oid)),
+                    _ => None,
+                }
+            });
+            let (path, mode, oid) = parsed.ok_or("unreadable git ls-tree output")?;
+            tree.insert(path.to_owned(), (mode.to_owned(), oid.to_owned()));
+        }
+        Ok(tree)
+    }
+}
+
+/// Small local Git repositories for the tests, behind a fake `gh` whose trees and merge bases are
+/// computed from them, as GitHub would.
+#[cfg(test)]
+pub mod lab {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::rc::Rc;
+
+    use serde_json::json;
+
+    use crate::github::{Output, Repo, Run};
+
+    /// Identity and settings of the throwaway repositories, whatever the user's configuration.
+    const CONFIG: [&str; 10] = [
+        "-c",
+        "user.name=lab",
+        "-c",
+        "user.email=lab@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "init.defaultBranch=main",
+    ];
+
+    fn git_in(dir: &Path, args: &[&str]) -> Output {
+        let mut cmd = Command::new("git");
+        cmd.args(CONFIG).args(args).current_dir(dir);
+        for v in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+        ] {
+            cmd.env_remove(v);
+        }
+        let out = cmd.output().expect("git");
+        (
+            out.status.code(),
+            out.stdout,
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    pub struct Lab {
+        pub dir: PathBuf,
+    }
+
+    impl Drop for Lab {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir); // this test's throwaway repository only
+        }
+    }
+
+    impl Lab {
+        pub fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("xtask-lab-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir); // leftover of this test only
+            std::fs::create_dir_all(&dir).unwrap();
+            let lab = Self { dir };
+            lab.git(&["init", "-q"]);
+            lab
+        }
+
+        /// Runs git, which must succeed; trimmed output.
+        pub fn git(&self, args: &[&str]) -> String {
+            let (code, out, err) = git_in(&self.dir, args);
+            assert_eq!(code, Some(0), "git {args:?}: {err}");
+            String::from_utf8(out).unwrap().trim().to_owned()
+        }
+
+        /// Writes (`Some`) or removes (`None`) files, then commits them all; the new SHA.
+        pub fn commit(&self, files: &[(&str, Option<&str>)]) -> String {
+            for (path, text) in files {
+                let p = self.dir.join(path);
+                match text {
+                    Some(t) => {
+                        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                        crate::sys::write(&p, t.as_bytes()).unwrap();
+                    }
+                    None => std::fs::remove_file(&p).unwrap(),
+                }
+            }
+            self.git(&["add", "-A"]);
+            self.git(&["commit", "-q", "--allow-empty", "-m", "x"]);
+            self.git(&["rev-parse", "HEAD"])
+        }
+
+        /// A repository whose `git` is this one and whose `gh` is [`Hub`] with `answers`.
+        pub fn repo(&self, answers: Vec<(String, String)>) -> (Repo, Rc<RefCell<Vec<String>>>) {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let repo = Repo {
+                main: self.dir.clone(),
+                here: self.dir.clone(),
+                slug: "o/r".to_owned(),
+                dry_run: true,
+                ci: false,
+                cache: self.dir.join(".cache"),
+                home: None,
+                runner: Box::new(Hub {
+                    answers,
+                    calls: Rc::clone(&calls),
+                }),
+            };
+            (repo, calls)
+        }
+    }
+
+    /// `git` runs for real in the lab; `gh api` trees and compare are computed from it; any other
+    /// `gh` call takes the answer of the longest matching prefix. Every call is noted.
+    pub struct Hub {
+        answers: Vec<(String, String)>,
+        calls: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl Run for Hub {
+        fn run(&self, dir: &Path, prog: &str, args: &[&str]) -> Result<Output, String> {
+            let line = format!("{prog} {}", args.join(" "));
+            self.calls.borrow_mut().push(line.clone());
+            if prog == "git" {
+                return Ok(git_in(dir, args));
+            }
+            let text = |a: &[&str]| String::from_utf8(git_in(dir, a).1).unwrap();
+            let ok =
+                |v: serde_json::Value| Ok((Some(0), v.to_string().into_bytes(), String::new()));
+            if let Some(rest) = line.strip_prefix("gh api repos/o/r/git/trees/") {
+                let sha = rest.split('?').next().unwrap_or_default();
+                let ls = text(&["ls-tree", "-r", "-t", "-z", "--full-tree", sha]);
+                let tree: Vec<_> = ls
+                    .split('\0')
+                    .filter(|e| !e.is_empty())
+                    .map(|e| {
+                        let (meta, path) = e.split_once('\t').unwrap();
+                        let m: Vec<&str> = meta.split(' ').collect();
+                        json!({"path": path, "mode": m[0], "type": m[1], "sha": m[2]})
+                    })
+                    .collect();
+                return ok(json!({"sha": sha, "truncated": false, "tree": tree}));
+            }
+            if let Some(rest) = line.strip_prefix("gh api repos/o/r/compare/") {
+                let spec = rest.split('?').next().unwrap_or_default();
+                let (a, b) = spec.split_once("...").unwrap();
+                let base = text(&["merge-base", a, b]);
+                return ok(json!({"merge_base_commit": {"sha": base.trim()}}));
+            }
+            let best = self
+                .answers
+                .iter()
+                .filter(|(k, _)| line.starts_with(k.as_str()))
+                .max_by_key(|(k, _)| k.len());
+            match best {
+                Some((_, out)) => Ok((Some(0), out.clone().into_bytes(), String::new())),
+                None => Err(format!("unexpected command: {line}")),
+            }
+        }
+    }
+
+    pub const PR_FILE: &str = "tools/xtask/a.rs";
+
+    /// `c0` on main; `a` on the PR changes [`PR_FILE`]; `m1` on main changes `docs/x.md`; `h`
+    /// merges `m1` into the PR: the nominal pure update from `main`.
+    pub struct Case {
+        pub lab: Lab,
+        pub c0: String,
+        pub a: String,
+        pub m1: String,
+        pub h: String,
+    }
+
+    pub fn case(name: &str) -> Case {
+        let lab = Lab::new(name);
+        let c0 = lab.commit(&[
+            ("tools/ci/sensitive-paths.txt", Some("tools/xtask/\n")),
+            (PR_FILE, Some("a0\n")),
+            ("docs/x.md", Some("x0\n")),
+            ("other.md", Some("o0\n")),
+        ]);
+        lab.git(&["checkout", "-q", "-b", "pr"]);
+        let a = lab.commit(&[(PR_FILE, Some("a1\n"))]);
+        lab.git(&["checkout", "-q", "main"]);
+        let m1 = lab.commit(&[("docs/x.md", Some("x1\n"))]);
+        lab.git(&["checkout", "-q", "pr"]);
+        lab.git(&["merge", "-q", "--no-edit", &m1]);
+        let h = lab.git(&["rev-parse", "HEAD"]);
+        Case { lab, c0, a, m1, h }
+    }
+
+    /// Answer of `pulls/7/commits`.
+    pub fn commits(list: &[&str]) -> Vec<(String, String)> {
+        let list: Vec<_> = list.iter().map(|s| json!({"sha": s})).collect();
+        vec![(
+            "gh api --paginate repos/o/r/pulls/7/commits".to_owned(),
+            json!(list).to_string(),
+        )]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lab::{Case, Lab, PR_FILE, case, commits};
+    use super::*;
+
+    /// `resolve` of `tag` for the head `h`, checked against `main` = `m1`, with one comment
+    /// approving `approved` and the PR commits `list`.
+    fn resolve(
+        c: &Case,
+        h: &str,
+        list: &[&str],
+        tag: &str,
+        approved: &str,
+    ) -> Result<String, String> {
+        let (repo, _) = c.lab.repo(commits(list));
+        let files = c
+            .lab
+            .git(&["diff", "--name-only", "--no-renames", &c.m1, h]);
+        let files: Vec<String> = files.lines().map(str::to_owned).collect();
+        let pr = Pr {
+            number: 7,
+            head: h,
+            main: &c.m1,
+            diff: (&c.m1, h, &files),
+        };
+        let bodies = [format!("{tag}: {approved}\nok")];
+        Carry::new(&repo, pr).resolve(tag, &bodies).unwrap()
+    }
+
+    /// Nominal: a merge of `main` that touches nothing of the PR carries both approvals over; an
+    /// approval on the head itself reads nothing on GitHub.
+    #[test]
+    fn nominal_update_from_main_carries_over() {
+        let c = case("nominal");
+        for tag in ["review-ok", "archsec-ok"] {
+            assert_eq!(resolve(&c, &c.h, &[&c.a, &c.h], tag, &c.a), Ok(c.a.clone()));
+        }
+        let (repo, calls) = c.lab.repo(Vec::new());
+        let pr = Pr {
+            number: 7,
+            head: &c.h,
+            main: &c.m1,
+            diff: (&c.m1, &c.h, &[]),
+        };
+        let bodies = [format!("review-ok: {}", c.a), format!("review-ok: {}", c.h)];
+        let mut carry = Carry::new(&repo, pr);
+        assert_eq!(carry.resolve("review-ok", &bodies), Ok(Ok(c.h.clone())));
+        assert!(calls.borrow().is_empty(), "{:?}", calls.borrow());
+        let e = carry.resolve("archsec-ok", &bodies).unwrap().unwrap_err();
+        assert!(e.contains("no earlier"), "{e}");
+    }
+
+    /// W1: `A` missing from the PR's commits on GitHub, or not an ancestor of the head.
+    #[test]
+    fn w1_same_pr() {
+        let c = case("w1");
+        let e = resolve(&c, &c.h, &[&c.h], "review-ok", &c.a).unwrap_err();
+        assert!(e.contains("W1: not among"), "{e}");
+        // Same change as `a`, on another branch: listed, but not an ancestor.
+        c.lab.git(&["checkout", "-q", "-b", "other", &c.c0]);
+        let twin = c
+            .lab
+            .commit(&[(PR_FILE, Some("a1\n")), ("twin", Some("t\n"))]);
+        let e = resolve(&c, &c.h, &[&c.a, &twin, &c.h], "review-ok", &twin).unwrap_err();
+        assert!(e.contains("W1: not an ancestor"), "{e}");
+    }
+
+    /// W2: a conflict resolution, or any edit, in a PR file during the merge changes its blob.
+    #[test]
+    fn w2_conflict_resolution_in_a_pr_file() {
+        let c = case("w2-blob");
+        c.lab.git(&["checkout", "-q", "-b", "resolved", &c.a]);
+        c.lab.git(&["merge", "-q", "--no-commit", &c.m1]);
+        let h = c.lab.commit(&[(PR_FILE, Some("a1 resolved\n"))]);
+        let e = resolve(&c, &h, &[&c.a, &h], "review-ok", &c.a).unwrap_err();
+        assert!(
+            e.contains(&format!("W2: {PR_FILE} has another blob")),
+            "{e}"
+        );
+    }
+
+    /// W2: a file added to the PR after `A`, or a PR file brought back to `main`'s version.
+    #[test]
+    fn w2_file_added_or_removed() {
+        let c = case("w2-set");
+        let added = c.lab.commit(&[("tools/xtask/b.rs", Some("b\n"))]);
+        let e = resolve(&c, &added, &[&c.a, &c.h, &added], "review-ok", &c.a).unwrap_err();
+        assert!(e.contains("W2, W4: tools/xtask/b.rs"), "{e}");
+        // `a2` changes two files; then the PR gives one of them up.
+        c.lab.git(&["checkout", "-q", "-b", "two", &c.a]);
+        let a2 = c.lab.commit(&[("docs/y.md", Some("y\n"))]);
+        c.lab.git(&["merge", "-q", "--no-edit", &c.m1]);
+        let removed = c.lab.commit(&[("docs/y.md", None)]);
+        let list: [&str; 3] = [&c.a, &a2, &removed];
+        let e = resolve(&c, &removed, &list, "review-ok", &a2).unwrap_err();
+        assert!(e.contains("W2: docs/y.md is changed at"), "{e}");
+    }
+
+    /// W3: `main` changed a PR file, and the merge kept the PR's version: same blob, but `main`'s
+    /// change is silently dropped.
+    #[test]
+    fn w3_pr_file_changed_on_main() {
+        let c = case("w3");
+        c.lab.git(&["checkout", "-q", "main"]);
+        let m2 = c.lab.commit(&[(PR_FILE, Some("a2\n"))]);
+        c.lab.git(&["checkout", "-q", "pr"]);
+        c.lab.git(&["merge", "-q", "--no-edit", "-X", "ours", &m2]);
+        let h = c.lab.git(&["rev-parse", "HEAD"]);
+        let (repo, _) = c.lab.repo(commits(&[&c.a, &c.h, &h]));
+        let files = [PR_FILE.to_owned()];
+        let pr = Pr {
+            number: 7,
+            head: &h,
+            main: &m2,
+            diff: (&m2, &h, &files),
+        };
+        let bodies = [format!("review-ok: {}", c.a)];
+        let e = Carry::new(&repo, pr).resolve("review-ok", &bodies).unwrap();
+        let e = e.unwrap_err();
+        assert!(e.contains(&format!("W3: {PR_FILE} changed on main")), "{e}");
+    }
+
+    /// W4: after the merge, a file outside the PR differs from `main` at the head's base.
+    #[test]
+    fn w4_file_outside_the_pr_differs() {
+        let c = case("w4");
+        let h = c.lab.commit(&[("other.md", Some("hidden\n"))]);
+        let e = resolve(&c, &h, &[&c.a, &c.h, &h], "review-ok", &c.a).unwrap_err();
+        assert!(e.contains("W2, W4: other.md differs"), "{e}");
+    }
+
+    /// W5: `main` makes the PR sensitive after `A`: `review-ok` is carried over, `archsec-ok` is
+    /// not.
+    #[test]
+    fn w5_sensitive_list_change_needs_a_fresh_archsec_ok() {
+        let lab = Lab::new("w5");
+        let list = "tools/ci/sensitive-paths.txt";
+        lab.commit(&[
+            (list, Some("tools/xtask/\n")),
+            ("secret/s.md", Some("s0\n")),
+        ]);
+        lab.git(&["checkout", "-q", "-b", "pr"]);
+        let a = lab.commit(&[("secret/s.md", Some("s1\n"))]);
+        lab.git(&["checkout", "-q", "main"]);
+        let m1 = lab.commit(&[(list, Some("tools/xtask/\nsecret/\n"))]);
+        lab.git(&["checkout", "-q", "pr"]);
+        lab.git(&["merge", "-q", "--no-edit", &m1]);
+        let h = lab.git(&["rev-parse", "HEAD"]);
+        let files = ["secret/s.md".to_owned()];
+        for (tag, carried) in [("review-ok", true), ("archsec-ok", false)] {
+            let (repo, _) = lab.repo(commits(&[&a, &h]));
+            let pr = Pr {
+                number: 7,
+                head: &h,
+                main: &m1,
+                diff: (&m1, &h, &files),
+            };
+            let bodies = [format!("{tag}: {a}")];
+            let r = Carry::new(&repo, pr).resolve(tag, &bodies).unwrap();
+            if carried {
+                assert_eq!(r, Ok(a.clone()));
+            } else {
+                let e = r.unwrap_err();
+                assert!(e.contains("W5:"), "{e}");
+            }
+        }
+    }
+
+    /// Most recent approval first; a repeated SHA is looked at once; a quoted line does not count.
+    #[test]
+    fn candidates_most_recent_first() {
+        let (a, b) = ("a".repeat(40), "b".repeat(40));
+        let bodies = [
+            format!("review-ok: {a}"),
+            format!("review-ok: {b}  "),
+            format!("review-ok: {a}"),
+            format!("Not yet.\nreview-ok: {}", "c".repeat(40)),
+            format!("archsec-ok: {}", "d".repeat(40)),
+            "review-ok: HEAD".to_owned(),
+        ];
+        assert_eq!(approved_shas(&bodies, "review-ok"), [a, b]);
+        assert!(approved_shas(&bodies[..1], "archsec-ok").is_empty());
+    }
+}

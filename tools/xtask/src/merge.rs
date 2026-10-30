@@ -15,7 +15,8 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
-use crate::github::{Repo, approved, is_sha, same_path};
+use crate::carry::{Carry, Pr};
+use crate::github::{Repo, is_sha, same_path};
 use crate::{build_inputs, hooks, sensitive, verify_main, workflows};
 
 use crate::BUILT_FROM;
@@ -461,20 +462,39 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
         "workflows de la tête rejoués avec le code de main (J1) ; actions épinglées (J8)",
     );
     workflows_at(repo, &sha)?;
-    step("10", "approbations sur le SHA de tête (chemin sensible)");
+    step(
+        "10",
+        "approbations sur le SHA de tête, ou reportées d'un SHA antérieur (chemin sensible, AS-40)",
+    );
     if hits.is_empty() {
         println!("  sans objet");
     } else {
         let bodies = repo.comments(pr)?;
+        let main_sha = repo.git(&["rev-parse", "origin/main"])?;
+        let mut carry = Carry::new(
+            repo,
+            Pr {
+                number: pr,
+                head: &sha,
+                main: &main_sha,
+                diff: (&base, &sha, &paths),
+            },
+        );
         for tag in ["review-ok", "archsec-ok"] {
-            if !approved(&bodies, tag, &sha) {
-                return Err(refuse(
-                    format!("chemin sensible : commentaire « {tag}: {sha} » absent"),
-                    "relecture neuve puis avis d'archi-sécu sur ce SHA",
-                ));
+            // W6: the same function as verify-main; W7: ci-ok was checked on the head (step 5).
+            match carry.resolve(tag, &bodies)? {
+                Ok(from) if from == sha => println!("  {tag}: {sha}"),
+                Ok(from) => println!(
+                    "  {tag} carried over from {from} to the head {sha} (AS-40, W1 to W5 hold)"
+                ),
+                Err(why) => {
+                    return Err(refuse(
+                        format!("sensitive path: {why}"),
+                        "fresh review, then the architecture lead's approval on this SHA",
+                    ));
+                }
             }
         }
-        println!("  review-ok et archsec-ok sur {sha}");
     }
     step("11", "fusion");
     if let Some(why) = suspended {
@@ -697,8 +717,22 @@ mod tests {
     /// Plays `merge` on recorded answers for a sensitive-free PR #7 whose every check passes,
     /// `hooks verify` included (temporary cache with the pinned set, fake gitleaks, empty home).
     fn scenario(dry_run: bool, j2_check: J2Check) -> (Result<bool, String>, Vec<String>) {
-        let base =
-            std::env::temp_dir().join(format!("xtask-merge-test-{}-{dry_run}", std::process::id()));
+        scenario_with(dry_run, j2_check, Vec::new())
+    }
+
+    /// [`scenario`], where `extra` answers replace those of the same prefix.
+    fn scenario_with(
+        dry_run: bool,
+        j2_check: J2Check,
+        extra: Vec<(String, String)>,
+    ) -> (Result<bool, String>, Vec<String>) {
+        // One folder per call: tests run in parallel.
+        static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let run = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!(
+            "xtask-merge-test-{}-{dry_run}-{run}",
+            std::process::id()
+        ));
         let (main, cache, home) = (base.join("main"), base.join("cache"), base.join("home"));
         for d in [&main, &home] {
             std::fs::create_dir_all(d).unwrap();
@@ -784,6 +818,7 @@ mod tests {
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
+        .chain(extra) // `max_by_key` keeps the last of equal prefixes
         .collect();
         let calls = Rc::new(RefCell::new(Vec::new()));
         let repo = Repo {
@@ -862,6 +897,32 @@ mod tests {
         };
         assert!(run_with(&repo, 7, |_| Ok(())).is_err());
         assert!(calls.borrow().is_empty());
+    }
+
+    /// AS-40 W7: approvals on an earlier SHA never stand in for `ci-ok` on the head: without it,
+    /// merge refuses before reading any approval.
+    #[test]
+    fn carried_approvals_need_ci_ok_on_head() {
+        let comments = json!([{"body": format!("review-ok: {MAIN}")},
+                              {"body": format!("archsec-ok: {MAIN}")}]);
+        let extra = vec![
+            (
+                "gh api --paginate repos/o/r/commits/".to_owned(),
+                json!({"check_runs": []}).to_string(),
+            ),
+            (
+                "gh api --paginate repos/o/r/issues/7/comments".to_owned(),
+                comments.to_string(),
+            ),
+        ];
+        let (result, calls) = scenario_with(false, |_| Ok(()), extra);
+        let e = result.unwrap_err();
+        assert!(e.contains(&format!("ci-ok absent sur {SHA}")), "{e}");
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.contains("/comments") || c.starts_with("gh pr merge"))
+        );
     }
 
     /// Witness: the same scenario without `--dry-run` (J2 replaced) merges the checked head.
