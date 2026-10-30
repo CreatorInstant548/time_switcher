@@ -52,7 +52,8 @@ flat_schema! {
     /// after.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct PartEntry {
-        /// Identifier in `[a-z0-9._/-]`, never a file path.
+        /// Identifier: `/`-separated segments of `[a-z0-9._-]`, none empty or starting with
+        /// `.`; never a file path.
         pub name: String,
         /// Storage of the part.
         pub codec: Codec,
@@ -98,8 +99,15 @@ pub(crate) fn check_name(name: &str, limits: &Limits) -> Result<(), DecodeError>
         len64(name.len()),
         u64::from(limits.max_name_len),
     )?;
-    let allowed = |b: &u8| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'/' | b'-');
-    if name.is_empty() || !name.as_bytes().iter().all(allowed) {
+    // Segments separated by `/`, each non-empty, in `[a-z0-9._-]`, not starting with `.`: no
+    // empty segment, no `.` or `..`, no leading or trailing `/`, so never a path.
+    let segment = |s: &str| {
+        !s.is_empty()
+            && !s.starts_with('.')
+            && s.bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+    };
+    if !name.split('/').all(segment) {
         return Err(DecodeError::InvalidName);
     }
     Ok(())

@@ -5,21 +5,22 @@ use ts_kernel::{RulesFingerprint, SimTime};
 
 use crate::codec::{Parts, decode_parts, encode_parts};
 use crate::error::DecodeError;
-use crate::kernel::{SnapshotImage, decode_snapshot};
+use crate::kernel::{SnapshotImage, image_from_parts};
 use crate::limits::Limits;
 use crate::manifest::Codec;
 
 // spec: carnet architecture-securite.md SEC0-24 (révisé)
 /// Runs every decoder on `data` with [`Limits::fuzzing`]: the envelope and manifest, the
-/// parts, and the kernel snapshot. It must never panic, whatever `data` is.
+/// parts, then the kernel snapshot on those parts (as `decode_snapshot` does, without
+/// decoding the parts twice). It must never panic, whatever `data` is.
 ///
 /// # Errors
 ///
-/// The error of the parts decoder, if any; the snapshot decoder runs either way.
+/// The error of the parts decoder, if any.
 pub fn decode(data: &[u8]) -> Result<Parts, DecodeError> {
-    let limits = Limits::fuzzing();
-    let _ = decode_snapshot(data, &limits);
-    decode_parts(data, &limits)
+    let parts = decode_parts(data, &Limits::fuzzing())?;
+    let _ = image_from_parts(parts.clone());
+    Ok(parts)
 }
 
 // spec: carnet architecture-securite.md SEC0-24 (révisé)

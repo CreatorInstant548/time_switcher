@@ -52,7 +52,8 @@ pub enum DecodeError {
     Malformed(&'static str),
     /// Bytes are left after a structure that must end the input.
     TrailingBytes(&'static str),
-    /// A part name is empty or uses a byte outside `[a-z0-9._/-]`.
+    /// A part name is not `/`-separated segments of `[a-z0-9._-]`, each non-empty and not
+    /// starting with `.`.
     InvalidName,
     /// Part names are not strictly increasing (unsorted or duplicated).
     UnsortedNames,

@@ -6,8 +6,8 @@ mod common;
 
 use common::{PART_CONTEXT, digest, forge, forge_raw, stored};
 use ts_persist::{
-    Bound, Codec, DecodeError, FORMAT_VERSION, HEADER_LEN, Limits, MAX_SCHEMA_DEPTH, Manifest,
-    PartEntry, Schema, decode_parts, encode_parts, open,
+    Bound, Codec, DecodeError, EncodeError, FORMAT_VERSION, HEADER_LEN, Limits, MAX_SCHEMA_DEPTH,
+    Manifest, PartEntry, Schema, decode_parts, encode_parts, open,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -204,17 +204,18 @@ fn every_bound_exceeded_by_one() {
     for (at, over, bound) in cases {
         decode_parts(&env, &at).unwrap();
         too_large(decode_parts(&env, &over), bound);
-        // The encoder refuses what the decoder would refuse (the window is a decoder bound).
-        if bound != Bound::Window {
-            let parts: [(&str, &[u8]); 3] = [
-                ("pop.solo/0002", &[9; 700]),
-                ("map.public", b"streets"),
-                ("a", b""),
-            ];
-            assert!(
-                encode_parts(&parts, Codec::Zstd, &over).is_err(),
-                "{bound:?}"
-            );
+        // The encoder refuses what the decoder would refuse, and accepts the rest.
+        let parts: [(&str, &[u8]); 3] = [
+            ("pop.solo/0002", &[9; 700]),
+            ("map.public", b"streets"),
+            ("a", b""),
+        ];
+        assert_eq!(encode_parts(&parts, Codec::Zstd, &at).unwrap(), env);
+        match encode_parts(&parts, Codec::Zstd, &over) {
+            Err(EncodeError::Invalid(DecodeError::TooLarge { bound: b, .. })) => {
+                assert_eq!(b, bound)
+            }
+            other => panic!("{bound:?}: {other:?}"),
         }
     }
 }
@@ -306,7 +307,9 @@ fn forged_manifests_are_refused() {
         Err(DecodeError::UnsortedNames)
     );
     // Invalid names.
-    for name in ["", "A", "a b", "é", "a\\b"] {
+    for name in [
+        "", "A", "a b", "é", "a\\b", ".", "..", "../x", "a/../b", "/a", "a/", "a//b", ".hidden",
+    ] {
         let mut e = a.clone();
         e.name = name.to_owned();
         assert_eq!(

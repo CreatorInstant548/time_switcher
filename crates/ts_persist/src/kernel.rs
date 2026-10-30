@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use ts_kernel::{MemorySnapshot, RulesFingerprint, SimTime};
 
-use crate::codec::{decode_parts, encode_parts};
+use crate::codec::{Parts, decode_parts, encode_parts};
 use crate::error::{DecodeError, EncodeError};
 use crate::limits::Limits;
 use crate::manifest::Codec;
@@ -109,7 +109,12 @@ pub fn encode_snapshot(
 /// Any [`DecodeError`] of [`decode_parts`], a missing or unexpected part, or malformed
 /// metadata.
 pub fn decode_snapshot(bytes: &[u8], limits: &Limits) -> Result<SnapshotImage, DecodeError> {
-    let [meta, state] = decode_parts(bytes, limits)?.into_exact([META_PART, STATE_PART])?;
+    image_from_parts(decode_parts(bytes, limits)?)
+}
+
+/// Kernel snapshot from checked parts: exactly the two kernel parts, then the metadata.
+pub(crate) fn image_from_parts(parts: Parts) -> Result<SnapshotImage, DecodeError> {
+    let [meta, state] = parts.into_exact([META_PART, STATE_PART])?;
     let (meta, rest) = postcard::take_from_bytes::<Meta>(&meta)
         .map_err(|_| DecodeError::Malformed("snapshot meta"))?;
     if !rest.is_empty() {
