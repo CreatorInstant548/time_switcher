@@ -11,7 +11,7 @@
 //!
 //! `merge` and `verify-main` call this same code (W6); `verify-main` then does J4 on `A`. `ci-ok`
 //! stays required on `H` itself, by the callers (W7). Every PR fact is read on GitHub on each run
-//! and nothing is cached (V5, AS-39). The trees of `A` and `H` come from the API, because
+//! and nothing goes to the `verify-main` cache (V5, AS-39). The trees of `A` and `H` come from the API, because
 //! `verify-main` in CI has no PR objects (no `git fetch`); the bases are `main` commits, read from
 //! the local history.
 //! spec: carnet architecture-securite.md §10 ; §9.8 J4
@@ -20,30 +20,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::github::{Repo, is_sha};
+use crate::github::{Repo, approved_shas, is_sha};
 use crate::sensitive;
 
 /// Path to (mode, object id), for blobs and submodules.
 type Tree = BTreeMap<String, (String, String)>;
 
-/// Earlier approved SHAs looked at, most recent first: bounds the GitHub reads.
+/// Earlier approved SHAs of the PR looked at, most recent first: bounds the GitHub reads.
 const MAX_CANDIDATES: usize = 5;
-
-/// SHAs approved by a comment whose first line is exactly `<tag>: <sha>` (I3, as
-/// [`crate::github::approved`]), most recent first, without repeats.
-pub fn approved_shas(bodies: &[String], tag: &str) -> Vec<String> {
-    let prefix = format!("{tag}: ");
-    let mut out: Vec<String> = Vec::new();
-    for b in bodies.iter().rev() {
-        let line = b.lines().next().map(str::trim_end).unwrap_or_default();
-        if let Some(sha) = line.strip_prefix(prefix.as_str()).filter(|s| is_sha(s))
-            && !out.iter().any(|s| s == sha)
-        {
-            out.push(sha.to_owned());
-        }
-    }
-    out
-}
 
 /// Paths whose entry differs between two trees.
 fn changed(a: &Tree, b: &Tree) -> BTreeSet<String> {
@@ -78,6 +62,8 @@ pub struct Carry<'a> {
     pr: Pr<'a>,
     commits: Option<Vec<String>>,
     head: Option<HeadSide>,
+    /// W1 to W4 per candidate, which do not depend on the tag: `Ok(base of A)` or the failure.
+    seen: BTreeMap<String, Result<String, String>>,
 }
 
 impl<'a> Carry<'a> {
@@ -87,46 +73,84 @@ impl<'a> Carry<'a> {
             pr,
             commits: None,
             head: None,
+            seen: BTreeMap::new(),
         }
     }
 
-    /// SHA whose `<tag>` comment counts for the head: the head itself, else the most recent
-    /// earlier SHA for which W1 to W5 hold. `Ok(Err(why))` names the failed condition of each
-    /// candidate; `Err` when a read failed.
+    /// SHA whose `<tag>` comment counts for the head: the head itself, else an earlier SHA of
+    /// the PR for which W1 to W5 hold. Candidates go most recent first, those that satisfy
+    /// `prefer` before the others (J4 for `verify-main`). `Ok(Err(why))` names the failed
+    /// condition of each candidate; a read that fails for one candidate fails that candidate
+    /// only. `Err` when the PR's commit list cannot be read.
     pub fn resolve(
         &mut self,
         tag: &str,
         bodies: &[String],
+        prefer: &dyn Fn(&str) -> bool,
     ) -> Result<Result<String, String>, String> {
         let head = self.pr.head;
+        let missing = format!("comment « {tag}: {head} » absent");
         let shas = approved_shas(bodies, tag);
         if shas.iter().any(|s| s == head) {
             return Ok(Ok(head.to_owned()));
         }
-        let mut why = Vec::new();
-        for a in shas.iter().take(MAX_CANDIDATES) {
-            match self.check(tag, a)? {
+        if shas.is_empty() {
+            return Ok(Err(format!(
+                "{missing}, and no earlier « {tag} » to carry over (AS-40)"
+            )));
+        }
+        // W1, first half, before the bound: an approval of a SHA foreign to the PR costs nothing.
+        if self.commits.is_none() {
+            self.commits = Some(self.pr_commits()?);
+        }
+        let commits = self.commits.as_deref().unwrap_or_default();
+        let (mut listed, foreign): (Vec<String>, Vec<String>) =
+            shas.into_iter().partition(|s| commits.contains(s));
+        let mut why: Vec<String> = foreign
+            .iter()
+            .map(|a| format!("{a}: W1: not among the PR's commits listed by GitHub"))
+            .collect();
+        listed.truncate(MAX_CANDIDATES);
+        listed.sort_by_key(|a| !prefer(a)); // stable: recency kept within each group
+        for a in &listed {
+            let pure = match self.seen.get(a) {
+                Some(r) => r.clone(),
+                None => {
+                    let r = self.pure_update(a).unwrap_or_else(|e| {
+                        Err(format!("unreadable on GitHub, not carried over ({e})"))
+                    });
+                    self.seen.insert(a.clone(), r.clone());
+                    r
+                }
+            };
+            let r = match pure {
+                Ok(base) if tag == "archsec-ok" => match self.sensitive_under(&base) {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err(format!(
+                        "W5: {} at {base} did not make the PR sensitive: a fresh archsec-ok is \
+                         required",
+                        sensitive::LIST
+                    )),
+                    Err(e) => Err(format!("W5 unreadable, not carried over ({e})")),
+                },
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
+            };
+            match r {
                 Ok(()) => return Ok(Ok(a.clone())),
                 Err(e) => why.push(format!("{a}: {e}")),
             }
         }
-        let missing = format!("comment « {tag}: {head} » absent");
-        Ok(Err(if why.is_empty() {
-            format!("{missing}, and no earlier « {tag} » to carry over (AS-40)")
-        } else {
-            format!("{missing}; not carried over (AS-40): {}", why.join("; "))
-        }))
+        Ok(Err(format!(
+            "{missing}; not carried over (AS-40): {}",
+            why.join("; ")
+        )))
     }
 
-    /// W1 to W5 for the candidate `a`: `Ok(Err(condition))` on the first one that fails.
-    fn check(&mut self, tag: &str, a: &str) -> Result<Result<(), String>, String> {
+    /// W1 (ancestry) to W4 for a SHA `a` listed among the PR's commits: `Ok(Ok(base of a))`, or
+    /// `Ok(Err(condition))` on the first one that fails.
+    fn pure_update(&mut self, a: &str) -> Result<Result<String, String>, String> {
         let fail = |w: String| Ok(Err(w));
-        if self.commits.is_none() {
-            self.commits = Some(self.pr_commits()?);
-        }
-        if !self.commits.iter().flatten().any(|c| c == a) {
-            return fail("W1: not among the PR's commits listed by GitHub".to_owned());
-        }
         if self.merge_base(a, self.pr.head)? != a {
             return fail("W1: not an ancestor of the head".to_owned());
         }
@@ -184,13 +208,7 @@ impl<'a> Carry<'a> {
                 h.base
             ));
         }
-        if tag == "archsec-ok" && !self.sensitive_under(&base)? {
-            return fail(format!(
-                "W5: {} at {base} did not make the PR sensitive: a fresh archsec-ok is required",
-                sensitive::LIST
-            ));
-        }
-        Ok(Ok(()))
+        Ok(Ok(base))
     }
 
     /// W5: the caller's change is sensitive under the list of `base`. A missing or unreadable
@@ -505,7 +523,9 @@ mod tests {
             diff: (&c.m1, h, &files),
         };
         let bodies = [format!("{tag}: {approved}\nok")];
-        Carry::new(&repo, pr).resolve(tag, &bodies).unwrap()
+        Carry::new(&repo, pr)
+            .resolve(tag, &bodies, &|_| true)
+            .unwrap()
     }
 
     /// Nominal: a merge of `main` that touches nothing of the PR carries both approvals over; an
@@ -525,9 +545,15 @@ mod tests {
         };
         let bodies = [format!("review-ok: {}", c.a), format!("review-ok: {}", c.h)];
         let mut carry = Carry::new(&repo, pr);
-        assert_eq!(carry.resolve("review-ok", &bodies), Ok(Ok(c.h.clone())));
+        assert_eq!(
+            carry.resolve("review-ok", &bodies, &|_| true),
+            Ok(Ok(c.h.clone()))
+        );
         assert!(calls.borrow().is_empty(), "{:?}", calls.borrow());
-        let e = carry.resolve("archsec-ok", &bodies).unwrap().unwrap_err();
+        let e = carry
+            .resolve("archsec-ok", &bodies, &|_| true)
+            .unwrap()
+            .unwrap_err();
         assert!(e.contains("no earlier"), "{e}");
     }
 
@@ -596,7 +622,9 @@ mod tests {
             diff: (&m2, &h, &files),
         };
         let bodies = [format!("review-ok: {}", c.a)];
-        let e = Carry::new(&repo, pr).resolve("review-ok", &bodies).unwrap();
+        let e = Carry::new(&repo, pr)
+            .resolve("review-ok", &bodies, &|_| true)
+            .unwrap();
         let e = e.unwrap_err();
         assert!(e.contains(&format!("W3: {PR_FILE} changed on main")), "{e}");
     }
@@ -637,7 +665,9 @@ mod tests {
                 diff: (&m1, &h, &files),
             };
             let bodies = [format!("{tag}: {a}")];
-            let r = Carry::new(&repo, pr).resolve(tag, &bodies).unwrap();
+            let r = Carry::new(&repo, pr)
+                .resolve(tag, &bodies, &|_| true)
+                .unwrap();
             if carried {
                 assert_eq!(r, Ok(a.clone()));
             } else {
@@ -645,6 +675,44 @@ mod tests {
                 assert!(e.contains("W5:"), "{e}");
             }
         }
+    }
+
+    /// SHAs foreign to the PR do not use up the bound; `prefer` goes before recency; W1 to W4 are
+    /// read once for both tags.
+    #[test]
+    fn candidate_order() {
+        let c = case("order");
+        let h2 = c.lab.commit(&[]);
+        let (repo, calls) = c.lab.repo(commits(&[&c.a, &c.h, &h2]));
+        let pr = Pr {
+            number: 7,
+            head: &h2,
+            main: &c.m1,
+            diff: (&c.m1, &h2, &[]),
+        };
+        let mut bodies = vec![format!("review-ok: {}", c.a)];
+        bodies.extend((0..6).map(|i| format!("review-ok: {}", format!("{i}").repeat(40))));
+        let mut carry = Carry::new(&repo, pr);
+        assert_eq!(
+            carry.resolve("review-ok", &bodies, &|_| true),
+            Ok(Ok(c.a.clone()))
+        );
+        let both = [format!("review-ok: {}", c.a), format!("review-ok: {}", c.h)];
+        assert_eq!(
+            carry.resolve("review-ok", &both, &|_| true),
+            Ok(Ok(c.h.clone()))
+        );
+        let prefer_a = |s: &str| s == c.a;
+        assert_eq!(
+            carry.resolve("review-ok", &both, &prefer_a),
+            Ok(Ok(c.a.clone()))
+        );
+        let trees = calls
+            .borrow()
+            .iter()
+            .filter(|l| l.contains("/git/trees/"))
+            .count();
+        assert_eq!(trees, 3, "head, a and h, each once");
     }
 
     /// Most recent approval first; a repeated SHA is looked at once; a quoted line does not count.

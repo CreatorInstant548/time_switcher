@@ -171,7 +171,9 @@ fn check_commit(
             if present {
                 continue;
             }
-            match carry.resolve(tag, &bodies)? {
+            // J4: an archsec-ok SHA recorded in §9 is tried first.
+            let in_section = |s: &str| tag != "archsec-ok" || carnet_approves(section, s);
+            match carry.resolve(tag, &bodies, &in_section)? {
                 Ok(from) => {
                     note.push_str(&format!(", {tag} carried over from {}", &from[..7]));
                     if tag == "archsec-ok" {

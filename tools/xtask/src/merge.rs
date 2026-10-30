@@ -482,7 +482,7 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
         );
         for tag in ["review-ok", "archsec-ok"] {
             // W6: the same function as verify-main; W7: ci-ok was checked on the head (step 5).
-            match carry.resolve(tag, &bodies)? {
+            match carry.resolve(tag, &bodies, &|_| true)? {
                 Ok(from) if from == sha => println!("  {tag}: {sha}"),
                 Ok(from) => println!(
                     "  {tag} carried over from {from} to the head {sha} (AS-40, W1 to W5 hold)"
@@ -923,6 +923,69 @@ mod tests {
                 .iter()
                 .any(|c| c.contains("/comments") || c.starts_with("gh pr merge"))
         );
+    }
+
+    /// AS-40, merge wiring: the scenario PR now changes a sensitive file; both approvals were given
+    /// on `a`, then `main` was merged in without touching the PR's file. With `a` among the PR's
+    /// commits the approvals are carried over and the head is merged; without it, refusal (W1).
+    #[test]
+    fn carries_approvals_over_a_pure_update() {
+        let a = "a".repeat(40);
+        let f = "tools/xtask/src/x.rs";
+        let tree = json!({"truncated": false, "tree": [
+            {"path": "tools", "mode": "040000", "type": "tree", "sha": "c".repeat(40)},
+            {"path": f, "mode": "100644", "type": "blob", "sha": "b".repeat(40)}]});
+        let comments = json!([{"body": format!("review-ok: {a}")},
+                              {"body": format!("archsec-ok: {a}")}]);
+        let extra = |listed: &[&str]| -> Vec<(String, String)> {
+            let listed: Vec<_> = listed.iter().map(|s| json!({"sha": s})).collect();
+            [
+                (
+                    "gh api --paginate repos/o/r/pulls/7/files".to_owned(),
+                    json!([{"filename": f}]).to_string(),
+                ),
+                ("git diff --name-only".to_owned(), format!("{f}\0")),
+                (
+                    format!("git ls-tree -r -z --name-only --full-tree {SHA}"),
+                    format!("{f}\0"),
+                ),
+                (
+                    "gh api --paginate repos/o/r/issues/7/comments".to_owned(),
+                    comments.to_string(),
+                ),
+                (
+                    "gh api --paginate repos/o/r/pulls/7/commits".to_owned(),
+                    json!(listed).to_string(),
+                ),
+                (
+                    format!("gh api repos/o/r/compare/{a}...{SHA}"),
+                    json!({"merge_base_commit": {"sha": a}}).to_string(),
+                ),
+                (
+                    format!("gh api repos/o/r/compare/{MAIN}..."),
+                    json!({"merge_base_commit": {"sha": MAIN}}).to_string(),
+                ),
+                ("gh api repos/o/r/git/trees/".to_owned(), tree.to_string()),
+                (
+                    format!("git cat-file blob {MAIN}:tools/ci/sensitive-paths.txt"),
+                    include_str!("../../ci/sensitive-paths.txt").to_owned(),
+                ),
+            ]
+            .into_iter()
+            .collect()
+        };
+        let merged = |calls: &[String]| calls.iter().any(|c| c.starts_with("gh pr merge"));
+        let (result, calls) = scenario_with(false, |_| Ok(()), extra(&[&a, SHA]));
+        assert_eq!(result, Ok(true), "{calls:#?}");
+        assert!(merged(&calls));
+        assert!(
+            calls.iter().any(|c| c.contains("/git/trees/")),
+            "{calls:#?}"
+        );
+        let (result, calls) = scenario_with(false, |_| Ok(()), extra(&[SHA]));
+        let e = result.unwrap_err();
+        assert!(e.contains("W1: not among"), "{e}");
+        assert!(!merged(&calls));
     }
 
     /// Witness: the same scenario without `--dry-run` (J2 replaced) merges the checked head.
