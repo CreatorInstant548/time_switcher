@@ -472,6 +472,43 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | **PR #25, après mise à jour depuis `main` (#27)** | SHA de tête `9bcfde3225b437a78f9a4fc8234900528c3b9ec7`, `ci-ok` vert ; fusion simple, sans conflit | **`archsec-ok: 9bcfde3225b437a78f9a4fc8234900528c3b9ec7`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/25#issuecomment-6521740976)) : lignes ajoutées et retirées par la PR identiques, octet pour octet, avant et après la mise à jour |
 | 30/10 | **PR #30 (T6b : empreinte, instantané, `WorkBudget` ; remplace la #28), fusion** | SHA de tête `cbe11b51e04fa71e058577018c11d35cfe9bc79d`, `ci-ok` vert ; relecteur neuf en cours sur les corrections I1 à I3 | **`archsec-ok: cbe11b51e04fa71e058577018c11d35cfe9bc79d`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/30#issuecomment-6521795909)) : L3 à L6 conformes ; preuve L1 par `cargo tree`. Deux points d'API confirmés : `state_hash()` sans `HashScope`, et `restore(&WorldKey)`. Non bloquant : un `StableId` en double devra devenir une erreur (T7 ou T8) |
 | 30/10 | **PR #30, après F1 et mise à jour depuis `main` (#25)** | SHA de tête `4d1a4aebcb75aabbd01f009bdcbec6c3aaeb9bf8` ; `ci-ok` absent (GitHub Actions bloqué par la facturation du compte) | **`archsec-ok: 4d1a4aebcb75aabbd01f009bdcbec6c3aaeb9bf8`** ([comment](https://github.com/CreatorInstant548/time_switcher/pull/30#issuecomment-6522140160)) : delta inchangé, sauf le texte du contrat AS-27 et les `TODO(#31)` ; aucune ligne de code modifiée. La fusion attend `ci-ok` |
+| 30/10 | Consignes T6c, T7a et T9w | `scratchpad/…/consigne-T6c-clippy.md`, `consigne-T7a.md`, `consigne-T9w.md` | **T6c validée avec P1** : interdire seulement `ambiguous_with`, le reste étant refusé à la construction et utilisé par les tests du noyau. **T7a validée avec M1 à M3** : `Pilot` reste privé à `ts_pilot` (architecture §6.6). **T9w validée avec N1 à N4**, dont le trait scellé `ClientShippable` pour la part publique (§9.11) |
+
+### 9.11 Consignes T6c (`clippy.toml`), T7a (`ts_model`) et T9w (`ts_world_model`) (30/10)
+
+**T6c : validé avec correction P1.**
+- **P1. Dérogations d'ambiguïté.**
+  - **Ce qu'on n'interdit pas dans clippy :** `ambiguous_with_all`, `allow_ambiguous_component` et `allow_ambiguous_resource`.
+    - *Pourquoi :* le noyau les refuse déjà à la construction (`BuildError::AmbiguityOptOut`, L7). Ce refus couvre tous les greffons et ne peut pas être désactivé.
+    - Les tests du noyau les appellent pour prouver ce refus. Une interdiction dans clippy les frapperait, et une exemption est impossible dans le noyau (E6, F5).
+  - **Ce qu'on interdit dans clippy :** `ambiguous_with`, la forme ciblée. Le noyau ne sait pas la détecter à l'exécution, son code le dit.
+- **Tables à hachage de `bevy_ecs` :** les interdire est validé. Il faut vérifier par la démonstration si les alias (`bevy_platform::collections::HashMap`) sont déjà couverts par l'interdiction de `hashbrown::HashMap`. Sinon, on les nomme.
+
+**T7a : validé avec corrections M1 à M3.**
+- **M1. `Pilot` ne va pas dans `ts_model`.** L'architecture §6.6 dit que le type `Pilot` et son contenu sont **privés à `ts_pilot`**. Les règles ne voient que les marqueurs publics `AiDriven` et `AiObserving`, et « le monde ne connaît pas les joueurs » est vérifié par le compilateur (R13).
+  - **Dans T7a :** seulement `PlayerId` (SEC0-21) et les marqueurs `AiDriven` et `AiObserving`.
+  - **Plus tard :** `Pilot` et l'interdiction de `External` avec `public` viendront avec la crate `ts_pilot` (phase 1, échange de pilote). Le test `compile_fail` de `Pilot::External` attend lui aussi `ts_pilot`.
+- **M2. `PlayerId`.**
+  - **Construction :** un seul constructeur, depuis des octets de pseudonyme (HMAC tronqué, fourni par l'hôte), nommé comme tel (`from_pseudonym_bytes`).
+  - **Ce qu'il n'a pas :** ni `From` ni `Into` depuis ou vers un entier ou une chaîne, ni `Display`, ni `Serialize`. Son `Debug` est abrégé, par exemple aux 4 premiers octets en hexadécimal.
+  - **Empreinte :** `StateHash` est permis, parce que l'identifiant est un pseudonyme et non une donnée personnelle directe.
+  - **Comptes :** aucun type d'identifiant de compte dans `ts_model`.
+- **M3. Squelettes d'`Intent`, `Command` et `Event`.** `Command` marque déjà les variantes d'écriture comme réservées aux fonctionnalités de développement (matrice des commandes, S8). Elles ne compilent que sous `dev-commands`, même si elles restent vides ou presque.
+
+**T9w : validé avec corrections N1 à N4.**
+- **N1. Calculs sans dépassement.**
+  - **Le type :** `Cm(i32)` est validé (±21 km).
+  - **Produits :** les produits (aires, produits vectoriels, distances au carré) se font en `i64`, et en `i128` si une somme de produits peut dépasser `i64`. Ils ne se font jamais en `i32`.
+  - **Tests :** aux bornes de la plage permise.
+- **N2. `quantize` unique.**
+  - **Signature :** il prend un `f64` en mètres, arrondit au centimètre **au pair le plus proche** (`round_ties_even`), même règle que l'argent, et rend un `Result`.
+  - **Refus :** `NaN`, ±∞ et toute valeur hors de la plage. Jamais de saturation silencieuse.
+- **N3. Part serveur, fermée par les types (P12, S33).**
+  - **Marqueur :** un trait marqueur scellé `ClientShippable`, implémenté **seulement** par les types de la part `public`.
+  - **Usage futur :** tout futur empaqueteur du paquet client exigera ce trait.
+  - **Parts fermées :** les parts `candidates` et `server` ne peuvent pas l'implémenter hors de la crate, et un test `compile_fail` le montre.
+  - *Pourquoi :* une documentation seule ne suffit pas. Le paquet client est public, et y laisser filer la part serveur révélerait serrures, caméras et coffres.
+- **N4. Identités de la carte.** Les entités de la carte utilisent `StableId::map(index)` (P28), jamais l'allocateur du monde.
 
 ### 9.10 Consigne T6 : noyau, deuxième partie (30/10)
 
