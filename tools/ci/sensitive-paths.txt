@@ -54,6 +54,8 @@ Cargo.lock
 rust-toolchain
 rust-toolchain.toml
 fuzz/
+# Golden values: the reproducibility reference (Y5); a change needs archi-sec approval and Windows CI.
+data/golden/
 
 # Sections et sources des Cargo.toml ; Cargo.lock quand il ajoute une crate ou en change la source
 section:features
