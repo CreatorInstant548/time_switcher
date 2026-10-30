@@ -20,6 +20,7 @@ mod slots;
 mod spec_map;
 mod steps;
 mod sys;
+mod verify_cache;
 mod verify_main;
 mod workflows;
 
@@ -79,7 +80,7 @@ const STEPS: [Step; 13] = [
     ("spec-map", "spec-map check", steps::spec_map),
 ];
 
-const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] | cargo xtask hooks install|verify [--dry-run]";
+const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--no-cache] | cargo xtask hooks install|verify [--dry-run]";
 
 struct Options {
     all: bool,
