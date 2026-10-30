@@ -361,3 +361,9 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - Risque résiduel accepté jusqu'à **T3j** : J3 de nuit en CI sur 7 jours, l'historique complet le dimanche, à faire avant la fin de la phase 0.
   - **#66** (T3g, AS-38 + AS-41) et **#69** (T9c) : approbations obtenues, mais mises à jour avec conflits après la #65, donc avis à reposer.
   - **T9b** en cours.
+- 30/10 : fusions **#69** (d8813ab, T9c : déterminisme en CI Linux et Windows, an complet le dimanche, délai de `ci-ok`, `data/golden/` sensible ; issue #61 close) et **#66** (7365327, T3g : exception de réparation AS-38 et S2 complet AS-41).
+  - **#70** (T9b, `ts-sim run`) : approuvée, approbations reportées après deux fusions pures. **`merge` refusé par une fausse dérive.**
+  - **Bug introduit par la #66** : `$drift = @(Get-Drift $cfg)` avec `return , $out` compte une liste vide comme un élément. Il n'y a aucune vraie dérive, mais toutes les fusions sont gelées.
+  - La voie AS-38 est inutilisable (le correctif touche `repo-settings.ps1`). **Correctif en préparation**, avec un test sur le chemin complet du script. Il faudra une **fusion unique depuis l'interface web par le titulaire du compte** (voie 1, comme la #51) ; archi-sécu et l'orchestrateur sont prévenus.
+  - **T3j** (contrôle nocturne de l'origine des commits) lancée. Issue #71 (suites de `ts-sim`).
+  - **Leçon** : un changement de la barrière doit être testé en exécutant le script entier sur une API simulée conforme, et pas seulement ses fonctions.
