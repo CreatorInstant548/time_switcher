@@ -10,6 +10,8 @@ all-features = true
 yanked = "deny"
 unmaintained = "all"
 unsound = "all"
+# Échec si la base RustSec a plus de 7 jours (SEC0-03).
+maximum-db-staleness = "P7D"
 # Chaque entrée : { id = "RUSTSEC-AAAA-NNNN", reason = "<raison> (<date>)" }, revue chaque semaine.
 ignore = []
 
