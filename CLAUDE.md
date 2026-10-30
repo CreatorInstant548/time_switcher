@@ -45,7 +45,12 @@ L'ancien concept de voyage dans le temps est abandonné et archivé dans `docs/a
 - **Dépôt GitHub** : `CreatorInstant548/time_switcher`, privé, créé le 30/10 avec l'accord de l'utilisateur. Le mode local est levé.
   - Les branches de tâche sont poussées, et chaque tâche ouvre une vraie PR.
   - Les carnets de la branche `pilotage` sont poussés après chaque commit.
-  - **Démarrage, en attendant la PR « CI »** : une PR se fusionne quand `cargo xtask check` (ou les vérifications équivalentes, tant que xtask n'existe pas) et `/code-review` sont passés, plus `/security-review` sur les chemins sensibles. Seul le responsable développement fusionne, par `gh pr merge --squash --delete-branch`. Ensuite, la fusion passe par `cargo xtask merge`, qui exige `ci-ok`.
+  - **Démarrage, en attendant la PR « CI »** : une PR se fusionne quand `cargo xtask check` (ou les vérifications équivalentes, tant que xtask n'existe pas) et `/code-review` sont passés, plus `/security-review` sur les chemins sensibles. Seul le responsable développement fusionne, par `pwsh tools/dev/merge-pr.ps1 <PR>` depuis la copie principale (`gh pr merge` direct est refusé par le garde). Ensuite, la fusion passe par `cargo xtask merge`, qui exige `ci-ok`.
+- **Outillage des agents (PR #5, actif depuis le 30/10 ; mode d'emploi : `docs/dev/outillage.md`)** : les crochets Git et les gardes Claude Code `guard-main` et `guard-git` (déclarés dans `.claude/settings.json` du projet) refusent toute écriture sur `main` hors fusion et toute commande Git ou `gh` hors liste blanche.
+  - **Commits** : `git commit -F <fichier>` ou `git commit -F - <<'EOF'` ; jamais `git commit -m "$(...)"`.
+  - **Fetch** : `git fetch origin`, sans refspec explicite.
+  - **Compilation** : `pwsh tools/dev/session-start.ps1 -Acquire` avant de compiler (prend un des 3 emplacements), `-Release` après.
+  - Un refus du garde n'est jamais contourné : s'il gêne un travail légitime, ouvrir une *issue* `role:dev`.
 - PR courtes : un seul sujet, environ 400 lignes au plus hors fichiers générés.
 - **Au plus 3 sessions qui compilent du Rust en même temps** (3 emplacements de compilation). Si le démarrage annonce « les 3 emplacements sont pris » : ne pas compiler ; attendre, ou proposer la tâche dans le cloud. Les sessions de documentation ne compilent pas et ne comptent pas.
 - **Lecture seule** (revue, analyse, question) : session sans worktree (`use_worktree: false`), aucun fichier suivi modifié. **Morceaux d'une même tâche** (exploration, tests, relecture) : sous-agents dans la même copie, pas de nouvelle session.
