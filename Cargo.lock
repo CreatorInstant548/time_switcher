@@ -999,6 +999,7 @@ dependencies = [
 name = "ts_world_model"
 version = "0.0.0"
 dependencies = [
+ "bevy_ecs",
  "ts_kernel",
 ]
 
