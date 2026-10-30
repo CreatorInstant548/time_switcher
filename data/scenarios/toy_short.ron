@@ -1,0 +1,2 @@
+// Toy world for two simulated weeks: the short version of the determinism proof.
+Scenario(name: "toy_short", world: Toy, duration: Days(14))

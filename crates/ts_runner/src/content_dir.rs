@@ -119,7 +119,7 @@ fn read_dir_sorted(dir: &Path, room: usize) -> Result<Vec<(OsString, PathBuf)>, 
 
 /// Opens one file, checks the opened handle is a regular file (AS-35), then reads it bounded.
 #[allow(clippy::disallowed_methods)] // host: opens one content file.
-fn read_file(path: &Path, rel: &str, limits: &Limits) -> Result<SourceFile, Diagnostic> {
+pub(crate) fn read_file(path: &Path, rel: &str, limits: &Limits) -> Result<SourceFile, Diagnostic> {
     let failed = || Diagnostic::new(Code::ReadFailed, rel, (0, 0), "");
     let file = fs::File::open(path).map_err(|_| failed())?;
     let meta = file.metadata().map_err(|_| failed())?;
