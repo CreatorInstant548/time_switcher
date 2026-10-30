@@ -7,7 +7,7 @@
 
 # --- Claude Code ---
 /.claude/worktrees/
-/.claude/settings.local.json
+**/.claude/settings.local.json
 
 # --- Python ---
 .venv/
@@ -53,10 +53,12 @@ client/addons/ts_native/bin/
 perf.data*
 flamegraph*.svg
 
-# --- Secrets (S28) : jamais dans le dépôt ---
-.env
-.env.*
+# --- Secrets (S28, SEC0-09) : jamais dans le dépôt ---
+.env*
 !.env.example
+id_*
+!id_*.rs
+!id_*/
 *.pem
 *.key
 *.p12

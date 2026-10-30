@@ -1,0 +1,4 @@
+#!/bin/sh
+# pre-merge-commit : un commit de fusion (git merge sans --squash) passe par les mêmes contrôles
+# que pre-commit, dont le refus sur main (SEC0-13).
+exec "$(dirname "$0")/pre-commit" "$@"

@@ -1,0 +1,12 @@
+#!/bin/sh
+# commit-msg : format « type(portée): description » (CLAUDE.md, A31).
+# Restent permis : messages de fusion et de revert de Git, fixup!/squash!/amend! de --autosquash.
+# spec: revues/developpement-agents.md §4.5 A31
+. "$(dirname "$0")/common.sh"
+first=$(tr -d '\r' < "$1" | grep -v '^#' | grep -v '^[[:space:]]*$' | head -n 1)
+case $first in
+  "Merge "*|"Revert \""*|"fixup! "*|"squash! "*|"amend! "*) exit 0 ;;
+esac
+printf '%s\n' "$first" | grep -Eq '^(feat|fix|refactor|perf|test|docs|build|ci|chore)\([A-Za-z0-9_./-]+\)!?: [^ ].*' ||
+  fail "message « $first » : format attendu type(portée): description, type parmi feat fix refactor perf test docs build ci chore (A31)."
+exit 0
