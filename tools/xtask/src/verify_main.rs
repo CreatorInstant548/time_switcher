@@ -172,6 +172,7 @@ fn check_commit(
                 head: &head,
                 main: &parent,
                 diff: (&parent, sha, &files),
+                local_objects: false,
             },
         );
         let mut j4 = head.clone();

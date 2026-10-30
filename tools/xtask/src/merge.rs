@@ -478,6 +478,8 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
                 head: &sha,
                 main: &main_sha,
                 diff: (&base, &sha, &paths),
+                // Fetched above (pull/<n>/head): trees read locally, not by the API (m2).
+                local_objects: true,
             },
         );
         for tag in ["review-ok", "archsec-ok"] {
@@ -932,12 +934,11 @@ mod tests {
     fn carries_approvals_over_a_pure_update() {
         let a = "a".repeat(40);
         let f = "tools/xtask/src/x.rs";
-        let tree = json!({"truncated": false, "tree": [
-            {"path": "tools", "mode": "040000", "type": "tree", "sha": "c".repeat(40)},
-            {"path": f, "mode": "100644", "type": "blob", "sha": "b".repeat(40)}]});
+        // m2: merge reads the trees of `a` and of the head from the fetched objects.
+        let entry = |blob: &str| format!("100644 blob {}\t{f}\0", blob.repeat(40));
         let comments = json!([{"body": format!("review-ok: {a}")},
                               {"body": format!("archsec-ok: {a}")}]);
-        let extra = |listed: &[&str]| -> Vec<(String, String)> {
+        let extra = |listed: &[&str], a_blob: &str| -> Vec<(String, String)> {
             let listed: Vec<_> = listed.iter().map(|s| json!({"sha": s})).collect();
             [
                 (
@@ -965,7 +966,12 @@ mod tests {
                     format!("gh api repos/o/r/compare/{MAIN}..."),
                     json!({"merge_base_commit": {"sha": MAIN}}).to_string(),
                 ),
-                ("gh api repos/o/r/git/trees/".to_owned(), tree.to_string()),
+                (format!("git ls-tree -r -z --full-tree {SHA}"), entry("b")),
+                (
+                    format!("git ls-tree -r -z --full-tree {SHA} .github/workflows/"),
+                    String::new(),
+                ),
+                (format!("git ls-tree -r -z --full-tree {a}"), entry(a_blob)),
                 (
                     format!("git cat-file blob {MAIN}:tools/ci/sensitive-paths.txt"),
                     include_str!("../../ci/sensitive-paths.txt").to_owned(),
@@ -975,16 +981,24 @@ mod tests {
             .collect()
         };
         let merged = |calls: &[String]| calls.iter().any(|c| c.starts_with("gh pr merge"));
-        let (result, calls) = scenario_with(false, |_| Ok(()), extra(&[&a, SHA]));
+        let (result, calls) = scenario_with(false, |_| Ok(()), extra(&[&a, SHA], "b"));
         assert_eq!(result, Ok(true), "{calls:#?}");
         assert!(merged(&calls));
         assert!(
-            calls.iter().any(|c| c.contains("/git/trees/")),
+            !calls.iter().any(|c| c.contains("/git/trees/")),
             "{calls:#?}"
         );
-        let (result, calls) = scenario_with(false, |_| Ok(()), extra(&[SHA]));
+        let (result, calls) = scenario_with(false, |_| Ok(()), extra(&[SHA], "b"));
         let e = result.unwrap_err();
         assert!(e.contains("W1: not among"), "{e}");
+        assert!(!merged(&calls));
+        // The local tree of `a` has another blob: W2.
+        let (result, calls) = scenario_with(false, |_| Ok(()), extra(&[&a, SHA], "d"));
+        let e = result.unwrap_err();
+        assert!(
+            e.contains("W2: tools/xtask/src/x.rs has another blob"),
+            "{e}"
+        );
         assert!(!merged(&calls));
     }
 

@@ -135,8 +135,8 @@ Un `review-ok` ou un `archsec-ok` posé sur `A` vaut pour la tête `H` seulement
 - **W1, même PR** : `A` figure parmi les commits de la PR lus sur GitHub (`pulls/<n>/commits`), et c'est un ancêtre de `H`.
 - **W2, mêmes fichiers, mêmes contenus** : la PR modifie le même ensemble de fichiers en `A` et en `H` (de la base de fusion au commit, sans renommage). Chacun a le même identifiant de blob et le même mode en `A` et en `H`. On compare les blobs, jamais les lignes de diff.
 - **W3, `main` n'a pas touché ces fichiers** : la base de `A` est un ancêtre de celle de `H`, et aucun fichier de la PR n'y diffère entre les deux bases.
-- **W4, rien d'autre ne bouge** : hors des fichiers de la PR, l'arbre de `H` est identique à celui de `main` à sa base. Aucune résolution manuelle ne peut se cacher ailleurs.
-- **W5, même sensibilité** : un `archsec-ok` n'est reporté que si la liste `sensitive-paths.txt` de la base de `A` rendait déjà la PR sensible. Sinon, un `archsec-ok` **neuf** sur `H` est exigé. Une liste absente ou illisible compte comme « non sensible ».
+- **W4, rien d'autre ne bouge** : hors des fichiers de la PR, l'arbre de `H` est identique à celui de `main` à sa base. Aucune résolution manuelle ne peut se cacher ailleurs. De plus, la base de `H` doit être le `main` de référence (`origin/main` pour `merge`, le parent du squash pour `verify-main`), et le commit qui arrive sur `main` doit avoir l'arbre de `H` (le squash, pour `verify-main`).
+- **W5, même sensibilité** : c'est d'abord la liste `sensitive-paths.txt` d'`origin/main` qui décide si des avis sont exigés. Si oui, un `archsec-ok` n'est reporté que si la liste de la base de `A` rendait déjà la PR sensible. Sinon, un `archsec-ok` **neuf** sur `H` est exigé. Une liste absente ou illisible à la base de `A` compte comme « non sensible ».
 - **W6, J4** : `verify-main` fait le recoupement J4 sur `A` quand l'`archsec-ok` est reporté. Le §9 du carnet d'archi-sécu doit donc contenir `archsec-ok: <A>`. Parmi plusieurs SHA reportables, celui que le §9 contient passe en premier.
 - **W7, ce qui ne change pas** : `ci-ok` reste exigé sur `H` lui-même.
 
@@ -153,7 +153,10 @@ Si une seule condition échoue, l'approbation doit être **reposée sur `H`**. C
 - `verify-main` note `<avis> carried over from <A>` sur la ligne du commit.
 
 **Lectures.**
-- Les arbres de `A` et de `H` viennent de l'API (`git/trees/<sha>?recursive=1`), et les bases de fusion de `compare/<x>...<y>`. En CI, `verify-main` n'a pas les objets des PR, puisqu'il ne fait pas de `git fetch`.
+- Les arbres de `A` et de `H` :
+  - pour `merge`, sont lus en local (`git ls-tree`), depuis les objets apportés par `git fetch origin pull/<n>/head` ;
+  - pour `verify-main`, viennent de l'API (`git/trees/<sha>?recursive=1`), sans cache. En CI, `verify-main` n'a pas les objets des PR, puisqu'il ne fait pas de `git fetch`.
+- Les bases de fusion viennent de `compare/<x>...<y>`.
 - Les bases sont des commits de `main`, lus dans l'historique local.
 - Au plus 5 SHA candidats sont examinés, du plus récent au plus ancien, après avoir écarté ceux qui ne sont pas dans la PR.
 - Tout est relu sur GitHub à chaque exécution. Un commit sensible n'utilise jamais le cache de `verify-main` (V5).
