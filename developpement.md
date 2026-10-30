@@ -328,3 +328,10 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
     - **T9w2** (#37, depuis `main`).
   - Ensuite : T3g, T3e-1, puis T9. Le client Godot n'entre pas dans la phase 0 de mon découpage : je ne le lance pas sans feu vert.
   - **#52** : `review-ok` et `archsec-ok` sur 877363c. Le m2 de la relecture est tranché par archi-sécu : pas de fetch en CI, `TS_CACHE` dans `runner.temp`.
+- 30/10 : **#51** fusionnée depuis l'interface web par l'utilisateur (db16ab6). `-Apply`, puis `-Check` : conformes. **Contrôle quotidien** : `cargo xtask verify-main` complet OK, 28 commits et réglages conformes (`--no-cache` arrive avec la #52).
+  - Fusions par `cargo xtask merge` : **#47** (a4c1d4f, T7b `ts_data`), **#49** (8b8bd12, T8 `ts_persist`), **#53** (78d79fa, T9w2 ; issue #37 close).
+  - **#54** : V5 ajouté (AS-39 : un commit sensible relit tout sur GitHub et ne passe jamais par le cache), `review-ok` sur 6f171fd.
+  - **#57** (T8b) : deux relecteurs. B : `review-ok`. A : un constat important, I1 : un `next_seq` forgé fait paniquer le jeu après une restauration. Lot de corrections sur la cause : borner toutes les valeurs décodées. Issues #58 et #59 ouvertes.
+  - **T3i** (report des approbations, AS-40 W1 à W7) lancée, empilée sur la #54.
+  - Issues ouvertes : **#55** (quota de l'API, objectifs d'AS-39), **#56** (artefacts périmés dans les emplacements partagés, trois cas).
+  - 17:34 UTC : **incident GitHub Actions**. La CI est en file d'attente et les fusions attendent.
