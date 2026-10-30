@@ -2,7 +2,7 @@
 
 > Fichier tenu par le responsable conception. Créé le 30/10/2026, à la demande de l'orchestrateur ([../pilotage/organisation.md](../pilotage/organisation.md), §3.1).
 > Il rassemble les **valeurs cibles** écrites dans la conception, pour que le responsable qualité et essais les suive. La source fait foi : en cas d'écart, c'est le fichier cité qui a raison, et ce tableau doit être corrigé.
-> Les valeurs marquées **[à mesurer]** ou **[à calibrer]** dans leur source sont des objectifs de départ. Un objectif manqué remonte au responsable conception comme un `ecart` ; s'il touche à la technique, il va au responsable architecture et sécurité.
+> Les valeurs marquées **[à mesurer]** ou **[à calibrer]** dans leur source sont des objectifs de départ. Un objectif manqué remonte au responsable conception comme une remontée `role:design` de type `deviation` ; s'il touche à la technique, il va au responsable architecture et sécurité.
 > Règle 6 du [README](README.md) : les lignes ne sont jamais renumérotées. Une nouvelle ligne prend le numéro suivant, et une ligne retirée garde son numéro avec la mention « supprimée ».
 
 ## 1. Simulation et performances
@@ -34,6 +34,7 @@
 | M13 | Fidélité de la population aux tables cibles | Écart aux marges ≤ 3 % ; ≥ 80 % de chaque rôle dans sa fourchette de palier | population §1.3 | Validateurs de `ts-worldbuild` | 1 |
 | M14 | Réseau social de départ | Plages cibles du [social](domaines/social.md) §10.2, dont ≥ 98 % des adultes et ≥ 90 % des liens au-dessus de « connaissance » | social §10.2 ; population §5.3 | Validateur du réseau, puis `ts-sim` au fil des années | 1 |
 | M15 | Robustesse des plans directeurs | 95 % de réussite sur 32 × 32 graines | [ville](domaines/ville.md) §4.6 (P37) | Campagne de graines | 5 |
+| M37 | Part serveur tirée par monde (W2) : pose réelle des caméras, coffres, caches et alarmes | ≤ 1/3 des candidats de chaque sorte, par secteur **[à calibrer]** | [README](README.md), A13 (C2) ; [revues/generation.md](revues/generation.md) V12, W2 | Validateur bloquant de la création du monde | 1 |
 
 ## 4. Indistinguabilité et esprit des PNJ
 
@@ -84,4 +85,4 @@
 
 | N° | Attendu | Cible | Source | Mesure | Dès la phase |
 |---|---|---|---|---|---|
-| M36 | Minutes de CI | ≤ 2 000 par mois ; mode minimal au-delà de 80 % | 05, en-tête ; clôture de l'architecture, S-6 | Relevé mensuel | 0 |
+| M36 | Minutes de CI | ≤ 3 000 par mois (GitHub Pro) ; alerte et mode minimal au-delà de 80 %, soit 2 400 | 05, en-tête ; clôture de l'architecture, S-6 ; orchestrateur, passage à GitHub Pro | Relevé mensuel | 0 |
