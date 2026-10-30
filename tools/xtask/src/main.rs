@@ -5,10 +5,13 @@
 // Outil en ligne de commande : il écrit sur la console.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod disk;
 mod exemptions;
 mod manifests;
 mod metadata;
 mod scan;
+mod slots;
+mod spec_map;
 mod steps;
 mod sys;
 mod workflows;
@@ -69,8 +72,7 @@ const STEPS: [Step; 13] = [
     ("spec-map", "spec-map check", steps::spec_map),
 ];
 
-const USAGE: &str =
-    "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list";
+const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask slots | cargo xtask disk [--clean]";
 
 struct Options {
     all: bool,
@@ -116,7 +118,14 @@ fn parse(args: &[String]) -> Result<Options, String> {
 }
 
 fn main() -> ExitCode {
-    let opts = match parse(&sys::args()) {
+    let args = sys::args();
+    match args.first().map(String::as_str) {
+        Some("slots") => return slots::main(&args[1..]),
+        Some("disk") => return disk::main(&args[1..]),
+        Some("spec-map") => return spec_map::run(&args[1..]),
+        _ => {}
+    }
+    let opts = match parse(&args) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{e}");
