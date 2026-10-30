@@ -99,3 +99,11 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
       - les règles effectives sur `main` sont deletion, non_fast_forward, required_linear_history, pull_request et required_status_checks (ruleset 26213563) ;
       - `enforcement=active`, `bypass_actors` vide, `current_user_can_bypass=never`.
     - E1 est satisfait, et T3e-2 est lancée.
+- **Attestation quotidienne des règles GitHub (AS-42)** : `repo-settings.ps1 -Check` est lancé depuis la copie principale. Il tourne aussi à chaque `xtask merge`. La note quotidienne n'est utile que les jours sans fusion.
+  - 30/10 : conforme.
+- **Critère de sortie de la phase 0 prouvé sur `main`** (30/10, #64, T9a) : un monde-jouet de 1 000 entités tourne un an, de façon reproductible et identique sur un fil comme sur plusieurs, avec une sauvegarde et une reprise en cours de route. Pour l'instant, en debug seulement.
+  - Restent à fusionner : T3e-2 (#65), T3g (#66), T9b (`ts-sim run`) et T9c (déterminisme en CI).
+  - **Décidé** : le responsable qualité et essais, prévu « fin de la phase 0 », est lancé au prochain tour de l'utilisateur. L'application refuse de lancer une session sur un tour déclenché par un autre agent. Ses premières tâches :
+    - les campagnes de fin de phase 0 en profil `sim` dans la copie principale : déterminisme, performances ;
+    - les points 2 et 4 de §5.
+  - Les points 1 et 3 de §5 (audit de sécurité de fin de phase, vérification de conformité par la conception) seront demandés quand T9b et T9c seront fusionnées.
