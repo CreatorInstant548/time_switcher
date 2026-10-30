@@ -417,6 +417,20 @@ Le reste du §12.9 n'appelle pas de condition nouvelle :
 | 30/10 | Découpage de la phase 0, T0 à T13 ([#2](https://github.com/CreatorInstant548/time_switcher/issues/2)) | `developpement.md`, commits 139ff40 et 8506f54 (branche `pilotage`) | **Validé avec corrections** (§9.1) |
 | 30/10 | Découpage v2 (T0 à T13, avec T2a, T2b, T7a, T7b et T9w) | `developpement.md`, commit 1468629 | **Validé avec corrections R1 à R5** (§9.2) ; **feu vert pour T1** |
 | 30/10 | Crochet Claude Code dans les réglages du projet (T1, T3) | Message du responsable développement | **Favorable**, avec SEC0-35 : point 1 dans T1, points 2 à 4 dans T3 (`hooks verify`) |
+| 30/10 | PR #5 (T1) : décisions I4 et I2 du responsable développement | Message du responsable développement ; PR non encore soumise | **Favorable avec conditions** (§9.3) ; mon avis sur le SHA de tête reste à donner |
+
+### 9.3 Décisions I4 et I2 de la PR #5 (30/10)
+
+- **I4, script de fusion provisoire `tools/dev/merge-pr.ps1`** : favorable.
+  - `guard-git` refuse `gh pr merge` et `gh api` en écriture ; c'est conforme à SEC0-14 et plus strict.
+  - Conditions :
+    1. `ci-ok` est **exigé**, et non « s'il existe », dès que `.github/workflows/ci.yml` est sur `main`. Avant cette date, la PR porte la sortie de `xtask check`, ou des commandes équivalentes, dans le carnet du responsable développement.
+    2. La PR de T3 **supprime** le script : il n'y a jamais deux chemins de fusion.
+    3. Le script est un chemin sensible, comme `tools/dev/`.
+- **I2, crochet `reference-transaction` et refus de `revert`, `cherry-pick`, `rebase`, `am`, `reset` et des fusions non `--ff-only` sur `main`** : favorable. C'est une protection de `main` plus forte que la mienne, et elle couvre la variante `update-ref`. Conditions :
+  1. le crochet refuse aussi la **suppression** de `refs/heads/main`, ainsi que toute mise à jour quand `refs/remotes/origin/main` est absente ;
+  2. les cas sont ajoutés à `test-guards.ps1` et à SEC0-18.
+- **Emplacements de compilation pris à la demande** (`session-start.ps1 -Acquire`) : sans enjeu de sécurité. C'est un écart à A9 de la revue du développement par agents, à reporter à la consolidation de fin de phase 0.
 
 ### 9.2 Découpage v2 : écarts restants (30/10)
 
