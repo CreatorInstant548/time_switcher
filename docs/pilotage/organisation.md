@@ -32,6 +32,8 @@ Partage des décisions : les règles de jeu reviennent à la conception, les dé
 ## 2. Sessions et barre latérale
 
 - **Chaque responsable lance lui-même ses sous-sessions** : elles s'affichent sous lui et lui rendent compte. *Pourquoi : les comptes rendus automatiques vont à la session qui a lancé, et la barre latérale ne permet pas de changer le parent d'une session.*
+  - **Repli quand l'application refuse** (constaté le 30/10 : une session lancée par une autre ne peut pas toujours lancer de sessions) : le responsable confie ses tâches à des **sous-agents isolés en worktree**. Chacun a sa branche `claude/<sujet>` et son worktree, pousse sa branche et ouvre sa PR, avec les mêmes règles qu'une session de tâche : propriété des fichiers, emplacements de compilation, vérifications avant PR. Le résultat revient au responsable, qui le note dans son carnet.
+  - *Pourquoi : la règle « une tâche = une branche = un worktree = une PR » est conservée ; seul le contenant change. Le responsable reste seul à fusionner.*
 - Les 13 sessions de domaine et de revue lancées avant le responsable conception restent affichées sous l'orchestrateur. C'est le responsable conception qui les pilote, par message ; leurs comptes rendus automatiques arrivent aussi chez l'orchestrateur, qui n'agit pas dessus. Les détacher est irréversible et coupe leurs comptes rendus : on ne le fait pas.
 - **Même mode de permission pour toutes les sessions** (`auto`). *Pourquoi : une session dans un autre mode retient les messages des autres sessions jusqu'à l'accord de l'utilisateur, ce qui bloque la chaîne sans prévenir.*
 - **Les responsables ne compilent pas** : seules les sessions de tâche compilent (3 au plus). Le responsable qualité utilise l'emplacement de la copie principale.
@@ -46,7 +48,9 @@ Partage des décisions : les règles de jeu reviennent à la conception, les dé
 - **Branche `pilotage` (décidé le 30/10)**.
   - **Contenu** : les fichiers vivants de pilotage, c'est-à-dire les carnets, `feuille-de-route.md` et `a-relire.md`. Ce fichier-ci reste sur `main`.
   - **Emplacement** : une branche orpheline, extraite dans le worktree permanent `C:\Dev\Claude\time_switcher-pilotage\`.
-  - **Écriture** : chaque session ne modifie que son propre fichier, puis fait `git pull --rebase`, `git commit` et `git push`. Pas de PR, et la CI ne tourne pas sur cette branche.
+  - **Écriture** : chaque session ne modifie que son propre fichier, puis fait `git commit -- <son-fichier>` et `git push origin pilotage`.
+    - Jamais `git add -A` ni `git commit -a`. Le worktree est partagé : ces commandes emporteraient les modifications en cours des autres sessions.
+    - Si le dépôt distant a avancé, faire `git pull --rebase origin pilotage` avant de pousser. Pas de PR, et la CI ne tourne pas sur cette branche.
   - *Pourquoi :*
     - les carnets changent plusieurs fois par jour. Les faire passer par des PR userait les 2 000 minutes de CI et obligerait le responsable développement à fusionner les carnets des autres ;
     - hors de Git, ils n'auraient ni historique ni copie de sauvegarde.
