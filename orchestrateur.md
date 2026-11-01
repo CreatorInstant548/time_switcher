@@ -181,3 +181,14 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
     - rouvrir les issues reportées à l'ouverture de leur phase.
   - #72 close. #76 close. #43 à #45 seront closes à la fusion de la #87.
 - **T11 (visualiseur)** : arrêt sur VZ1 et VZ6. Rerun 0.38.1 tire tokio, hyper, ring (code C) et de la télémétrie. Le dev propose un fichier Parquet des positions, avec une conversion vers `.rrd` par un script Python optionnel. Décision d'archi-sécu attendue.
+- **Qualité, verdict 1 (qualite.md, a2d523d)** : déterminisme et budgets validés. Point 2 non validé à cause de #67 (4 fils environ 10 fois plus lents que 1 fil). #67 est en priorité.
+- **Décision de l'utilisateur, transmise par le dev** : « les dev tools prennent trop de temps, retire-les ».
+  - **Retirés** :
+    - `guard-git` et `guard-main` ;
+    - les crochets Git locaux et `xtask hooks` ;
+    - dans `merge`, les appels à `verify-main`, à `hooks verify` et à `-Check`.
+  - **Gardés** :
+    - dans `merge` : refus des forks, `ci-ok`, ainsi que `review-ok` et `archsec-ok` du propriétaire seul ;
+    - `verify-main` chaque nuit ;
+    - le ruleset côté serveur.
+  - **Conséquence pour l'orchestrateur** : `-Check` se lance désormais à la main, chaque jour. `organisation.md` n'a pas à changer.
