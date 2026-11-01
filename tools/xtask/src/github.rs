@@ -1,4 +1,4 @@
-//! Accès à Git et à GitHub pour `merge`, `verify-main` et `hooks`. Tout est en lecture, sauf
+//! Accès à Git et à GitHub pour `merge` et `verify-main`. Tout est en lecture, sauf
 //! [`Repo::open_issue`] ; la fusion elle-même reste dans `merge`. Un appel qui échoue ou une
 //! réponse illisible est une erreur, jamais une réussite.
 //! spec: carnet architecture-securite.md SEC0-15, SEC0-17 ; §9.6 G3 ; §9.8 J3, J5
@@ -74,9 +74,8 @@ pub struct Repo {
     /// Mode CI (A2) : les réglages GitHub n'y sont pas lisibles (`GITHUB_TOKEN` sans droits
     /// d'administration), `verify-main` saute leur contrôle avec un avertissement (AS-30 R5).
     pub ci: bool,
-    /// `TS_CACHE` et dossier personnel (réglages de Claude Code), remplaçables en test.
+    /// `TS_CACHE`, remplaçable en test.
     pub cache: PathBuf,
-    pub home: Option<PathBuf>,
     pub runner: Box<dyn Run>,
 }
 
@@ -119,7 +118,7 @@ pub fn pages(text: &str) -> Result<Vec<Value>, String> {
 }
 
 impl Repo {
-    /// `github` faux : distant hors de GitHub permis (`hooks`, essais dans un dépôt jetable) ; le
+    /// `github` faux : distant hors de GitHub permis (essais dans un dépôt jetable) ; le
     /// `slug` reste vide et toute *issue* échoue.
     pub fn open(dry_run: bool, github: bool) -> Result<Self, String> {
         let cwd =
@@ -148,7 +147,6 @@ impl Repo {
             dry_run,
             ci: crate::steps::ci_mode(),
             cache: sys::ts_cache(),
-            home: sys::home(),
             runner: Box::new(System),
         })
     }
@@ -593,7 +591,6 @@ mod tests {
             dry_run: false,
             ci: false,
             cache: std::env::temp_dir().join(format!("xtask-retry-{}", std::process::id())),
-            home: None,
             runner: Box::new(Script {
                 outs,
                 log: std::rc::Rc::clone(&log),
