@@ -124,7 +124,7 @@ Pour les étapes 5 et 6, une erreur de mesure (sous-dossier illisible) ou un arb
 
 ## 6. Approbations de `cargo xtask merge` et `cargo xtask verify-main`
 
-Une PR qui touche un chemin sensible (`tools/ci/sensitive-paths.txt` d'`origin/main`) doit porter deux avis : `review-ok: <sha>` (relecteur neuf) et `archsec-ok: <sha>` (archi-sécu). Chacun compte seulement s'il occupe **la première ligne** d'un commentaire de la PR, exactement sous cette forme, avec un SHA complet (I3). Une ligne citée plus bas ne compte pas.
+Une PR qui touche un chemin sensible (`tools/ci/sensitive-paths.txt` d'`origin/main`) doit porter deux avis : `review-ok: <sha>` (relecteur neuf) et `archsec-ok: <sha>` (archi-sécu). Chacun compte seulement s'il occupe **la première ligne** d'un commentaire de la PR, exactement sous cette forme, avec un SHA complet (I3). Une ligne citée plus bas ne compte pas. Le commentaire doit venir du **propriétaire du dépôt** (AS-45 P3) : `user.login` égal au propriétaire du *slug*, `author_association: OWNER` et `user.type: User` ; tout autre auteur est ignoré, puisque sur un dépôt public n'importe qui peut écrire `review-ok: <sha>`.
 
 `merge` (étape 10) et `verify-main` (chaque commit sensible de `main`) appliquent **la même fonction**, `carry::Carry::resolve` (W6). Un avis compte s'il est posé :
 - sur le SHA de tête ;

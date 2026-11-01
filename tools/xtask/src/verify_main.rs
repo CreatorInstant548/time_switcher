@@ -602,7 +602,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::github::{Output, Run};
+    use crate::github::{Output, Run, issues_path, owner_item};
 
     const SHA: &str = "e3e2f2a842612bebfba1a8388f86fd296f64344c";
 
@@ -624,7 +624,7 @@ mod tests {
         assert!(section_9("# rien\n## 10. x\n").is_none());
     }
 
-    /// Answers `repo-settings.ps1 -Check` with a fixed exit code, and `gh issue list` with `[]`.
+    /// Answers `repo-settings.ps1 -Check` with a fixed exit code, and the anomaly issue list with `[]`.
     struct Settings(Option<i32>, Rc<RefCell<Vec<String>>>);
 
     impl Run for Settings {
@@ -633,7 +633,7 @@ mod tests {
             self.1.borrow_mut().push(line.clone());
             match prog {
                 "pwsh" => Ok((self.0, b"  ECART : x\n".to_vec(), "erreur".to_owned())),
-                "gh" if line.starts_with("gh issue list") => {
+                "gh" if line == format!("gh api --paginate {}", issues_path("o/r")) => {
                     Ok((Some(0), b"[]".to_vec(), String::new()))
                 }
                 _ => Err(format!("unexpected command: {line}")),
@@ -673,7 +673,7 @@ mod tests {
         // Drift: false, and the issue is only shown with --dry-run (no gh issue create).
         let (r, calls) = settings(Some(1), false, true);
         assert_eq!(r, Ok(false));
-        assert!(calls.iter().any(|c| c.starts_with("gh issue list")));
+        assert!(calls.iter().any(|c| c.ends_with(&issues_path("o/r"))));
         assert!(!calls.iter().any(|c| c.starts_with("gh issue create")));
         for code in [Some(2), Some(64), None] {
             assert!(settings(code, false, false).0.is_err(), "{code:?}");
@@ -850,7 +850,10 @@ mod tests {
         );
         let mut answers = vec![
             ("git cat-file -e".to_owned(), String::new()),
-            ("git cat-file blob origin/pilotage:architecture-securite.md".to_owned(), carnet),
+            (
+                "git cat-file blob origin/pilotage:architecture-securite.md".to_owned(),
+                carnet,
+            ),
             (
                 "git cat-file blob origin/main:tools/ci/sensitive-paths.txt".to_owned(),
                 include_str!("../../ci/sensitive-paths.txt").to_owned(),
@@ -859,7 +862,10 @@ mod tests {
                 "git rev-list --reverse origin/main".to_owned(),
                 format!("{}\n{PARENT}\n{COMMIT}\n", BASE[0]),
             ),
-            ("git rev-list --parents".to_owned(), format!("{COMMIT} {PARENT}")),
+            (
+                "git rev-list --parents".to_owned(),
+                format!("{COMMIT} {PARENT}"),
+            ),
             ("git diff --name-only".to_owned(), format!("{file}\0")),
             (
                 format!("{s}/commits/{COMMIT}/pulls"),
@@ -878,15 +884,24 @@ mod tests {
                        "base": {"ref": "main"}, "head": {"sha": HEAD}})
                 .to_string(),
             ),
-            ("gh api repos/o/r/actions/workflows/ci.yml".to_owned(), json!({"id": 9}).to_string()),
+            (
+                "gh api repos/o/r/actions/workflows/ci.yml".to_owned(),
+                json!({"id": 9}).to_string(),
+            ),
             (format!("{s}/commits/{HEAD}/check-runs"), runs.to_string()),
             ("gh api repos/o/r/actions/runs".to_owned(), wfr.to_string()),
             (
                 format!("{s}/issues/7/comments"),
-                json!([{"body": format!("review-ok: {HEAD}")}, {"body": format!("archsec-ok: {HEAD}")}])
-                    .to_string(),
+                json!([
+                    owner_item(&format!("review-ok: {HEAD}")),
+                    owner_item(&format!("archsec-ok: {HEAD}"))
+                ])
+                .to_string(),
             ),
-            ("gh issue list".to_owned(), "[]".to_owned()),
+            (
+                format!("gh api --paginate {}", issues_path("o/r")),
+                "[]".to_owned(),
+            ),
         ];
         // The longest prefix wins, the last one among equals: `over` replaces an answer.
         answers.extend_from_slice(over);
@@ -918,7 +933,7 @@ mod tests {
 
     /// Only these first-line approvals on PR #7.
     fn comments(bodies: &[String]) -> Vec<(String, String)> {
-        let list: Vec<_> = bodies.iter().map(|b| json!({"body": b})).collect();
+        let list: Vec<_> = bodies.iter().map(|b| owner_item(b)).collect();
         vec![(
             "gh api --paginate repos/o/r/issues/7/comments".to_owned(),
             json!(list).to_string(),
@@ -1280,8 +1295,10 @@ mod tests {
             ("gh api repos/o/r/actions/runs".to_owned(), wfr.to_string()),
             (
                 format!("{s}/issues/7/comments"),
-                json!([{"body": format!("review-ok: {}", c.a)},
-                       {"body": format!("archsec-ok: {}", c.a)}])
+                json!([
+                    owner_item(&format!("review-ok: {}", c.a)),
+                    owner_item(&format!("archsec-ok: {}", c.a))
+                ])
                 .to_string(),
             ),
         ]);

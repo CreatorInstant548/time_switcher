@@ -212,7 +212,7 @@ En cas d'erreur interne, la commande est refusée.
 - **[6] Liste complète des fichiers**, par l'API `pulls/<n>/files` paginée. Un renommage compte ses deux chemins (I10). Le nombre de fichiers doit égaler `changedFiles`. L'arbre de tête est refusé s'il contient des chemins égaux à la casse près, ou un chemin non ASCII sous un chemin sensible (B1).
 - **[7] Chemins sensibles** : la liste `tools/ci/sensitive-paths.txt` d'`origin/main` (G8).
 - **[8-9] Workflows** de la tête, contrôlés avec le code de `main` (J1), et actions épinglées (J8).
-- **[10] Approbations**, pour un chemin sensible : `review-ok` **et** `archsec-ok`, chacun en première ligne d'un commentaire de la PR :
+- **[10] Approbations**, pour un chemin sensible : `review-ok` **et** `archsec-ok`, chacun en première ligne d'un commentaire de la PR. **Seuls comptent les commentaires du propriétaire du dépôt** (AS-45 P3) : `user.login` égal au propriétaire du *slug*, `author_association: OWNER` et `user.type: User`. Tout autre commentaire est ignoré, dans `merge`, `verify-main` et le report d'AS-40 ; de même pour les *issues* d'anomalie que relit `verify-main`. L'approbation doit être :
   - sur le SHA de tête ;
   - **ou reportés d'un SHA antérieur `A` de la même PR**, après une simple mise à jour depuis `main` (AS-40). Toutes les conditions W1 à W7 doivent être remplies ([xtask](xtask.md) §6.1). `merge` affiche alors `<avis> carried over from <A> to the head <tête> (AS-40, W1 to W5 hold)`.
 
@@ -250,7 +250,7 @@ pwsh -NoProfile -File tools/dev/test-guards.ps1        # table des commandes ref
 pwsh -NoProfile -File tools/dev/test-hooks.ps1         # crochets Git et install-hooks, dans un TS_CACHE jetable
 pwsh -NoProfile -File tools/dev/test-slots.ps1         # logique des baux, dans un TS_CACHE jetable
 pwsh -NoProfile -File tools/dev/test-slots.ps1 -Real   # plus les vérifications du §6.3, dans les vrais emplacements
-pwsh -NoProfile -File tools/dev/test-repo-settings.ps1 # invariants, comparaison ; arguments et refus S4 dans un dépôt jetable dont origin est local : jamais d'appel à GitHub
+pwsh -NoProfile -File tools/dev/test-repo-settings.ps1 # invariants, comparaison ; arguments et refus S4 dans un dépôt jetable dont origin est local ; script entier avec un faux gh, dépôt public et privé, chaque réglage d'AS-45 affaibli (AS-43, AS-45) : jamais d'appel à GitHub
 ```
 
 ## 5. Vérifications bloquantes de §6.3 (30/10/2026)
@@ -278,14 +278,18 @@ Sources : AS-30 (R1 à R6), AS-31 (E4, E5) et §9.12 (S1 à S6) du carnet d'arch
 
 ### 6.1 Fichier de valeurs : `tools/ci/repo-settings.json`
 
-C'est un chemin sensible. Il a quatre sections :
+C'est un chemin sensible. Il a six sections (deux ajoutées par AS-45, au passage du dépôt en public) :
 
 | Section | Contenu |
 |---|---|
 | `ruleset_main` (R1) | *Ruleset* actif sur `refs/heads/main`, **sans contournement** (`bypass_actors: []`, le jeton administrateur des sessions est lié lui aussi) :<br>- PR obligatoire, 0 approbation (un seul compte : les approbations restent `review-ok` et `archsec-ok`, vérifiés par `cargo xtask merge`), fusion par squash seulement ;<br>- `ci-ok` requis, **lié à l'application GitHub Actions** (`integration_id` 15368), branche à jour (`strict`) ;<br>- historique linéaire, poussée forcée et suppression interdites. |
 | `ruleset_pilotage` (R3) | `refs/heads/pilotage` : poussée forcée et suppression interdites. La poussée directe reste permise. Aucun contournement. |
-| `repo` (R2, S1) | Squash seulement (`allow_merge_commit` et `allow_rebase_merge` à `false`), titre du squash = titre de la PR, branche supprimée après fusion, **fusion automatique désactivée**. |
-| `actions` (R4, S5) | `allowed_actions: selected` avec `sha_pinning_required` ; motifs = liste fermée de SEC0-30 (`actions/checkout@*`, `actions/cache@*`, `actions/cache/restore@*`, `actions/cache/save@*`, `Swatinem/rust-cache@*`, `actions/upload-artifact@*`), sans les actions de GitHub ni les vérifiées ; jeton en lecture seule, aucune approbation de PR par les Actions ; **aucun workflow pour les PR venues d'un *fork*** (réglage des dépôts privés). |
+| `repo` (R2, S1, AS-45) | Squash seulement (`allow_merge_commit` et `allow_rebase_merge` à `false`), titre du squash = titre de la PR, branche supprimée après fusion, **fusion automatique désactivée**. **Dépôt public** (`visibility: public`) ; `security_and_analysis` : `secret_scanning`, `secret_scanning_push_protection` et `dependabot_security_updates` à `enabled`. |
+| `actions` (R4, S5, AS-45) | `allowed_actions: selected` avec `sha_pinning_required` ; motifs = liste fermée de SEC0-30 (`actions/checkout@*`, `actions/cache@*`, `actions/cache/restore@*`, `actions/cache/save@*`, `Swatinem/rust-cache@*`, `actions/upload-artifact@*`), sans les actions de GitHub ni les vérifiées ; jeton en lecture seule, aucune approbation de PR par les Actions ; **workflows des PR venues d'un *fork* soumis à approbation pour tout contributeur extérieur** (`fork_pr_contributor_approval: all_external_contributors`). Le réglage des dépôts privés (`fork-pr-workflows-private-repos`, qui répond 422 sur un dépôt public) n'est plus suivi. |
+| `private_vulnerability_reporting` (AS-45) | Signalement privé des vulnérabilités activé (`enabled: true`). |
+| `interaction_limits` (AS-45) | Limite d'interaction `collaborators_only`, renouvelée par `-Apply` pour la durée la plus longue de l'API (`six_months`). `-Check` compte un écart si elle est absente, différente, ou expire dans moins de 14 jours. |
+
+**Dépôt privé (décidé, AS-45)** : il est refusé comme non public. `-Check` relève l'écart `repo.visibility` (code 1) ; un point d'accès réservé aux dépôts publics qui répond 422 est un écart, et non une erreur.
 
 `integration_id` 15368 est l'`app.id` des contrôles `ci-ok` existants (relevé le 30/10 par `gh api`). Le motif `actions/cache@*` ne couvre pas `actions/cache/restore@…` : chaque sous-action est nommée.
 
@@ -313,8 +317,9 @@ Deux modes exclusifs, plus la forme réservée ci-dessous ; tout autre argument 
   - les deux *rulesets* : `name`, `target: branch`, `enforcement: active`, `bypass_actors: []`, `conditions` qui visent la seule branche ; règles exactement `deletion`, `non_fast_forward`, `required_linear_history`, `pull_request`, `required_status_checks` pour `main`, et `deletion`, `non_fast_forward` pour `pilotage`, sans doublon, sans paramètres pour les trois premières ;
   - `pull_request` : `allowed_merge_methods: ["squash"]`, `required_approving_review_count: 0`, `dismiss_stale_reviews_on_push`, `require_code_owner_review`, `require_last_push_approval`, `required_review_thread_resolution` et `require_extra_approval_for_unattributed_changes` à `false` ;
   - `required_status_checks` : `strict_required_status_checks_policy: true`, `do_not_enforce_on_create: false`, et exactement `[{context: ci-ok, integration_id: 15368}]` ;
-  - `repo` : ses six clés (visibilité, branche par défaut… ne passent jamais par `-Apply`), squash seulement, sans fusion automatique, branche supprimée après fusion, titre `PR_TITLE` ;
-  - Actions : `enabled`, `allowed_actions: selected`, `sha_pinning_required`, ni actions de GitHub ni vérifiées, motifs dans la liste fermée, jeton en lecture, aucune approbation par les Actions, et les quatre clés des *forks* à `false`.
+  - `repo` : ses huit clés (branche par défaut et autres champs ne passent jamais par `-Apply`), squash seulement, sans fusion automatique, branche supprimée après fusion, titre `PR_TITLE`, `visibility: public`, et les trois clés de `security_and_analysis` à `enabled` ;
+  - Actions : `enabled`, `allowed_actions: selected`, `sha_pinning_required`, ni actions de GitHub ni vérifiées, motifs dans la liste fermée, jeton en lecture, aucune approbation par les Actions, et `approval_policy: all_external_contributors` pour les *forks* ;
+  - `private_vulnerability_reporting.enabled: true` ; `interaction_limits` : `limit: collaborators_only`, `expiry: six_months`.
 
   Le fichier est refusé aussi si une action utilisée par les workflows d'`origin/main` n'est couverte par aucun motif (`-Apply` casserait la CI). Affaiblir une règle, ou changer une valeur, demande donc de modifier aussi le script. Un test par champ le vérifie (`test-repo-settings.ps1`).
 - **`-Check`** (lecture seule, `GET` seulement) compare GitHub au fichier et affiche chaque écart, avec la valeur attendue et la valeur lue ; code 1 s'il y en a un. Il signale :
@@ -323,11 +328,12 @@ Deux modes exclusifs, plus la forme réservée ci-dessous ; tout autre argument 
   - tout *ruleset* inconnu qui vise `main` ou `pilotage` (S3 ; motifs `~ALL`, `~DEFAULT_BRANCH` et jokers compris, de façon prudente) ;
   - toute **protection de branche classique** encore présente, sur n'importe quelle branche (S3). `branches?protected=true` compte aussi les branches visées par un *ruleset* : chaque branche listée est relue par `branches/<nom>/protection`. Seul le 404 dont le message est « Branch not protected » vaut « aucune » ; tout autre 404 arrête `-Check` (code 2) ;
   - au-delà de 100 *rulesets* ou de 100 branches protégées, `-Check` s'arrête (code 2) : la pagination n'est pas gérée ;
-  - toute différence des champs de `repo` et des quatre ressources d'Actions ;
+  - toute différence des champs de `repo`, des quatre ressources d'Actions et du signalement privé des vulnérabilités ; une ressource illisible (404, 409, 422) est un écart ;
+  - une limite d'interaction absente, différente, ou qui expire dans moins de 14 jours (AS-45) ;
   - **l'attestation qui remplace l'essai R6.4** (AS-31, T3e-2) : `current_user_can_bypass` doit valoir `never` sur le *ruleset* `main` (lu par `GET` sur ce *ruleset*). Ce champ reste dans la liste des champs ignorés par la comparaison ci-dessous, puisqu'il ne figure pas dans le fichier : il est attesté à part, pour `main` seulement. Les règles effectives de `main` (`rules/branches/main`) doivent contenir `deletion`, `non_fast_forward`, `required_linear_history`, `pull_request` et `required_status_checks`. Sinon, c'est un écart (code 1), qui suspend les fusions (E4).
 
   Champs ignorés, liste explicite : `id`, `node_id`, `source`, `source_type`, `_links`, `created_at`, `updated_at`, `current_user_can_bypass` d'un *ruleset* ; les champs de l'objet du dépôt absents du fichier ; `selected_actions_url`. Un paramètre de règle présent sur GitHub et absent du fichier est un **écart** (par exemple `do_not_enforce_on_create: true`, qui affaiblirait la règle ; le fichier le fixe donc à `false`). Seule exception, une liste fermée et commentée dans le script, et seulement avec sa valeur neutre : `automatic_copilot_code_review_enabled: false` et `required_reviewers: []`, que GitHub peut renvoyer sans qu'on les envoie. Elle évite qu'un `-Apply` conforme laisse un écart qui suspendrait toutes les fusions.
-- **`-Apply`** : refuse un fichier invalide sans rien écrire. Sinon, crée (`POST`) ou remplace (`PUT`, identifiant retrouvé par nom) les deux *rulesets*, règle le dépôt (`PATCH`) et les quatre ressources d'Actions (`PUT`), puis relance `-Check` et échoue si un écart subsiste. Il ne supprime ni *ruleset* inconnu ni protection classique : `-Check` les signale.
+- **`-Apply`** : refuse un fichier invalide sans rien écrire. Sinon, crée (`POST`) ou remplace (`PUT`, identifiant retrouvé par nom) les deux *rulesets*, règle le dépôt (`PATCH` sans `security_and_analysis`, puis un second `PATCH` pour l'analyse de secrets et la protection des poussées, puis `PUT vulnerability-alerts` et `PUT automated-security-fixes` pour Dependabot) et les quatre ressources d'Actions (`PUT`), active le signalement privé des vulnérabilités (`PUT`), renouvelle la limite d'interaction (`PUT`, `six_months`), puis relance `-Check` et échoue si un écart subsiste. Il ne supprime ni *ruleset* inconnu ni protection classique : `-Check` les signale.
 
 Codes de sortie : 0 conforme, 1 écart ou écriture refusée, 2 usage, préalable non rempli ou erreur.
 
