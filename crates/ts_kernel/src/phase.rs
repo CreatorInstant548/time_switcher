@@ -1,4 +1,4 @@
-//! Les dix phases d'un tick, un `Schedule` `bevy_ecs` par phase.
+//! The ten phases of a tick, one `bevy_ecs` `Schedule` per phase.
 
 use bevy_ecs::schedule::{
     LogLevel, Schedule, ScheduleBuildSettings, ScheduleLabel, SingleThreadedExecutor,
@@ -7,37 +7,37 @@ use bevy_ecs::schedule::{
 use crate::Threads;
 
 // spec: revues/architecture.md §9.1
-/// Phase d'un tick. Les phases s'exécutent dans l'ordre de [`Phase::ALL`] ; à l'intérieur
-/// d'une phase, l'exécuteur de `bevy_ecs` répartit les systèmes sans conflit d'accès.
+/// Phase of a tick. Phases run in the order of [`Phase::ALL`]; within a phase, the `bevy_ecs`
+/// executor spreads the systems that do not conflict in access.
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Phase {
-    /// Intentions et commandes reçues pour ce tick ; validation.
+    /// Intentions and commands received for this tick; validation.
     Input,
-    /// Événements datés de l'intervalle du tick ([`crate::DueEvents`]).
+    /// Dated events of the tick interval ([`crate::DueEvents`]).
     Scheduled,
-    /// Grille spatiale et ensembles perçus.
+    /// Spatial grid and perceived sets.
     Perception,
-    /// Réflexes, sélection d'objectif, planification.
+    /// Reflexes, goal selection, planning.
     Mind,
-    /// Compétences d'exécution.
+    /// Execution skills.
     Skills,
-    /// Exécution des intentions.
+    /// Execution of intentions.
     Act,
-    /// Blessures, besoins, émotions, mémoire, témoins.
+    /// Injuries, needs, emotions, memory, witnesses.
     Consequences,
-    /// Décor, météo, transports.
+    /// Scenery, weather, transport.
     World,
-    /// Bulles et changements de niveau de détail.
+    /// Bubbles and level-of-detail changes.
     Lod,
-    /// Événements finalisés, indices de changements, mesures.
+    /// Finalized events, change hints, measures.
     Output,
 }
 
 impl Phase {
-    /// Nombre de phases.
+    /// Number of phases.
     pub const COUNT: usize = 10;
 
-    /// Les phases, dans leur ordre d'exécution.
+    /// The phases, in their order of execution.
     pub const ALL: [Self; Self::COUNT] = [
         Self::Input,
         Self::Scheduled,
@@ -51,15 +51,15 @@ impl Phase {
         Self::Output,
     ];
 
-    /// Rang de la phase dans [`Phase::ALL`].
+    /// Rank of the phase in [`Phase::ALL`].
     pub const fn index(self) -> usize {
         self as usize
     }
 }
 
 // spec: revues/architecture.md §9.2 ; carnet architecture-securite.md §9.10 L7
-/// `Schedule` d'une phase : ambiguïtés d'ordre **en erreur**, et exécuteur à un seul fil pour
-/// [`Threads::Single`].
+/// `Schedule` of a phase: ordering ambiguities **as errors**, and a single-threaded executor
+/// for [`Threads::Single`].
 pub(crate) fn phase_schedule(phase: Phase, threads: Threads) -> Schedule {
     let mut schedule = Schedule::new(phase);
     schedule.set_build_settings(ScheduleBuildSettings {

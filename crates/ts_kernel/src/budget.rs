@@ -1,10 +1,10 @@
-//! Budgets de calcul en unités de travail.
+//! Compute budgets in work units.
 
 // spec: revues/architecture.md §9.4, §11.3
-/// Budget de calcul en **unités de travail** (nœuds explorés, recherches de chemin,
-/// transitions de niveau…), jamais en temps : le résultat ne dépend pas de la machine.
+/// Compute budget in **work units** (nodes explored, path searches, level transitions...),
+/// never in time: the result does not depend on the machine.
 ///
-/// Une dépense qui dépasse le reste est refusée en entier, et rien n'est dépensé.
+/// A spend that exceeds the remainder is refused in full, and nothing is spent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkBudget {
     limit: u32,
@@ -12,12 +12,13 @@ pub struct WorkBudget {
 }
 
 impl WorkBudget {
-    /// Budget neuf de `limit` unités.
+    /// A fresh budget of `limit` units.
     pub const fn new(limit: u32) -> Self {
         Self { limit, used: 0 }
     }
 
-    /// Dépense `units` unités si le reste suffit ; rend `false` sans rien dépenser sinon.
+    /// Spends `units` units if the remainder suffices; returns `false` and spends nothing
+    /// otherwise.
     pub const fn try_spend(&mut self, units: u32) -> bool {
         if units <= self.remaining() {
             self.used += units;
@@ -27,27 +28,27 @@ impl WorkBudget {
         }
     }
 
-    /// Unités restantes.
+    /// Units remaining.
     pub const fn remaining(&self) -> u32 {
         self.limit - self.used
     }
 
-    /// Unités dépensées.
+    /// Units spent.
     pub const fn used(&self) -> u32 {
         self.used
     }
 
-    /// Limite du budget.
+    /// The budget limit.
     pub const fn limit(&self) -> u32 {
         self.limit
     }
 
-    /// Vrai si plus rien ne reste.
+    /// True if nothing remains.
     pub const fn is_exhausted(&self) -> bool {
         self.used == self.limit
     }
 
-    /// Remet le budget à plein, par exemple au tick suivant.
+    /// Resets the budget to full, for example at the next tick.
     pub const fn refill(&mut self) {
         self.used = 0;
     }
