@@ -86,3 +86,60 @@
 | N° | Attendu | Cible | Source | Mesure | Dès la phase |
 |---|---|---|---|---|---|
 | M36 | Minutes de CI | ≤ 3 000 par mois (GitHub Pro) ; alerte et mode minimal au-delà de 80 %, soit 2 400 | 05, en-tête ; clôture de l'architecture, S-6 ; orchestrateur, passage à GitHub Pro | Relevé mensuel | 0 |
+
+## 10. Bornes et formats des données (décidé le 01/11)
+
+Valeurs de départ pour les remontées [#43](https://github.com/CreatorInstant548/time_switcher/issues/43), [#44](https://github.com/CreatorInstant548/time_switcher/issues/44) et [#45](https://github.com/CreatorInstant548/time_switcher/issues/45), avec leur **méthode de calibrage**. Une borne n'est pas une cible : c'est un plafond de sécurité, choisi assez large pour ne jamais gêner un contenu ou un monde légitime.
+
+**Méthode commune** (décidé) : chaque borne a sa **mesure** (outil cité ci-dessous), qui rapporte la part utilisée de la borne. La CI **alerte à 50 %**. On relève alors la borne par une PR de conception, à **4 fois** la plus grande valeur mesurée, arrondie à la puissance de 2 supérieure. Une borne ne baisse jamais en dessous de 4 fois le maximum mesuré. *Pourquoi : une alerte à mi-chemin laisse le temps de décider ; une marge de 4 absorbe une phase de contenus sans rouvrir la question à chaque PR.*
+
+### 10.1 Chargement des contenus (`ts_data`, #43)
+
+| N° | Borne | Valeur | Raison |
+|---|---|---|---|
+| M39 | Taille d'un fichier `.ron` | 1 Mio | Un fichier écrit à la main reste très en dessous ; les grandes tables (prénoms, noms, taux) se découpent par thème |
+| M39 | Taille totale d'un paquet | 64 Mio | Borne la mémoire d'un chargement |
+| M39 | Nombre de fichiers d'un paquet | 4 096 | Un fichier par nature, par rôle ou par famille de pièces |
+| M39 | Nombre de fiches d'un paquet | 65 536 | Catalogues prévus jusqu'en phase 3 : quelques centaines d'actes et de rôles, quelques milliers de pièces de garde-robe, de recettes et de lignes de tables |
+| M39 | Profondeur d'imbrication RON | 16 | Les fiches s'imbriquent sur 3 à 6 niveaux |
+| M39 | Profondeur des sous-dossiers | 8 | `data/content/<domaine>/<famille>/…` en utilise 3 ou 4 |
+
+Mesure : `ts-data check` rapporte, pour chaque borne, la plus grande valeur du paquet. Dès la phase 0.
+
+### 10.2 Identifiants et noms des fiches (`ts_data`, #44)
+
+| N° | Règle | Valeur |
+|---|---|---|
+| M40 | Grammaire d'un identifiant | Segments `[a-z][a-z0-9_]*` séparés par un point, **au moins deux** ; 1 à 64 octets ; en anglais, comme le code |
+| M40 | Premier segment | **Espace de noms de la sorte de fiche** (`act`, `role`, `item`, `recipe`, `table`, `appearance`, `conduct`…), pris dans une liste fermée tenue par `ts_data` et cohérente avec le dossier du fichier |
+| M40 | Unicité | Unique dans tout le paquet, toutes sortes confondues |
+| M40 | Stabilité | Un identifiant n'est **jamais renommé ni réutilisé** : une fiche retirée laisse son identifiant dans une liste des identifiants retirés, que `ts-data check` refuse de voir réapparaître (comme la règle 6 du [README](README.md) pour les sections) |
+| M40 | Nom affiché | 1 à 256 octets d'UTF-8, en **forme normalisée NFC**, sans caractère de contrôle ni espace en tête ou en fin ; en français, comme toute la fiction |
+
+*Pourquoi :*
+- les identifiants entrent dans l'empreinte du paquet, et l'espace de noms en tête évite les collisions entre domaines sans préfixe numérique ;
+- la forme NFC garantit qu'un même nom donne une même empreinte, quel que soit l'éditeur ;
+- la longueur d'affichage relève de l'interface : un nom long est abrégé à l'écran, jamais refusé au chargement.
+
+Mesure : `ts-data check`. Dès la phase 0.
+
+### 10.3 Décodage des instantanés (`ts_persist`, #45)
+
+| N° | Borne | Valeur de départ |
+|---|---|---|
+| M41 | Enveloppe stockée (fichier entier) | 256 Mio |
+| M41 | Total décompressé, toutes parts | 1 Gio |
+| M41 | Taille décompressée d'une part | 512 Mio |
+| M41 | Manifeste | 4 Mio |
+| M41 | Nombre de parts | 65 536 |
+| M41 | Nom d'une part | 128 octets |
+| M41 | Fenêtre `zstd` | 8 Mio |
+
+Les valeurs de départ sont celles du code ; elles valent pour un monde jusqu'à ≈ 12 000 habitants, sur l'estimation de [revues/architecture.md](revues/architecture.md) §12.3 (250 à 400 Mo en mémoire et 60 à 120 Mo compressés pour 10 000 habitants).
+
+**Calibrage :**
+- **Taille de référence** : en phase 1, on mesure un monde réel au **plafond de calcul** fixé pour un serveur ([population](domaines/population.md) §7.6). La mesure porte sur la taille en mémoire *après décodage*, pas seulement sur l'entrée, pour tenir compte de l'amplification (un `Option<Large>` à `None` tient en un octet d'entrée). Les entrées du fuzzing qui amplifient le plus servent à vérifier cette mesure.
+- **Valeur des bornes** : 2 fois la mesure au plafond, arrondie à la puissance de 2 supérieure. Les bornes de taille croissent donc avec la population ; les autres ne changent que si le découpage en parts change.
+- **Mêmes bornes en solo et en ligne.** Les mondes y ont la même taille, et une sauvegarde solo reçue d'un autre joueur doit être décodée avec la même prudence (S24). Un hôte peut toujours passer des bornes plus strictes.
+
+Mesure : `ts-sim` (taille des instantanés au plafond) et fuzzing de `ts_persist`. Valeurs de départ dès la phase 0, calibrage en phase 1.
