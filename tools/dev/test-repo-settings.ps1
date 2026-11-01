@@ -1,6 +1,7 @@
 # tools/dev/test-repo-settings.ps1 : tests de repo-settings.ps1, sans appel à GitHub.
 # Invariants du fichier (S2), comparaison des réponses, motifs de ref (S3), arguments et préalables,
-# forme -Check -SourceCommit <sha> (AS-38) et lecture du fichier dans ce commit.
+# forme -Check -SourceCommit <sha> (AS-38) et lecture du fichier dans ce commit ; bilan final de -Check et
+# script entier sur une API simulée, par un faux gh (AS-43).
 # Lit tools/ci/repo-settings.json de la copie de travail et les workflows d'origin/main. Sortie 1 si un cas échoue.
 $dev = $PSScriptRoot
 . (Join-Path $dev 'repo-settings.ps1')
@@ -166,7 +167,7 @@ function Get-Api([string]$Path, [int[]]$Allow = @()) {
 }
 function Test-Drift([string]$Name, [scriptblock]$Change, [int]$Count, [string]$Pattern) {
   $script:Fake = New-Fake; & $Change $script:Fake
-  $d = try { @(Get-Drift $cfg) } catch { @("exception : $($_.Exception.Message)") }
+  $d = try { Get-Drift $cfg } catch { @("exception : $($_.Exception.Message)") }   # sans @() : voir Get-CheckResult
   Check "$Name : $Count écart(s), lu $($d.Count) ($($d -join ' ; '))" ($d.Count -eq $Count -and (-not $Pattern -or ($d -join "`n") -match $Pattern))
 }
 Test-Drift 'GitHub conforme, attestation comprise' { param($f) } 0 ''
@@ -177,6 +178,33 @@ foreach ($t in $EffectiveMain) {
   Test-Drift "règle effective $t absente" { param($f) $f['/rules/branches/main?per_page=100'] = @($f['/rules/branches/main?per_page=100'] | Where-Object { $_['type'] -cne $t }) }.GetNewClosure() 1 "règle effective $t absente"
 }
 Test-Drift 'aucune règle effective sur main' { param($f) $f['/rules/branches/main?per_page=100'] = @() } 5 'rules/branches/main'
+# Bilan final du script (Get-CheckResult), chemin suivi par -Check : une liste d'écarts vide ne compte
+# pas pour un écart (régression : @(Get-Drift …) donnait « ÉCART : » vide et « 1 écart(s) »).
+function Test-CheckResult([string]$Name, [scriptblock]$Change, [int]$Code, [string]$Pattern, [int]$Lines) {
+  $script:Fake = New-Fake; & $Change $script:Fake
+  $r = try { Get-CheckResult $cfg '-Check' "d'origin/main" 'o/r' } catch { @{ Code = -1; Lines = @("exception : $($_.Exception.Message)") } }
+  $all = (@($r.Lines) -join "`n") + "$($r.Error)"
+  $driftLines = @(@($r.Lines) | Where-Object { $_ -cmatch 'ÉCART' })
+  Check "bilan -Check : $Name (code $($r.Code), $($driftLines.Count) ligne(s) ÉCART : $all)" ($r.Code -eq $Code -and $driftLines.Count -eq $Lines -and $all -match $Pattern -and
+    -not ($driftLines | Where-Object { $_ -cnotmatch '^  ÉCART : \S' }))
+}
+Test-CheckResult 'GitHub conforme' { param($f) } 0 '^repo-settings -Check : conforme à tools/ci/repo-settings\.json d''origin/main \(o/r\)$' 0
+Test-CheckResult 'un écart' { param($f) $f['/rulesets/9']['current_user_can_bypass'] = 'always' } 1 '(?s)ÉCART : .*current_user_can_bypass.*\n.*: 1 écart\(s\) avec tools/ci/repo-settings\.json d''origin/main$' 1
+Test-CheckResult 'cinq écarts' { param($f) $f['/rules/branches/main?per_page=100'] = @() } 1 ': 5 écart\(s\) avec ' 5
+# Get-Drift simulée : liste vide (le cas du bug) ; garde-fou Z3 : ligne vide ou nulle, ou autre chose
+# qu'une liste, donnent le code 2, jamais un écart ni un passage.
+$realDrift = ${function:Get-Drift}
+$DriftOut = $null
+function Get-Drift($C) { return , $script:DriftOut }
+try {
+  foreach ($c in @(@('liste vide renvoyée par Get-Drift', @(), 0, 'conforme à', 0), @('ligne d''écart vide', @(''), 2, 'ligne d''écart vide ou nulle', 0),
+                   @('ligne d''écart nulle', @($null), 2, 'ligne d''écart vide ou nulle', 0), @('ligne blanche parmi d''autres', @('x : écart', ' '), 2, 'vide ou nulle', 0))) {
+    $DriftOut = [Collections.Generic.List[string]]::new(); foreach ($x in $c[1]) { $DriftOut.Add($x) }
+    Test-CheckResult $c[0] { param($f) } $c[2] $c[3] $c[4]
+  }
+  $DriftOut = $null; Test-CheckResult 'Get-Drift sans liste' { param($f) } 2 'liste attendue' 0
+  $DriftOut = @('x : écart'); Test-CheckResult 'Get-Drift en tableau' { param($f) } 2 'liste attendue' 0
+} finally { ${function:Get-Drift} = $realDrift }
 
 # Arguments et préalables S4, dans un dépôt jetable : copie « principale » clonée d'un dépôt nu local.
 # Son origin n'est jamais github.com : le dernier préalable refuse avant tout appel à GitHub, d'où
@@ -268,6 +296,50 @@ foreach ($x in @(@('fichier affaibli', $weakSha), @('fichier affaibli et script 
 }
 Check 'le script de la tête n''est pas celui de la copie principale' ((Get-Content -Raw $S) -cne $lax)
 Expect '-SourceCommit d''un commit sans le fichier' (Run-Settings $M $S @('-Check', '-SourceCommit', $nofile)) "absent du commit $nofile"
+# Script entier sur une API simulée (AS-43, Z2) : origin se lit github.com/o/r mais git le redirige vers
+# le dépôt nu local (insteadOf) ; un faux gh, premier dans PATH, sert New-Fake et note chaque appel.
+# Jamais -Apply ici : le faux gh répondrait aussi aux écritures.
+$bin = Join-Path $tmp 'bin'; New-Item -ItemType Directory -Force $bin | Out-Null
+Set-Content (Join-Path $bin 'gh.ps1') @'
+Add-Content -LiteralPath $env:TS_FAKE_GH_LOG "$($args[-1])"
+$data = Get-Content -Raw -LiteralPath $env:TS_FAKE_GH_DATA | ConvertFrom-Json -AsHashtable -Depth 50
+$k = "$($args[-1])" -creplace '^repos/o/r', ''
+if ($args[0] -cne 'api' -or $args -contains '-X' -or -not $data.ContainsKey($k)) { exit 1 }
+ConvertTo-Json -InputObject $data[$k] -Depth 30 -Compress
+exit 0
+'@
+$env:TS_FAKE_GH_LOG = Join-Path $tmp 'gh.log'; $env:TS_FAKE_GH_DATA = Join-Path $tmp 'gh.json'
+# Si le vrai gh était lancé malgré tout, il ne joindrait pas GitHub : hôte invalide, sans configuration
+# ni jeton. Le cas conforme exige des appels notés, donc le faux gh.
+$savedEnv = @{}; foreach ($v in 'PATH', 'GH_HOST', 'GH_CONFIG_DIR', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN') { $savedEnv[$v] = [Environment]::GetEnvironmentVariable($v) }
+$env:PATH = "$bin$([IO.Path]::PathSeparator)$env:PATH"; $env:GH_HOST = 'gh.invalid'; $env:GH_CONFIG_DIR = $bin
+foreach ($v in 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN') { [Environment]::SetEnvironmentVariable($v, $null) }
+G -C $M config remote.origin.url https://github.com/o/r.git
+G -C $M config "url.$($bare -replace '\\', '/').insteadOf" https://github.com/o/r.git
+function Run-Faked([scriptblock]$Change, [string[]]$A) {
+  $f = New-Fake; & $Change $f
+  Set-Content -LiteralPath $env:TS_FAKE_GH_DATA (ConvertTo-Json -InputObject $f -Depth 30)
+  Remove-Item -LiteralPath $env:TS_FAKE_GH_LOG -ErrorAction SilentlyContinue
+  $r = Run-Settings $M $S $A
+  $r.Calls = @(if (Test-Path -LiteralPath $env:TS_FAKE_GH_LOG) { Get-Content -LiteralPath $env:TS_FAKE_GH_LOG })
+  $r.DriftLines = @($r.Out -split '\r?\n' | Where-Object { $_ -cmatch 'ÉCART' })
+  return $r
+}
+try {
+  $r = Run-Faked { param($f) } @('-Check')
+  Check "script entier, API conforme : code 0, aucune ligne ÉCART (code $($r.Code), $($r.Calls.Count) appel(s) : $($r.Out.Trim()))" ($r.Code -eq 0 -and $r.DriftLines.Count -eq 0 -and
+    $r.Calls.Count -gt 0 -and $r.Out -cmatch 'repo-settings -Check : conforme à tools/ci/repo-settings\.json d''origin/main \(o/r\)')
+  $r = Run-Faked { param($f) $f['/rulesets/9']['current_user_can_bypass'] = 'always' } @('-Check')
+  Check "script entier, un champ qui dérive : code 1, une ligne ÉCART (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.DriftLines.Count -eq 1 -and
+    $r.DriftLines[0] -cmatch '^  ÉCART : ruleset_main\.current_user_can_bypass : attendu "never", lu "always"' -and $r.Out -cmatch '-Check : 1 écart\(s\) avec ')
+  $r = Run-Faked { param($f) } @('-Check', '-SourceCommit', $weakSha)
+  Check "script entier, fichier refusé par S2 : code 1 sans appel à GitHub (code $($r.Code), $($r.Calls.Count) appel(s) : $($r.Out.Trim()))" ($r.Code -eq 1 -and
+    $r.Calls.Count -eq 0 -and $r.DriftLines.Count -eq 0 -and $r.Out -match 'repo\.allow_auto_merge doit valoir false')
+} finally {
+  foreach ($v in $savedEnv.Keys) { [Environment]::SetEnvironmentVariable($v, $savedEnv[$v]) }
+  Remove-Item Env:TS_FAKE_GH_LOG, Env:TS_FAKE_GH_DATA -ErrorAction SilentlyContinue
+  G -C $M config remote.origin.url ($bare -replace '\\', '/'); G -C $M config --unset "url.$($bare -replace '\\', '/').insteadOf"
+}
 G -C $M rm -q tools/ci/repo-settings.json; G -C $M commit -q -m 'docs(essai): sans fichier'; G -C $M push -q origin main
 Expect 'fichier absent d''origin/main' (Run-Settings $M $S @('-Check')) 'absent d''origin/main'
 Remove-Item -LiteralPath $tmp -Recurse -Force
