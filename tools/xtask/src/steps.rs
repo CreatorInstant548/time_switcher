@@ -295,7 +295,7 @@ fn pinned_dir(cx: &Ctx) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn lock_value(lock: &str, key: &str) -> Result<String, String> {
+pub(crate) fn lock_value(lock: &str, key: &str) -> Result<String, String> {
     lock.lines()
         .filter_map(|l| l.split_once('='))
         .find(|(k, _)| k.trim() == key)
@@ -560,7 +560,7 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
         }
     }
     // ts_py : chaque allow ou expect de unsafe_code, dans tout fichier, suit un // SAFETY:.
-    if let Some(py) = meta.package("ts_py") {
+    if let Some(py) = meta.package(manifests::LOCAL_LINTS_CRATE) {
         let dir = format!("{}/", meta.rel_dir(py));
         for rel in tri!(cx.files())
             .iter()
@@ -574,10 +574,14 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
             }
         }
     }
+    // F3: inherited lints everywhere; local tables equal to the workspace's in ts_py (AS-18).
+    let root_manifest = tri!(sys::read_text(&cx.root.join("Cargo.toml")));
     for p in &meta.packages {
-        if let Err(e) = sys::read_text(Path::new(&p.manifest_path))
-            .and_then(|t| manifests::check_lints_section(&t))
-        {
+        let check = |t: String| match p.name == manifests::LOCAL_LINTS_CRATE {
+            true => manifests::check_local_lints(&t, &root_manifest),
+            false => manifests::check_lints_section(&t),
+        };
+        if let Err(e) = sys::read_text(Path::new(&p.manifest_path)).and_then(check) {
             errors.push(format!("{} : {e}", p.name));
         }
     }

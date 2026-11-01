@@ -1,6 +1,8 @@
 //! Contrôles des crates et des manifestes : `unsafe_code` (SEC0-19, F3), fonctionnalités et
 //! `ts_toy` (SEC0-20, F4, D-DEV-02). Fonctions pures, sans E/S.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::metadata::Metadata;
 
 /// Fonctionnalités de développement de `ts_kernel`, interdites avec `public` (SEC0-20).
@@ -27,14 +29,14 @@ const ROOT_KINDS: [&str; 8] = [
     "custom-build",
 ];
 
-/// Racines de crate à contrôler : (crate, fichier source), sauf `ts_client_native` (FFI).
+/// The only crate with local `[lints.*]` tables and `#![deny(unsafe_code)]` (SEC0-19, AS-18).
+/// No other exception is anticipated, `ts_client_native` included (PY1).
+pub const LOCAL_LINTS_CRATE: &str = "ts_py";
+
+/// Crate roots to check: (crate, source file), every crate of the workspace (PY1).
 pub fn crate_roots(meta: &Metadata) -> Vec<(&str, &str)> {
     let mut roots = Vec::new();
-    for p in meta
-        .packages
-        .iter()
-        .filter(|p| p.name != "ts_client_native")
-    {
+    for p in &meta.packages {
         for t in &p.targets {
             if t.kind.iter().any(|k| ROOT_KINDS.contains(&k.as_str())) {
                 roots.push((p.name.as_str(), t.src_path.as_str()));
@@ -46,9 +48,9 @@ pub fn crate_roots(meta: &Metadata) -> Vec<(&str, &str)> {
 
 /// `#![forbid(unsafe_code)]` partout ; `ts_py` en `deny` (SEC0-19).
 pub fn check_unsafe_root(crate_name: &str, source: &str) -> Result<(), String> {
-    let expected = match crate_name {
-        "ts_py" => "#![deny(unsafe_code)]",
-        _ => "#![forbid(unsafe_code)]",
+    let expected = match crate_name == LOCAL_LINTS_CRATE {
+        true => "#![deny(unsafe_code)]",
+        false => "#![forbid(unsafe_code)]",
     };
     match source.lines().any(|l| l.trim() == expected) {
         true => Ok(()),
@@ -100,6 +102,88 @@ pub fn check_lints_section(manifest: &str) -> Result<(), String> {
     } else {
         Err("[lints] workspace = true absent".to_owned())
     }
+}
+
+/// Lint tables of a manifest, `tool -> (key -> value)`, for the tables named `<prefix><tool>`
+/// (`[lints.rust]`, `[workspace.lints.clippy]`). Lines are compared without blanks or
+/// comments. Fails closed: an array of tables, a line without `=`, a duplicate key, or a key
+/// outside these tables that names the lints (`[lints]` with content, dotted root keys) is an
+/// error.
+fn lint_tables(manifest: &str, prefix: &str) -> Result<BTreeMap<String, Lints>, String> {
+    let bare = prefix.trim_end_matches('.');
+    let mut tables: BTreeMap<String, Lints> = BTreeMap::new();
+    let mut section = String::new();
+    for line in manifest
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or_default())
+    {
+        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if compact.starts_with("[[") && compact.contains("lints") {
+            return Err(format!("array of tables {compact} refused"));
+        }
+        if let Some(name) = compact.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            section = name.to_owned();
+            if let Some(tool) = section.strip_prefix(prefix)
+                && tables.insert(tool.to_owned(), Lints::new()).is_some()
+            {
+                return Err(format!("table [{section}] declared twice"));
+            }
+            continue;
+        }
+        if compact.is_empty() {
+            continue;
+        }
+        let in_table = section.strip_prefix(prefix).and_then(|t| tables.get_mut(t));
+        match in_table {
+            Some(entries) => {
+                let (key, value) = compact
+                    .split_once('=')
+                    .ok_or_else(|| format!("unreadable line in [{section}]: {}", line.trim()))?;
+                if entries.insert(key.to_owned(), value.to_owned()).is_some() {
+                    return Err(format!("key {key} twice in [{section}]"));
+                }
+            }
+            None if section == bare || (section.is_empty() && compact.starts_with(bare)) => {
+                return Err(format!(
+                    "lint setting outside a [{prefix}<tool>] table: {}",
+                    line.trim()
+                ));
+            }
+            None => {}
+        }
+    }
+    Ok(tables)
+}
+
+/// Entries of one lint table: key -> value, without blanks.
+type Lints = BTreeMap<String, String>;
+
+/// F3 for [`LOCAL_LINTS_CRATE`] (AS-18, PY1): no `[lints] workspace = true`, but local
+/// `[lints.<tool>]` tables **identical** to the `[workspace.lints.<tool>]` tables of the root
+/// manifest, except `unsafe_code`, `"forbid"` there and `"deny"` here.
+pub fn check_local_lints(manifest: &str, root_manifest: &str) -> Result<(), String> {
+    let mut expected = lint_tables(root_manifest, "workspace.lints.")
+        .map_err(|e| format!("root Cargo.toml: {e}"))?;
+    let rust = expected
+        .get_mut("rust")
+        .and_then(|t| t.get_mut("unsafe_code"))
+        .filter(|v| v.as_str() == "\"forbid\"")
+        .ok_or("root Cargo.toml: [workspace.lints.rust] without unsafe_code = \"forbid\"")?;
+    *rust = "\"deny\"".to_owned();
+    let actual = lint_tables(manifest, "lints.")?;
+    if actual == expected {
+        return Ok(());
+    }
+    let tools: BTreeSet<&String> = actual.keys().chain(expected.keys()).collect();
+    let differ: Vec<String> = tools
+        .into_iter()
+        .filter(|t| actual.get(*t) != expected.get(*t))
+        .map(|t| format!("[lints.{t}]"))
+        .collect();
+    Err(format!(
+        "{} differ from [workspace.lints.*] (only unsafe_code = \"deny\" may change)",
+        differ.join(", ")
+    ))
 }
 
 /// E7, AS-23 point 4 : aucune section `[patch]` ni `[replace]`, ni clé de racine `patch.` ou
@@ -264,6 +348,58 @@ mod tests {
             check_lints_section("[lints]\nworkspace = true\nrust = { unsafe_code = \"allow\" }\n")
                 .is_err()
         );
+    }
+
+    /// PY1: `ts_client_native` is a crate root like any other, with no anticipated exception.
+    #[test]
+    fn no_anticipated_unsafe_exception() {
+        let m = parse(
+            r#"{"workspace_root":"/w","packages":[
+            {"name":"ts_client_native","manifest_path":"/w/c/Cargo.toml",
+             "targets":[{"kind":["cdylib"],"src_path":"/w/c/src/lib.rs"}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(crate_roots(&m), [("ts_client_native", "/w/c/src/lib.rs")]);
+        let deny = "#![deny(unsafe_code)]\n";
+        assert!(check_unsafe_root("ts_client_native", deny).is_err());
+        assert!(check_unsafe_root("ts_client_native", "#![forbid(unsafe_code)]\n").is_ok());
+    }
+
+    const ROOT: &str = "[workspace]\nmembers = []\n\n[workspace.lints.rust]\nunsafe_code = \"forbid\"\nmissing_debug_implementations = \"warn\"\n\n[workspace.lints.clippy]\nall = { level = \"warn\", priority = -1 }\nunwrap_used = \"warn\"\n\n[profile.dev]\nopt-level = 1\n";
+    const LOCAL: &str = "[package]\nname = \"ts_py\" # x\n\n[lints.rust]\nmissing_debug_implementations = \"warn\"\nunsafe_code = \"deny\"\n\n[lints.clippy]\nall={level=\"warn\",priority=-1} # same\nunwrap_used = \"warn\"\n";
+
+    /// AS-18, PY1: the local tables of `ts_py` equal the workspace's, except `unsafe_code`.
+    #[test]
+    fn local_lints_follow_the_workspace() {
+        assert_eq!(check_local_lints(LOCAL, ROOT), Ok(()));
+        let bad = [
+            // Another level for unsafe_code, or forbid kept.
+            LOCAL.replace("\"deny\"", "\"allow\""),
+            LOCAL.replace("\"deny\"", "\"forbid\""),
+            // A lint removed, added or weakened.
+            LOCAL.replace("unwrap_used = \"warn\"\n", ""),
+            format!("{LOCAL}expect_used = \"allow\"\n"),
+            LOCAL.replace("priority=-1", "priority=0"),
+            // Inheritance or extra settings next to the tables.
+            format!("{LOCAL}\n[lints]\nworkspace = true\n"),
+            format!("lints.rust.unsafe_code = \"allow\"\n{LOCAL}"),
+            format!("{LOCAL}\n[lints.rustdoc]\nbroken_intra_doc_links = \"allow\"\n"),
+            format!("{LOCAL}\n[lints.rust]\nunsafe_code = \"deny\"\n"),
+            format!("{LOCAL}\n[[lints.rust]]\n"),
+            LOCAL.replace(
+                "unwrap_used = \"warn\"",
+                "unwrap_used = \"warn\"\nunwrap_used = \"warn\"",
+            ),
+            LOCAL.replace("unwrap_used = \"warn\"", "unwrap_used"),
+            LOCAL.replace("unsafe_code = \"deny\"", "\"unsafe_code\" = \"allow\""),
+            LOCAL.replace("[lints.clippy]", "[lints.\"clippy\"]"),
+        ];
+        for manifest in &bad {
+            assert!(check_local_lints(manifest, ROOT).is_err(), "{manifest}");
+        }
+        // The workspace itself must forbid unsafe code.
+        let weak = ROOT.replace("\"forbid\"", "\"deny\"");
+        assert!(check_local_lints(LOCAL, &weak).is_err());
     }
 
     #[test]
