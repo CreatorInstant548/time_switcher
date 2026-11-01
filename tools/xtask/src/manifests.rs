@@ -48,9 +48,10 @@ pub fn crate_roots(meta: &Metadata) -> Vec<(&str, &str)> {
 
 /// `#![forbid(unsafe_code)]` partout ; `ts_py` en `deny` (SEC0-19).
 pub fn check_unsafe_root(crate_name: &str, source: &str) -> Result<(), String> {
-    let expected = match crate_name == LOCAL_LINTS_CRATE {
-        true => "#![deny(unsafe_code)]",
-        false => "#![forbid(unsafe_code)]",
+    let expected = if crate_name == LOCAL_LINTS_CRATE {
+        "#![deny(unsafe_code)]"
+    } else {
+        "#![forbid(unsafe_code)]"
     };
     match source.lines().any(|l| l.trim() == expected) {
         true => Ok(()),
@@ -81,7 +82,11 @@ pub fn check_lints_section(manifest: &str) -> Result<(), String> {
         .lines()
         .map(|l| l.split('#').next().unwrap_or_default().trim())
     {
-        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        // Quotes dropped too: `["lints".rust]` is `[lints.rust]` for Cargo (PY1).
+        let compact: String = line
+            .chars()
+            .filter(|c| !c.is_whitespace() && !matches!(c, '"' | '\''))
+            .collect();
         if let Some(name) = compact.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
             section = name.to_owned();
             if section.starts_with("lints.") {
@@ -106,11 +111,12 @@ pub fn check_lints_section(manifest: &str) -> Result<(), String> {
 
 /// Lint tables of a manifest, `tool -> (key -> value)`, for the tables named `<prefix><tool>`
 /// (`[lints.rust]`, `[workspace.lints.clippy]`). Lines are compared without blanks or
-/// comments. Fails closed: an array of tables, a line without `=`, a duplicate key, or a key
-/// outside these tables that names the lints (`[lints]` with content, dotted root keys) is an
-/// error.
+/// comments; table names and keys also without quotes (`["lints".rust]` is `[lints.rust]`).
+/// Fails closed: an array of tables, a line without `=`, a duplicate key, or a key outside
+/// these tables that names the lints (`[lints]` with content, dotted root keys) is an error.
 fn lint_tables(manifest: &str, prefix: &str) -> Result<BTreeMap<String, Lints>, String> {
     let bare = prefix.trim_end_matches('.');
+    let unquote = |s: &str| -> String { s.chars().filter(|c| !matches!(c, '"' | '\'')).collect() };
     let mut tables: BTreeMap<String, Lints> = BTreeMap::new();
     let mut section = String::new();
     for line in manifest
@@ -118,11 +124,11 @@ fn lint_tables(manifest: &str, prefix: &str) -> Result<BTreeMap<String, Lints>, 
         .map(|l| l.split('#').next().unwrap_or_default())
     {
         let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-        if compact.starts_with("[[") && compact.contains("lints") {
+        if compact.starts_with("[[") && unquote(&compact).contains("lints") {
             return Err(format!("array of tables {compact} refused"));
         }
         if let Some(name) = compact.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            section = name.to_owned();
+            section = unquote(name);
             if let Some(tool) = section.strip_prefix(prefix)
                 && tables.insert(tool.to_owned(), Lints::new()).is_some()
             {
@@ -134,16 +140,18 @@ fn lint_tables(manifest: &str, prefix: &str) -> Result<BTreeMap<String, Lints>, 
             continue;
         }
         let in_table = section.strip_prefix(prefix).and_then(|t| tables.get_mut(t));
+        let key = compact.split_once('=').map(|(k, v)| (unquote(k), v));
         match in_table {
             Some(entries) => {
-                let (key, value) = compact
-                    .split_once('=')
-                    .ok_or_else(|| format!("unreadable line in [{section}]: {}", line.trim()))?;
-                if entries.insert(key.to_owned(), value.to_owned()).is_some() {
+                let (key, value) =
+                    key.ok_or_else(|| format!("unreadable line in [{section}]: {}", line.trim()))?;
+                if entries.insert(key.clone(), value.to_owned()).is_some() {
                     return Err(format!("key {key} twice in [{section}]"));
                 }
             }
-            None if section == bare || (section.is_empty() && compact.starts_with(bare)) => {
+            None if section == bare
+                || (section.is_empty() && unquote(&compact).starts_with(bare)) =>
+            {
                 return Err(format!(
                     "lint setting outside a [{prefix}<tool>] table: {}",
                     line.trim()
@@ -348,6 +356,13 @@ mod tests {
             check_lints_section("[lints]\nworkspace = true\nrust = { unsafe_code = \"allow\" }\n")
                 .is_err()
         );
+        // PY1: a quoted name is the same table for Cargo.
+        for bad in [
+            "[lints]\nworkspace = true\n[\"lints\".rust]\nunsafe_code = \"allow\"\n",
+            "\"lints\".rust.unsafe_code = \"allow\"\n[lints]\nworkspace = true\n",
+        ] {
+            assert!(check_lints_section(bad).is_err(), "{bad}");
+        }
     }
 
     /// PY1: `ts_client_native` is a crate root like any other, with no anticipated exception.
@@ -392,11 +407,20 @@ mod tests {
             ),
             LOCAL.replace("unwrap_used = \"warn\"", "unwrap_used"),
             LOCAL.replace("unsafe_code = \"deny\"", "\"unsafe_code\" = \"allow\""),
-            LOCAL.replace("[lints.clippy]", "[lints.\"clippy\"]"),
+            // Quoted names are the same names for Cargo.
+            format!("{LOCAL}\n[\"lints\".rustdoc]\nbroken_intra_doc_links = \"allow\"\n"),
+            format!("\"lints\".rustdoc.x = \"allow\"\n{LOCAL}"),
+            format!("{LOCAL}\n['lints'.\"rust\"]\nunsafe_code = \"allow\"\n"),
+            format!("{LOCAL}\n[[\"lints\".rust]]\n"),
         ];
         for manifest in &bad {
             assert!(check_local_lints(manifest, ROOT).is_err(), "{manifest}");
         }
+        // Quoted table names and keys equal to the expected ones are the same tables.
+        let quoted = LOCAL
+            .replace("[lints.clippy]", "[lints.\"clippy\"]")
+            .replace("unwrap_used =", "\"unwrap_used\" =");
+        assert_eq!(check_local_lints(&quoted, ROOT), Ok(()));
         // The workspace itself must forbid unsafe code.
         let weak = ROOT.replace("\"forbid\"", "\"deny\"");
         assert!(check_local_lints(LOCAL, &weak).is_err());

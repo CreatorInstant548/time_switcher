@@ -26,7 +26,7 @@ const STRIPPED_PREFIXES: [&str; 7] = [
     "VIRTUAL_ENV",
     "CONDA",
 ];
-const USAGE: &str = "usage : cargo xtask py";
+const USAGE: &str = "usage: cargo xtask py";
 
 pub fn main(args: &[String]) -> ExitCode {
     if !args.is_empty() {
@@ -40,17 +40,17 @@ pub fn main(args: &[String]) -> ExitCode {
     ) {
         Ok(r) => PathBuf::from(r.trim()),
         Err(e) => {
-            eprintln!("ÉCHEC : racine du dépôt introuvable ({e})");
+            eprintln!("FAILED: repository root not found ({e})");
             return ExitCode::FAILURE;
         }
     };
     match run(&root) {
         Ok(()) => {
-            println!("Résultat : OK");
+            println!("Result: OK");
             ExitCode::SUCCESS
         }
         Err(e) => {
-            println!("Résultat : ÉCHEC : {e}");
+            println!("Result: FAILED: {e}");
             ExitCode::FAILURE
         }
     }
@@ -60,8 +60,21 @@ fn run(root: &Path) -> Result<(), String> {
     let lock = sys::read_text(&root.join(TOOLS_LOCK))?;
     let uv = pinned_uv(root, &lock)?;
     let dir = root.join(PY_DIR);
+    let exclude_newer = exclude_newer(&sys::read_text(&dir.join("uv.lock"))?)?;
+    // Configuration files are not read (UV_NO_CONFIG, set in `run_uv`): the settings of
+    // pyproject.toml that matter are passed here, so that no user-level uv.toml adds any.
+    let sync = [
+        "sync",
+        "--locked",
+        "--no-build",
+        "--no-python-downloads",
+        "--python-preference",
+        "only-system",
+        "--exclude-newer",
+        &exclude_newer,
+    ];
     let steps: [(&str, &[&str]); 3] = [
-        ("uv sync", &["sync", "--locked"]),
+        ("uv sync", &sync),
         (
             "maturin develop",
             &["run", "--no-sync", "maturin", "develop", "--uv", "--locked"],
@@ -74,10 +87,30 @@ fn run(root: &Path) -> Result<(), String> {
     for (name, args) in steps {
         println!("\n[{name}]");
         if !run_uv(&uv, &dir, args)? {
-            return Err(format!("{name} a échoué"));
+            return Err(format!("{name} failed"));
         }
     }
     Ok(())
+}
+
+/// `exclude-newer` of the `[options]` of `uv.lock`: an RFC 3339 date, checked by its characters.
+fn exclude_newer(uv_lock: &str) -> Result<String, String> {
+    let value = uv_lock
+        .lines()
+        .take_while(|l| !l.starts_with("[[package]]"))
+        .filter_map(|l| l.split_once('='))
+        .find(|(k, _)| k.trim() == "exclude-newer")
+        .map(|(_, v)| v.trim().trim_matches('"').to_owned())
+        .ok_or("exclude-newer absent from python/uv.lock")?;
+    let date = value.len() == 20
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b"-:TZ".contains(&b));
+    if date {
+        Ok(value)
+    } else {
+        Err("exclude-newer of python/uv.lock is not a UTC date".to_owned())
+    }
 }
 
 /// Lock key of the SHA-256 of the `uv` executable on this platform.
@@ -93,7 +126,10 @@ const fn uv_hash_key() -> &'static str {
 /// the tool name, never its path, which holds the home folder (SEC0-26).
 fn pinned_uv(root: &Path, lock: &str) -> Result<PathBuf, String> {
     let version = lock_value(lock, "uv.version")?;
-    let sha256 = lock_value(lock, uv_hash_key())?.to_ascii_lowercase();
+    let key = uv_hash_key();
+    let sha256 = lock_value(lock, key)
+        .map_err(|_| format!("{key} absent from tools.lock: no pinned uv for this platform"))?
+        .to_ascii_lowercase();
     let name = if cfg!(windows) { "uv.exe" } else { "uv" };
     let path = sys::env("PATH")
         .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
@@ -101,20 +137,20 @@ fn pinned_uv(root: &Path, lock: &str) -> Result<PathBuf, String> {
         .into_iter()
         .map(|d| d.join(name))
         .find(|p| p.is_file())
-        .ok_or("uv introuvable dans le PATH")?;
-    if sys::sha256(root, &path)? != sha256 {
-        return Err(format!(
-            "{name} : empreinte SHA-256 différente de tools.lock"
-        ));
+        .ok_or("uv not found on PATH")?;
+    let actual = sys::sha256(root, &path).map_err(|_| format!("{name}: SHA-256 unreadable"))?;
+    if actual != sha256 {
+        return Err(format!("{name}: SHA-256 differs from tools.lock"));
     }
-    let out = sys::stdout_of(root, &path.to_string_lossy(), &["--version"])?;
+    let out = sys::stdout_of(root, &path.to_string_lossy(), &["--version"])
+        .map_err(|_| format!("{name} --version failed"))?;
     match out.split_whitespace().nth(1) {
         Some(v) if v == version => {
-            println!("uv {version}, empreinte conforme à tools.lock");
+            println!("uv {version}, SHA-256 as in tools.lock");
             Ok(path)
         }
         _ => Err(format!(
-            "uv {version} attendu (tools.lock), autre version trouvée"
+            "uv {version} expected (tools.lock), another version found"
         )),
     }
 }
@@ -125,7 +161,8 @@ fn stripped(name: &str) -> bool {
     STRIPPED_PREFIXES.iter().any(|p| upper.starts_with(p))
 }
 
-/// Runs `uv args` in `dir`, output shown, without the [`STRIPPED_PREFIXES`] variables.
+/// Runs `uv args` in `dir`, output shown, without the [`STRIPPED_PREFIXES`] variables and
+/// without any uv configuration file (`UV_NO_CONFIG`, inherited by the `uv pip` of maturin).
 fn run_uv(uv: &Path, dir: &Path, args: &[&str]) -> Result<bool, String> {
     println!("  $ uv {}", args.join(" "));
     let mut cmd = Command::new(uv);
@@ -133,14 +170,14 @@ fn run_uv(uv: &Path, dir: &Path, args: &[&str]) -> Result<bool, String> {
     for name in sys::env_names().iter().filter(|n| stripped(n)) {
         cmd.env_remove(name);
     }
+    cmd.env("UV_NO_CONFIG", "1");
     // No bytecode written next to the tests.
     cmd.env("PYTHONDONTWRITEBYTECODE", "1");
     let status = cmd
         .status()
-        .map_err(|e| format!("uv impossible à lancer : {e}"))?;
+        .map_err(|e| format!("uv cannot be started: {e}"))?;
     Ok(status.success())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +206,17 @@ mod tests {
             "SYSTEMROOT",
         ] {
             assert!(!stripped(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn reads_exclude_newer_of_the_lock() {
+        let lock = "version = 1\n\n[options]\nexclude-newer = \"2026-10-17T00:00:00Z\"\n\n[[package]]\nexclude-newer = \"x\"\n";
+        assert_eq!(exclude_newer(lock).unwrap(), "2026-10-17T00:00:00Z");
+        assert!(exclude_newer("version = 1\n").is_err());
+        for bad in ["2026-10-17 --index x", "2026-10-17T00:00:00+0", ""] {
+            let text = format!("[options]\nexclude-newer = \"{bad}\"\n");
+            assert!(exclude_newer(&text).is_err(), "{bad}");
         }
     }
 

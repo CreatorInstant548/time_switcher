@@ -40,13 +40,23 @@ const POSITION_COLUMNS: [&str; 5] = ["id", "place", "parcel", "x", "y"];
 /// Names of the `place` codes, by code.
 const PLACES: [&str; 4] = ["home", "to_work", "work", "to_home"];
 
-/// Checks that `value` is a Python `int` (not a `bool`) and converts it to an `i128`. A value
-/// beyond `i128` is out of range for every caller.
+/// Converts an integer argument to an `i128`: a Python `int`, or an object with `__index__`
+/// such as a numpy integer, never a `bool` nor a `float` (`TypeError`). A value beyond `i128`
+/// is out of range for every caller (`ValueError`).
 fn int_arg(value: &Bound<'_, PyAny>, what: &str) -> PyResult<i128> {
-    if value.is_instance_of::<PyBool>() || !value.is_instance_of::<PyInt>() {
-        return Err(PyTypeError::new_err(format!("{what} must be an int")));
+    let not_int = || PyTypeError::new_err(format!("{what} must be an int"));
+    if value.is_instance_of::<PyBool>() {
+        return Err(not_int());
     }
-    value
+    let index = if value.is_instance_of::<PyInt>() {
+        value.clone()
+    } else {
+        value.call_method0("__index__").map_err(|_| not_int())?
+    };
+    if !index.is_instance_of::<PyInt>() {
+        return Err(not_int());
+    }
+    index
         .extract::<i128>()
         .map_err(|_| PyValueError::new_err(format!("{what} is out of range")))
 }
@@ -183,8 +193,9 @@ impl ToyWorld {
     fn positions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let world = self.sim.world();
         let width = i64::from(TownSpec::PHASE0.width);
-        let mut rows = Vec::new();
-        for (id, e) in world.resource::<StableIndex>().iter() {
+        let index = world.resource::<StableIndex>();
+        let mut rows = Vec::with_capacity(index.len() * POSITION_COLUMNS.len());
+        for (id, e) in index.iter() {
             let (Some(c), Some(w)) = (world.get::<Commuter>(e), world.get::<Whereabouts>(e)) else {
                 continue;
             };

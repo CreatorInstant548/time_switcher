@@ -135,11 +135,18 @@ def test_bounded_inputs_raise_value_error():
         world.advance_to(day - 1)
     # A refused call leaves the world unchanged.
     assert world.now == day
-    for bad in [1.5, "3", None, True]:
+    for bad in [1.5, "3", None, True, np.float64(2.0), np.True_]:
         with pytest.raises(TypeError):
             world.advance_ticks(bad)
         with pytest.raises(TypeError):
             ts_py.ToyWorld(bad)
+    # numpy integers are integers (`__index__`), under the same bounds.
+    world.advance_ticks(np.int64(1))
+    world.advance_to(np.uint64(2 * day))
+    assert world.now == 2 * day
+    with pytest.raises(ValueError):
+        world.advance_ticks(np.int64(-1))
+    assert ts_py.ToyWorld(np.uint64(SEED)).state_hash() == ts_py.ToyWorld(SEED).state_hash()
 
 
 def test_errors_name_no_local_path():

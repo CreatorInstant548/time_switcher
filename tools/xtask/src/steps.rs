@@ -577,9 +577,12 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
     // F3: inherited lints everywhere; local tables equal to the workspace's in ts_py (AS-18).
     let root_manifest = tri!(sys::read_text(&cx.root.join("Cargo.toml")));
     for p in &meta.packages {
-        let check = |t: String| match p.name == manifests::LOCAL_LINTS_CRATE {
-            true => manifests::check_local_lints(&t, &root_manifest),
-            false => manifests::check_lints_section(&t),
+        let check = |t: String| {
+            if p.name == manifests::LOCAL_LINTS_CRATE {
+                manifests::check_local_lints(&t, &root_manifest)
+            } else {
+                manifests::check_lints_section(&t)
+            }
         };
         if let Err(e) = sys::read_text(Path::new(&p.manifest_path)).and_then(check) {
             errors.push(format!("{} : {e}", p.name));
