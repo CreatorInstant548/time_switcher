@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use serde_json::Value;
 
 use crate::carry::{Carry, Pr};
-use crate::github::{Repo, approved, is_sha};
+use crate::github::{ANOMALY_TITLE, DRIFT_TITLE, Repo, approved, is_sha};
 use crate::{sensitive, sys};
 
 /// Commits d'avant l'outillage, sans PR : la base, liste fermée.
@@ -419,13 +419,6 @@ fn run_settings_check(repo: &Repo) -> Result<(Option<i32>, String, String), Stri
     print!("{out}");
     Ok((code, out, err))
 }
-
-/// Title prefix of the anomaly issues opened by `verify-main`: a commit of `main`, or the GitHub
-/// settings (`-Check`). An open one, written by the owner, stops every `cargo xtask merge`
-/// (AS-50 AU2, AU3).
-pub const ANOMALY_TITLES: [&str; 2] = [ANOMALY_TITLE, DRIFT_TITLE];
-const ANOMALY_TITLE: &str = "verify-main : anomalie sur le commit";
-const DRIFT_TITLE: &str = "verify-main : réglages GitHub différents de tools/ci/repo-settings.json";
 
 /// `verify-main`, avec une *issue* par anomalie ; vrai si l'historique et les réglages GitHub sont
 /// conformes. L'historique passe d'abord : un `-Check` qui échoue ne le cache pas. En `--dry-run`,

@@ -20,8 +20,8 @@ use std::process::ExitCode;
 use serde_json::Value;
 
 use crate::carry::{Carry, Pr};
-use crate::github::{Repo, by_owner, is_sha, same_path};
-use crate::{sensitive, verify_main, workflows};
+use crate::github::{Repo, is_anomaly, is_sha, same_path};
+use crate::{sensitive, workflows};
 
 const TYPES: [&str; 9] = [
     "feat", "fix", "refactor", "perf", "test", "docs", "build", "ci", "chore",
@@ -150,15 +150,11 @@ fn open_anomalies(repo: &Repo) -> Result<Vec<u64>, String> {
         "repos/{}/issues?state=open&creator={owner}&per_page=100",
         repo.slug
     ))?;
+    // The same definition as the reuse in `Repo::open_issue`: an anomaly that `verify-main`
+    // reported is always an issue counted here.
     Ok(list
         .iter()
-        .filter(|i| {
-            i.get("pull_request").is_none()
-                && by_owner(i, &repo.slug)
-                && i["title"]
-                    .as_str()
-                    .is_some_and(|t| verify_main::ANOMALY_TITLES.iter().any(|a| t.starts_with(a)))
-        })
+        .filter(|i| is_anomaly(i, &repo.slug))
         .map(|i| i["number"].as_u64().unwrap_or_default())
         .collect())
 }
@@ -591,7 +587,7 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::github::{Output, Run, owner_item};
+    use crate::github::{ANOMALY_TITLES, Output, Run, owner_item};
 
     use super::*;
 
@@ -883,14 +879,14 @@ mod tests {
             v["number"] = json!(41);
             v
         };
-        let anomaly = || titled(&format!("{} 1234567", verify_main::ANOMALY_TITLES[0]));
+        let anomaly = || titled(&format!("{} 1234567", ANOMALY_TITLES[0]));
         let issues = |list: Value| {
             vec![(
                 "gh api --paginate repos/o/r/issues?state=open".to_owned(),
                 list.to_string(),
             )]
         };
-        for title in verify_main::ANOMALY_TITLES {
+        for title in ANOMALY_TITLES {
             let (result, calls) = scenario_with(false, issues(json!([titled(title)])));
             let e = result.unwrap_err();
             assert!(e.contains("fusions suspendues") && e.contains("#41"), "{e}");
