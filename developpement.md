@@ -407,3 +407,8 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - Gardés : dans `merge`, le refus des forks, `ci-ok`, `review-ok` et `archsec-ok` du propriétaire, et le report AS-40. Hors fusion : `verify-main` (à la demande et la nuit), `-Check` et `-Apply` à la main, le ruleset, la CI et les emplacements de compilation.
   - La PR (ancienne `claude/faster-merge`) est en cours. Cible : une fusion en moins de 30 s. Archi-sécu et l'orchestrateur sont prévenus.
 - 01/11 : #90 (fuzz) refusée par le relecteur neuf : son contrôle laisse passer des appels non reconnus et code en dur le cas `version`. Correction en un lot en cours. #89 (T10) : relecture neuve en cours. Leçon : ne pas retirer le worktree d'un agent tant que sa PR n'est pas fusionnée, sinon l'agent ne peut plus être repris.
+- 02/11 : PR fusionnées :
+  - #89, T10 `ts_py` (`37d4a5d`) ; crochets réinstallés ensuite, puisque `tools.lock` a changé ;
+  - #92, #67 exécuteur adaptatif (`1ba1406`, empreintes inchangées ; 4 fils aussi rapides qu'1 fil, contre 10 fois plus lents avant). La qualité est prévenue et refait ses campagnes.
+- 02/11 : issues de suivi ouvertes : #91 (mineurs du contrôle `unsafe` et de F3), #93 (`Commands` non ordonnées, AS-27, avant les règles de la phase 1), #94 (calibrage des seuils, phase 1), #95 (remplacer l'analyseur de `install-tools.sh` par un essai à blanc).
+- 02/11 : #90 (fuzz) a un `review-ok` sur `99e93b3` ; j'attends l'`archsec-ok`. La PR de retrait de l'outillage est en préparation (AS-50, AU1 à AU7). T11 attend la décision d'archi-sécu sur le Parquet.
