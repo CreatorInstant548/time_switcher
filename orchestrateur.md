@@ -160,3 +160,10 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
     - limite d'interaction `collaborators_only` pour six mois.
   - **`-Check`** : conforme.
   - **Fusions dégelées** : #73, #70, puis #79, #80 et #81.
+- **Fusions reprises après la relecture a posteriori de la #83 (01/11).** L'issue #84 est close.
+  - Fusionnées : #79, #80, #81 et #73 (043ed05). La vérification de nuit de l'historique est active.
+  - Restent : #78, puis #70. T10 et T11 suivront après l'avis d'archi-sécu.
+  - Le dev s'est arrêté sur la limite d'utilisation. Il a été relancé à la demande de l'utilisateur.
+- **Responsable qualité et essais lancé** (01/11) : `local_04514fcc-b19f-4655-8b29-d6a6e9a7f237`, sur la copie principale, sans worktree. Sa mission porte sur les points 2 et 4 de §5 :
+  - déterminisme et performances en profil `sim` ;
+  - mêmes campagnes avec `ts-sim run` après la fusion de la #70.
