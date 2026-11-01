@@ -130,9 +130,15 @@ Une phase est terminée quand :
 1. le responsable architecture et sécurité a validé l'audit de sécurité et les exigences bloquantes de la phase ;
 2. le responsable qualité a validé ses campagnes : déterminisme, performances, invariants d'équilibrage ;
 3. le responsable conception a vérifié que ce qui est construit respecte la conception ;
-4. pour une phase jouable, le responsable qualité a joué la version et l'a fait jouer par des robots `Joueur`, et ses constats sont traités ou planifiés. La version est mise à la disposition de l'utilisateur ; ses retours, s'il en donne, sont traités comme les autres, mais la phase ne les attend pas.
+4. pour une phase jouable, le responsable qualité a joué la version et l'a fait jouer par des robots `Joueur`, et ses constats sont traités ou planifiés. La version est mise à la disposition de l'utilisateur ; ses retours, s'il en donne, sont traités comme les autres, mais la phase ne les attend pas ;
+5. **toutes les *issues* GitHub ouvertes sont résolues (décidé par l'utilisateur le 01/11)**. Le dépôt n'en compte alors plus aucune d'ouverte.
+   - Une *issue* est résolue quand l'une de ces deux conditions est remplie :
+     - le correctif est fusionné, et l'*issue* est close avec le lien de la PR ;
+     - le responsable du rôle concerné l'a close par une décision écrite et motivée, en anglais dans l'*issue* : doublon, sans objet, ou déjà corrigé ailleurs. Le lien est obligatoire.
+   - Reporter une *issue* à une phase suivante ne la résout pas.
+   - Les *issues* ouvertes par la tâche de nuit (`nightly-failure`) ou par `verify-main` sont closes seulement après que la vérification suivante est verte.
 
-L'orchestrateur constate ces quatre points dans son carnet et ouvre la phase suivante.
+L'orchestrateur constate ces cinq points dans son carnet et ouvre la phase suivante.
 
 ## 6. L'utilisateur ne fait aucune action (décidé, demande de l'utilisateur du 29/10)
 
