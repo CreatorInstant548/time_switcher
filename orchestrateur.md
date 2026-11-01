@@ -116,3 +116,18 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
   - lecture directe : règles effectives sur `main` = deletion, non_fast_forward, required_linear_history, pull_request, required_status_checks ; `enforcement=active`, `bypass=0`, `can_bypass=never` ;
   - tête de `main` = 7365327 (#66) ;
   - conforme.
+- **01/11 : dépôt passé en PUBLIC par l'utilisateur**, pour lever la limite de CI.
+  - Actions repart. Les exécutions en échec de la #73 et de la nuit sur `main` sont relancées. La #74 avait déjà `ci-ok` vert sur f4ec1d4.
+  - `-Check` échoue net : HTTP 422 sur `fork-pr-workflows-private-repos`, un point réservé aux dépôts privés.
+  - **Décidé** : on complète la #74 pour le dépôt public, afin qu'une seule fusion web par l'utilisateur suffise :
+    - visibilité attendue `public` ;
+    - `fork-pr-contributor-approval = all_external_contributors` ;
+    - secret scanning et push protection activés ;
+    - signalement privé des vulnérabilités activé.
+
+    Il faut ensuite un nouveau `review-ok` et un nouvel `archsec-ok`.
+  - Archi-sécu revoit le modèle de menaces pour un dépôt public :
+    - la sécurité repose seulement sur les secrets tirés par monde ;
+    - les carnets et les courriels des commits sont publics ;
+    - des PR peuvent venir de forks : jamais de `pull_request_target`, aucun secret en CI.
+  - Licence : tous droits réservés par défaut (décidé), aucune licence libre.
