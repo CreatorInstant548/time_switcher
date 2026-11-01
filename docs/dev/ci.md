@@ -89,14 +89,23 @@ Les valeurs viennent de `tools/dev/tools.lock` (clés `*.linux.*`, même version
 
 - **Chaque nuit** à 03:17 UTC :
   - `advisories` : `cargo audit`, puis `cargo deny --locked check advisories` ;
-  - `verify-main` (V3 du §9.14 du carnet d'archi-sécu, T3h) : `cargo xtask verify-main --dry-run --no-cache`, soit les approbations de **chaque** commit sensible de `main`, relues sur GitHub. Depuis T3e-2, `verify-main` n'a plus de cache local, et `--no-cache` est sans effet. Détails ci-dessous.
+  - `verify-main` (V3 du §9.14 du carnet d'archi-sécu, T3h ; AS-42, T3j) : `cargo xtask verify-main --dry-run --origin 7d`, soit les approbations de **chaque** commit sensible de `main`, relues sur GitHub, et le contrôle d'origine des commits des 7 derniers jours. Le dimanche et par `workflow_dispatch` : `--origin all`, sur tout l'historique. `--no-cache`, sans effet depuis T3e-2, est retiré. Détails ci-dessous.
+
+**Origine des commits (AS-42, AS-44, R-ARCH-05)** : le *ruleset* `main` impose la PR, mais `-Check` n'atteste que l'état présent. Un script lancé avec le jeton d'administration pourrait désactiver la règle, pousser un commit, puis la rétablir. Avec `--origin`, chaque commit non sensible de la fenêtre doit être le squash d'une PR fusionnée dans `main` (J3) et, en `7d`, avoir `ci-ok` vert sur la tête de cette PR (G3, AS-44 AA2) :
+- **J3** : une requête, `commits/<sha>/pulls`. Il faut exactement une PR dont `merge_commit_sha` est le commit, avec `merged_at` renseigné, la base `main`, et une tête **différente** du commit (AS-44 AA1). Sans cette dernière condition, la tête d'une PR poussée telle quelle sur `main`, règle désactivée, passerait, puisque GitHub marque alors la PR comme fusionnée par ce commit ;
+- **G3, en `7d` seulement** : la même fonction que pour un commit sensible (`Repo::ci_ok`), soit environ 2 lectures de plus par commit de la semaine. Elle ferme le cas d'un squash fait avec le jeton d'administration, règle désactivée, sans CI. Le passage `all` reste en J3 seul, à cause du quota (*issue* #55) ;
+- **fenêtre `7d`** : du sommet de `main` jusqu'au premier commit daté (date du *committer*) d'avant la limite **qui passe J3 et G3**, inclus (AS-44 AA3). La date d'un commit est choisie par celui qui le pousse : des commits antidatés, poussés sans PR ou fusionnés sans `ci-ok`, échouent et ne ferment pas la fenêtre. La lecture continue à travers eux jusqu'à un vrai squash avec sa CI. Le passage `all` du dimanche couvre le reste ;
+- un commit en échec est une **anomalie** : le travail échoue, et `report` ouvre `nightly-failure` ;
+- les commits sensibles gardent leur contrôle complet (V5), qui comprend déjà J3 et G3.
+
+**`rule-suites` non lu (décidé)** : `GET repos/<dépôt>/rulesets/rule-suites` demande la permission *Administration* en lecture (documentation GitHub des permissions des jetons), que le jeton d'un travail GitHub Actions ne peut pas recevoir. Les contournements (`bypass`) ne sont donc pas lus en CI. Avec G3 sur la fenêtre `7d`, le contrôle d'origine ci-dessus rend visible **sous 24 heures** un commit poussé sans PR, ou fusionné sans `ci-ok`, antidaté ou non : seul un squash conforme ferme la fenêtre. **Exception, une panne d'Actions** (facturation ou incident) : la tâche de nuit ne tourne pas, et la détection attend sa reprise. Pendant ce temps, aucune fusion n'est possible faute de `ci-ok`, et l'orchestrateur lance chaque jour `cargo xtask verify-main --dry-run --origin 7d` dans la copie principale (AS-44 AA4).
 
 **Chemins sensibles (V5, AS-39 ; AS-31 E3)** : pour tout commit de `main` qui touche un chemin sensible, calculé depuis `sensitive-paths.txt` d'`origin/main`, `verify-main` relit sur GitHub, à chaque exécution, `merge` compris :
 - `pulls/<n>`, soit la tête, `merged` et `merge_commit_sha` ;
 - G3 sur la tête ;
 - `review-ok` et `archsec-ok` sur la tête ;
 
-puis il fait J4 avec ces faits frais. Un commit non sensible ne lit rien sur GitHub depuis T3e-2 : le *ruleset* `main` impose la PR et `ci-ok`.
+puis il fait J4 avec ces faits frais. Sans `--origin` (`cargo xtask merge`), un commit non sensible ne lit rien sur GitHub depuis T3e-2 : le *ruleset* `main` impose la PR et `ci-ok`. La tâche de nuit lui ajoute le contrôle d'origine ci-dessus.
 
 **Travail `verify-main`** :
 - **Droits** : `actions`, `checks`, `contents`, `issues` et `pull-requests` en lecture, rien en écriture. `GH_TOKEN` vaut le jeton du travail.
@@ -106,8 +115,8 @@ puis il fait J4 avec ces faits frais. Un commit non sensible ne lit rien sur Git
 - **`repo-settings.ps1 -Check` est sauté en CI** avec un avertissement visible dans le journal et dans le résumé de l'exécution, comme depuis la #42 (`GITHUB_TOKEN` n'a pas les droits d'administration). Il tourne à chaque `cargo xtask merge`.
 - **Vérification** : le travail ne se lance pas en local. À la première nuit après la fusion, ou par `workflow_dispatch`, le journal doit montrer, dans l'ordre :
   - `mode CI : git fetch sauté` ;
-  - `--no-cache: full check (no cache since T3e-2)` ;
-  - une ligne `conforme` par commit postérieur à la base (`non sensible, PR et ci-ok imposés par le ruleset`, ou les faits relus d'un commit sensible) ;
+  - `--origin: J3 and G3 on every commit since Unix time <t> (AS-42, AS-44)`, ou `--origin all: J3 on every commit (AS-42)` ;
+  - une ligne `conforme` par commit postérieur à la base (`non sensible, squash de la PR #<n> (AS-42)` dans la fenêtre, `non sensible, PR et ci-ok imposés par le ruleset` hors de la fenêtre, ou les faits relus d'un commit sensible) ;
   - l'avertissement sur `repo-settings.ps1 -Check` ;
   - `Résultat : OK`.
 - **Le dimanche** (même heure), en plus, et seulement si `main` a changé depuis la dernière exécution hebdomadaire réussie (`main-changed.sh`, par l'API, avec `actions: read`) :
@@ -145,7 +154,7 @@ Offre GitHub Pro (depuis le 30/10/2026) : **3 000 min par mois** (M36). Un trava
 | PR Rust, cache chaud | 1 | 1 | 3 | 4 à 6 | 2 | 1 | ≈ 12 à 14 |
 | PR sur un chemin sensible | 1 | 1 | 3 | 4 à 6 | 2 × (8 à 15) | 1 | ≈ 26 à 42 |
 
-Tâche périodique : `advisories` ≈ 2 min par nuit (≈ 60 par mois) ; `verify-main` ≈ 2 à 4 min par nuit, compilation de `xtask` et lecture sur l'API des seuls commits sensibles de l'historique (≈ 60 à 120 par mois) ; le dimanche, si `main` a changé, Windows 2 × (8 à 15), gitleaks 1 à 2, fuzzing 61 à 62 (une fois `fuzz/` créé), déterminisme complet 3 à 6 (compilation comprise) : ≈ 85 à 100 min par semaine. En mode minimal, le travail `determinism` s'arrête avec les autres travaux du dimanche ; la version courte reste dans `rust-linux`.
+Tâche périodique : `advisories` ≈ 2 min par nuit (≈ 60 par mois) ; `verify-main` ≈ 2 à 4 min par nuit, compilation de `xtask`, lecture sur l'API des commits sensibles de l'historique et une requête par commit non sensible de la fenêtre, de tout l'historique le dimanche (≈ 60 à 120 par mois). Le 30/10, pour 40 commits, le passage `all` fait environ 200 lectures de l'API (estimation : 6 à 8 par commit sensible, une par commit non sensible) ; le jeton du travail en permet 1 000 par heure. L'objectif d'AS-39 (mécanisme incrémental avant 150 commits, alerte sous 20 % de quota) reste suivi à part ; le dimanche, si `main` a changé, Windows 2 × (8 à 15), gitleaks 1 à 2, fuzzing 61 à 62 (une fois `fuzz/` créé), déterminisme complet 3 à 6 (compilation comprise) : ≈ 85 à 100 min par semaine. En mode minimal, le travail `determinism` s'arrête avec les autres travaux du dimanche ; la version courte reste dans `rust-linux`.
 
 **Version courte du déterminisme dans `rust-linux`**, relevé de la PR T9c (exécution 41124769723, cache chaud) : l'étape dure **10 s**, dont environ 9 s pour recompiler les tests de `ts_toy` avec `-p ts_toy` (les fonctionnalités unifiées diffèrent de celles de `--workspace` dans l'étape `test`) et 1 s pour les deux processus (0,2 s à 1 fil, 0,8 s à 4 fils). `rust-linux` a duré 1 min 46 s en tout. Coût négligeable dans le budget.
 

@@ -1,6 +1,8 @@
 # .github/workflows/nightly.yml : tâche périodique sur main. Mode d'emploi : docs/dev/ci.md §4.
-# Chaque nuit : cargo audit et cargo deny check advisories ; cargo xtask verify-main --no-cache
-# (origine de chaque commit de main, sans le cache local, V3).
+# Chaque nuit : cargo audit et cargo deny check advisories ; cargo xtask verify-main --origin 7d
+# (approbations de chaque commit sensible de main, V5 ; chaque commit des 7 derniers jours est le
+# squash d'une PR fusionnée, avec ci-ok, AS-42 et AS-44). Le dimanche et par workflow_dispatch :
+# --origin all, J3 seul.
 # Le dimanche, en plus, si main a changé depuis la dernière exécution hebdomadaire réussie :
 # Windows complet, gitleaks sur tout l'historique, fuzzing (sauté tant que fuzz/ n'existe pas),
 # cargo xtask determinism --full (an complet du monde-jouet, Y5).
@@ -93,11 +95,16 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # --dry-run: the read-only token cannot open issues; an anomaly fails the job and report
       # opens nightly-failure. In CI, repo-settings.ps1 -Check is skipped with a warning.
-      - name: cargo xtask verify-main --no-cache
+      # AS-42, AS-44: every commit of the last 7 days must be the squash of a merged PR with ci-ok
+      # green on its head (J3 and G3); Sunday and workflow_dispatch: all of them, J3 alone (#55).
+      # rule-suites is not read: it needs the Administration permission, which the job token
+      # cannot have.
+      - name: cargo xtask verify-main --origin
         env:
           GH_TOKEN: ${{ github.token }}
           TS_CACHE: ${{ runner.temp }}/ts-cache
-        run: cargo xtask verify-main --dry-run --no-cache
+          ORIGIN: ${{ (github.event.schedule == '17 3 * * 0' || github.event_name == 'workflow_dispatch') && 'all' || '7d' }}
+        run: cargo xtask verify-main --dry-run --origin "$ORIGIN"
 
   windows:
     name: windows

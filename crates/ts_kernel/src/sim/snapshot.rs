@@ -1,5 +1,5 @@
-//! Instantané : le trait `Snapshot` et sa mise en œuvre en mémoire. Le codec en octets vient
-//! avec `ts_persist` (T8) ; le décodeur canonique est dans `crate::canonical` (#46).
+//! Snapshot: the `Snapshot` trait and its in-memory implementation. The byte codec comes
+//! with `ts_persist` (T8); the canonical decoder is in `crate::canonical` (#46).
 
 use core::fmt;
 use std::collections::BTreeMap;
@@ -17,30 +17,30 @@ use crate::{
 };
 
 // spec: revues/architecture.md §7.1, §12.3
-/// Portée d'un instantané. Les instantanés partiels (morceaux modifiés) viendront avec la
-/// persistance.
+/// Scope of a snapshot. Partial snapshots (modified chunks) will come with
+/// persistence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapshotScope {
-    /// Tout l'état.
+    /// The whole state.
     Full,
 }
 
 // spec: revues/architecture.md §7.1, §12.5 ; carnet architecture-securite.md §9.10 L5
-/// Échec d'une restauration.
+/// Failure of a restore.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RestoreError {
-    /// La simulation ne se construit pas avec ces règles et cette configuration.
+    /// The simulation cannot be built with these rules and this configuration.
     Build(BuildError),
-    /// L'empreinte de règles diffère de celle de l'instantané, sans migration déclarée.
+    /// The rules fingerprint differs from the snapshot's, with no migration declared.
     RulesMismatch {
-        /// Empreinte enregistrée.
+        /// Recorded fingerprint.
         snapshot: RulesFingerprint,
-        /// Empreinte des règles fournies.
+        /// Fingerprint of the rules provided.
         current: RulesFingerprint,
     },
-    /// Les types d'état déclarés ne correspondent pas à ceux de l'instantané.
+    /// The declared state types do not match those of the snapshot.
     StateLayoutMismatch,
-    /// L'instantané est incohérent.
+    /// The snapshot is inconsistent.
     Corrupt(&'static str),
     /// The configuration's tick length differs from the snapshot's (M5).
     TickMismatch {
@@ -57,13 +57,13 @@ pub enum RestoreError {
 impl fmt::Display for RestoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Build(e) => write!(f, "construction impossible : {e}"),
+            Self::Build(e) => write!(f, "cannot build: {e}"),
             Self::RulesMismatch { snapshot, current } => write!(
                 f,
-                "règles différentes ({snapshot:?} enregistrées, {current:?} fournies) sans migration"
+                "different rules ({snapshot:?} recorded, {current:?} provided) with no migration"
             ),
-            Self::StateLayoutMismatch => f.write_str("types d'état différents de l'instantané"),
-            Self::Corrupt(what) => write!(f, "instantané incohérent : {what}"),
+            Self::StateLayoutMismatch => f.write_str("state types differ from the snapshot"),
+            Self::Corrupt(what) => write!(f, "inconsistent snapshot: {what}"),
             Self::TickMismatch { snapshot, current } => write!(
                 f,
                 "tick length differs: {snapshot} ms in the snapshot, {current} ms configured"
@@ -78,16 +78,15 @@ impl fmt::Display for RestoreError {
 impl std::error::Error for RestoreError {}
 
 // spec: revues/architecture.md §7.1, §12.1 ; carnet architecture-securite.md §9.10 L4, L5
-/// Instantané d'une [`Sim`], pris entre deux ticks.
+/// Snapshot of a [`Sim`], taken between two ticks.
 ///
-/// Il contient l'empreinte et la liste des règles, la date, l'origine des jours, les
-/// compteurs (`StableIdAllocator`, `seq`), les événements en attente et les types d'état
-/// déclarés par les greffons. **Jamais la clé du monde ni les clés de flux** : `restore` les
-/// redérive de la clé qu'on lui passe.
+/// It holds the fingerprint and the list of the rules, the date, the day origin, the
+/// counters (`StableIdAllocator`, `seq`), the pending events and the state types declared
+/// by plugins. **Never the world key nor the stream keys**: `restore` re-derives them from
+/// the key it is given.
 ///
-/// Seules les entités qui portent [`StableEntity`] sont enregistrées ; une entité sans
-/// identité durable, créée par la construction d'un greffon, reste telle que la construction
-/// l'a faite.
+/// Only the entities that carry [`StableEntity`] are recorded; an entity with no durable
+/// identity, created by the build of a plugin, stays as the build made it.
 ///
 /// Restore contract (F4: snapshot, restore, then N ticks gives the same state as running
 /// straight through):
@@ -110,15 +109,15 @@ impl std::error::Error for RestoreError {}
 // TODO(#31): enforce the no-hidden-state contract automatically.
 // spec: revues/architecture.md §11.1, §12.4
 pub trait Snapshot: Sized {
-    /// Prend l'instantané.
+    /// Takes the snapshot.
     fn snapshot(sim: &Sim, scope: SnapshotScope) -> Self;
 
-    /// Reconstruit une simulation : construction par `rules` et `cfg`, contrôle de
-    /// l'empreinte de règles, puis remise en place de l'état.
+    /// Rebuilds a simulation: building from `rules` and `cfg`, check of the rules
+    /// fingerprint, then putting the state back in place.
     ///
     /// # Errors
     ///
-    /// Voir [`RestoreError`].
+    /// See [`RestoreError`].
     fn restore(
         &self,
         cfg: SimConfig,
@@ -128,7 +127,7 @@ pub trait Snapshot: Sized {
 }
 
 // spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §9.10 L4, §10
-/// Instantané en mémoire : copies des valeurs. [`MemorySnapshot::header_bytes`] and
+/// In-memory snapshot: copies of the values. [`MemorySnapshot::header_bytes`] and
 /// [`MemorySnapshot::canonical_bytes`] give its bytes, and
 /// [`MemorySnapshot::from_canonical`] decodes them back; a host stores them with
 /// `ts_persist`.
@@ -144,7 +143,7 @@ pub struct MemorySnapshot {
     entities: Vec<StableId>,
     /// Stable entities that carry `LodComplete`, sorted.
     complete: Vec<StableId>,
-    /// Famille et genre (composant ou non) de chaque type d'état, dans l'ordre de déclaration.
+    /// Family and kind (component or not) of each state type, in declaration order.
     layout: Vec<(&'static str, bool)>,
     captured: Vec<Captured>,
     canonical: Vec<u8>,
@@ -162,17 +161,17 @@ impl fmt::Debug for MemorySnapshot {
 }
 
 impl MemorySnapshot {
-    /// Empreinte des règles de la simulation enregistrée.
+    /// Fingerprint of the recorded simulation's rules.
     pub const fn rules_fingerprint(&self) -> RulesFingerprint {
         self.rules
     }
 
-    /// Date de l'instantané.
+    /// Date of the snapshot.
     pub const fn now(&self) -> SimTime {
         self.now
     }
 
-    /// Encodage canonique de tout l'état enregistré, familles triées (celui de l'empreinte).
+    /// Canonical encoding of the whole recorded state, families sorted (that of the fingerprint).
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical
     }
@@ -351,10 +350,10 @@ impl Snapshot for MemorySnapshot {
             });
         }
         if self.now.as_millis().rem_euclid(sim.tick_ms) != 0 {
-            return Err(RestoreError::Corrupt("date hors de la grille des ticks"));
+            return Err(RestoreError::Corrupt("date off the tick grid"));
         }
         let ids = StableIdAllocator::from_snapshot_raw(self.next_stable_id)
-            .ok_or(RestoreError::Corrupt("compteur de StableId"))?;
+            .ok_or(RestoreError::Corrupt("StableId counter"))?;
         if let Some(&id) = self
             .entities
             .iter()
@@ -363,11 +362,11 @@ impl Snapshot for MemorySnapshot {
             return Err(RestoreError::StableIdBeyondCounter(id));
         }
         let queue = Scheduler::restore(self.now, self.next_seq, self.events.clone())
-            .ok_or(RestoreError::Corrupt("rangs des événements"))?;
+            .ok_or(RestoreError::Corrupt("event ranks"))?;
 
         let world = &mut sim.world;
-        // Seules les entités d'état sont remplacées. Dans `bevy_ecs` 0.20, les ressources et
-        // les observateurs sont aussi des entités : on ne vide donc pas tout le monde.
+        // Only the state entities are replaced. In `bevy_ecs` 0.20, resources and observers
+        // are entities too: so the whole world is not cleared.
         for (_, e) in stable_entities(world) {
             world.despawn(e);
         }
@@ -383,7 +382,7 @@ impl Snapshot for MemorySnapshot {
         for &id in &self.entities {
             let e = world.spawn(StableEntity::new(id)).id();
             if map.insert(id, e).is_some() {
-                return Err(RestoreError::Corrupt("StableId en double"));
+                return Err(RestoreError::Corrupt("duplicate StableId"));
             }
         }
         // The full-simulation marker drives the time skip (I1).
@@ -404,7 +403,7 @@ impl Snapshot for MemorySnapshot {
                 _ => false,
             };
             if !ok {
-                return Err(RestoreError::Corrupt("valeur d'état"));
+                return Err(RestoreError::Corrupt("state value"));
             }
         }
         world.clear_trackers();
@@ -421,16 +420,16 @@ impl Snapshot for MemorySnapshot {
 }
 
 impl Sim {
-    /// Prend un instantané (voir [`Snapshot`]).
+    /// Takes a snapshot (see [`Snapshot`]).
     pub fn snapshot<S: Snapshot>(&self, scope: SnapshotScope) -> S {
         S::snapshot(self, scope)
     }
 
-    /// Restaure une simulation depuis un instantané (voir [`Snapshot::restore`]).
+    /// Restores a simulation from a snapshot (see [`Snapshot::restore`]).
     ///
     /// # Errors
     ///
-    /// Voir [`RestoreError`].
+    /// See [`RestoreError`].
     pub fn restore<S: Snapshot>(
         snap: &S,
         cfg: SimConfig,

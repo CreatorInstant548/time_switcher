@@ -1,9 +1,10 @@
 // spec: 05-architecture.md §2.3 ; securite.md S8 ; attendus-mesurables.md M28
-//! Profil de construction (SEC0-20) : fonctionnalités de développement, refus de `public` avec
-//! l'une d'elles, et constante de profil.
+//! Build profile (SEC0-20): development features, refusal of `public` together with any of
+//! them, and the profile constant.
 //!
-//! Chemin sensible (`tools/ci/sensitive-paths.txt`). Les messages des `compile_error!` sont
-//! cherchés mot pour mot par l'étape `profiles` de `cargo xtask check` : ne pas les modifier.
+//! Sensitive path (`tools/ci/sensitive-paths.txt`). The `compile_error!` messages are searched
+//! for word for word by the `profiles` step of `cargo xtask check`: do not change them. They
+//! therefore stay in French on purpose, until that step is updated.
 
 #[cfg(all(feature = "public", feature = "dev-commands"))]
 compile_error!("profil public : la fonctionnalité `dev-commands` est interdite (SEC0-20, M28)");
@@ -19,32 +20,32 @@ compile_error!("profil public : la fonctionnalité `external-pilot` est interdit
 #[cfg(all(feature = "public", feature = "dev-bench"))]
 compile_error!("profil public : la fonctionnalité `dev-bench` est interdite (SEC0-20, M28)");
 
-/// Profil de construction : `"public"` si et seulement si la fonctionnalité `public` est active,
-/// sinon `"dev"` (E9). Le refus de démarrer en ligne compare à `"public"` : il reste fermé par
-/// défaut.
+/// Build profile: `"public"` if and only if the `public` feature is active, otherwise `"dev"`
+/// (E9). The refusal to start online compares against `"public"`: it stays closed by
+/// default.
 pub const BUILD_PROFILE: &str = if cfg!(feature = "public") {
     "public"
 } else {
     "dev"
 };
 
-/// Fonctionnalités de développement, toutes interdites dans le profil public.
+/// Development features, all forbidden in the public profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DevFeature {
-    /// `dev-commands` : commandes d'écriture `Spawn` et `SetComponent`, seules derrière cette
-    /// fonctionnalité. `AdvanceTime` n'en fait pas partie : c'est une commande normale du solo
-    /// (S8), que la matrice par source refuse aux sessions joueur en ligne (AS-33).
+    /// `dev-commands`: the `Spawn` and `SetComponent` write commands, only behind this
+    /// feature. `AdvanceTime` is not one of them: it is a normal solo command (S8), which the
+    /// per-source matrix refuses to online player sessions (AS-33).
     Commands,
-    /// `dev-introspection` : inspection de l'état hors de la vue filtrée.
+    /// `dev-introspection`: inspection of the state outside the filtered view.
     Introspection,
-    /// `external-pilot` : pilote `Externe` des outils.
+    /// `external-pilot`: the `External` pilot of the tools.
     ExternalPilot,
-    /// `dev-bench` : banc de pilotage et pause de décision des sessions joueuses.
+    /// `dev-bench`: the driving bench and the decision pause of player sessions.
     Bench,
 }
 
 impl DevFeature {
-    /// Toutes les fonctionnalités de développement, dans l'ordre de déclaration.
+    /// All development features, in declaration order.
     pub const ALL: [Self; 4] = [
         Self::Commands,
         Self::Introspection,
@@ -52,7 +53,7 @@ impl DevFeature {
         Self::Bench,
     ];
 
-    /// Nom de la fonctionnalité Cargo.
+    /// Name of the Cargo feature.
     pub const fn cargo_name(self) -> &'static str {
         match self {
             Self::Commands => "dev-commands",
@@ -62,7 +63,7 @@ impl DevFeature {
         }
     }
 
-    /// Vrai si la fonctionnalité est compilée dans ce binaire.
+    /// True if the feature is compiled into this binary.
     pub const fn is_enabled(self) -> bool {
         match self {
             Self::Commands => cfg!(feature = "dev-commands"),
@@ -73,8 +74,8 @@ impl DevFeature {
     }
 }
 
-/// Fonctionnalités de développement actives, pour le refus de démarrer et la vérification de
-/// l'artefact (SEC0-20).
+/// Development features that are active, for the refusal to start and the check of the
+/// artifact (SEC0-20).
 pub fn active_dev_features() -> impl Iterator<Item = DevFeature> {
     DevFeature::ALL.into_iter().filter(|f| f.is_enabled())
 }
