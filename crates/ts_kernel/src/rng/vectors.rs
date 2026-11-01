@@ -1,11 +1,11 @@
 // spec: carnet architecture-securite.md §9.9 K3, K4
-//! Vecteurs de référence **figés** de l'aléa à clé. Les modifier rompt la reproductibilité de
-//! tous les mondes : un échec ici signale un changement de résultat, jamais une valeur à
-//! recopier.
+//! **Frozen** reference vectors of the keyed randomness. Changing them breaks the
+//! reproducibility of every world: a failure here signals a change of result, never a value
+//! to copy over.
 
 use super::*;
 
-/// Clé de monde des vecteurs : octets 0 à 15.
+/// World key of the vectors: bytes 0 to 15.
 fn world() -> WorldKey {
     WorldKey::from_bytes([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
 }
@@ -152,7 +152,7 @@ fn blocks_are_frozen() {
         assert_eq!(
             draw_block_at(key, sid(42), 1, 2, block),
             values,
-            "bloc {block}"
+            "block {block}"
         );
     }
     assert_eq!(draw_block(key, sid(42), 1, 2), expected[0].1);

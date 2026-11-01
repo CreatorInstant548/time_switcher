@@ -1,17 +1,17 @@
 // spec: revues/architecture.md §6.4 ; carnet architecture-securite.md §3.4 SEC0-22 ; §10 ; §9.9 K2 à K6, K10
-//! Aléa à clé : un tirage est une fonction pure de (clé de flux, sujet, créneau, usage).
+//! Keyed randomness: a draw is a pure function of (stream key, subject, slot, purpose).
 //!
-//! Chemin sensible (`tools/ci/sensitive-paths.txt`). Toute modification de la dérivation, de la
-//! disposition du *nonce* ou des vecteurs figés de `vectors.rs` change le résultat de tous les
-//! mondes.
+//! Sensitive path (`tools/ci/sensitive-paths.txt`). Any change to the derivation, to the
+//! *nonce* layout or to the frozen vectors of `vectors.rs` changes the result of every
+//! world.
 //!
-//! - [`WorldKey`] (128 bits) donne une fois [`StreamKeys`] : une [`StreamKey`] de 256 bits par
-//!   [`Stream`], dérivée par BLAKE3 `derive_key` sur le **nom** du flux (K2, K4).
-//! - [`draw`], [`draw_block`] et [`draw_block_at`] tirent par XChaCha8 en mode compteur (K3).
-//! - [`CosmeticSeed`] vient d'une racine privée, séparée des flux (K6, M27).
+//! - [`WorldKey`] (128 bits) yields [`StreamKeys`] once: a 256-bit [`StreamKey`] per
+//!   [`Stream`], derived by BLAKE3 `derive_key` on the stream **name** (K2, K4).
+//! - [`draw`], [`draw_block`] and [`draw_block_at`] draw with XChaCha8 in counter mode (K3).
+//! - [`CosmeticSeed`] comes from a private root, separate from the streams (K6, M27).
 //!
-//! Aucune clé n'est `Copy`, `Clone`, `PartialEq`, `Hash` ni sérialisable, et leur `Debug` ne
-//! montre rien (K5). Témoin, puis les refus :
+//! No key is `Copy`, `Clone`, `PartialEq`, `Hash` or serializable, and their `Debug` shows
+//! nothing (K5). A witness, then the refusals:
 //!
 //! ```
 //! use ts_kernel::rng::{Stream, StreamKeys, WorldKey, draw};
@@ -41,8 +41,8 @@
 //! let _ = draw(&seed, ts_kernel::StableId::from_snapshot_raw(1), 0, 0);
 //! ```
 //!
-//! Les extraits `compile_fail` ont leur témoin ci-dessus : rustdoc stable ne vérifie pas leur
-//! code d'erreur, qui reste écrit pour la relecture.
+//! The `compile_fail` snippets have their witness above: stable rustdoc does not check their
+//! error code, which stays written for review.
 
 use core::fmt;
 
@@ -56,17 +56,17 @@ mod tests;
 #[cfg(test)]
 mod vectors;
 
-/// Contexte BLAKE3 de la racine cosmétique (K4, K6).
+/// BLAKE3 context of the cosmetic root (K4, K6).
 const COSMETIC_CONTEXT: &str = "time_switcher 2026-10-30 cosmetic v1";
 
 // spec: carnet architecture-securite.md §9.9 K5 ; revues/generation.md P25
-/// Clé de monde de 128 bits. Secrète en ligne : tirée par un générateur cryptographique et
-/// gardée par l'hôte, jamais dérivée d'une information publique (P25).
+/// 128-bit world key. Secret online: drawn by a cryptographic generator and kept by the
+/// host, never derived from public information (P25).
 ///
-/// Seul constructeur public : [`WorldKey::from_bytes`]. La clé de test
-/// `insecure_from_u64_for_tests` n'existe qu'avec `cfg(test)`, `dev-commands` ou
-/// `external-pilot`, donc jamais avec `public` (SEC0-20 refuse `public` avec ces deux
-/// fonctionnalités). Témoin, puis le refus, compilé sans fonctionnalité de développement :
+/// The only public constructor is [`WorldKey::from_bytes`]. The test key
+/// `insecure_from_u64_for_tests` exists only with `cfg(test)`, `dev-commands` or
+/// `external-pilot`, hence never with `public` (SEC0-20 refuses `public` with these two
+/// features). A witness, then the refusal, compiled without any development feature:
 ///
 /// ```
 /// let _ = ts_kernel::rng::WorldKey::from_bytes([0; 16]);
@@ -78,13 +78,13 @@ const COSMETIC_CONTEXT: &str = "time_switcher 2026-10-30 cosmetic v1";
 pub struct WorldKey([u8; 16]);
 
 impl WorldKey {
-    /// Clé lue ou tirée par l'hôte.
+    /// Key read or drawn by the host.
     pub const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
-    /// Clé de test **non sûre** : `seed` en petit-boutiste, puis huit octets nuls. Jamais dans
-    /// un binaire public.
+    /// **Insecure** test key: `seed` in little-endian, then eight zero bytes. Never in a
+    /// public binary.
     #[cfg(any(test, feature = "dev-commands", feature = "external-pilot"))]
     pub const fn insecure_from_u64_for_tests(seed: u64) -> Self {
         let s = seed.to_le_bytes();
@@ -101,8 +101,8 @@ impl fmt::Debug for WorldKey {
 }
 
 // spec: carnet architecture-securite.md §9.9 K2, K5
-/// Clé d'un flux, 256 bits, obtenue seulement par [`StreamKeys::get`]. Mêmes règles que
-/// [`WorldKey`] : ni copie, ni comparaison, ni affichage.
+/// Key of a stream, 256 bits, obtained only through [`StreamKeys::get`]. Same rules as
+/// [`WorldKey`]: no copy, no comparison, no display.
 pub struct StreamKey([u8; 32]);
 
 impl fmt::Debug for StreamKey {
@@ -111,50 +111,50 @@ impl fmt::Debug for StreamKey {
     }
 }
 
-/// Racine du domaine cosmétique : type privé, jamais rendu par l'API (K6).
+/// Root of the cosmetic domain: private type, never returned by the API (K6).
 struct CosmeticRoot([u8; 32]);
 
 // spec: revues/architecture.md §6.4 ; revues/generation.md P26 ; carnet architecture-securite.md §3.4 SEC0-22
-/// Flux d'aléa, un par domaine : changer les règles d'un domaine ne décale aucun tirage des
-/// autres (nombres aléatoires communs, architecture §6.4).
+/// Random streams, one per domain: changing the rules of one domain shifts no draw of the
+/// others (common random numbers, architecture §6.4).
 ///
-/// Énumération fermée. Les noms sont **stables** : la clé d'un flux se dérive de son nom
-/// ([`Stream::context`]), jamais de son rang. Les rangs servent seulement d'indice dans
-/// [`StreamKeys`] et ne sont jamais renumérotés ; un flux nouveau prend le rang suivant.
+/// Closed enumeration. The names are **stable**: the key of a stream is derived from its name
+/// ([`Stream::context`]), never from its rank. Ranks only serve as an index in
+/// [`StreamKeys`] and are never renumbered; a new stream takes the next rank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Stream {
-    /// Décisions des personnages pilotés par l'IA.
+    /// Decisions of AI-piloted characters.
     Ai = 0,
     /// Combat.
     Combat = 1,
-    /// Relations et échanges sociaux.
+    /// Relations and social exchanges.
     Social = 2,
-    /// Économie.
+    /// Economy.
     Economy = 3,
-    /// Vie de la population en jeu.
+    /// Life of the in-play population.
     Population = 4,
-    /// Météo.
+    /// Weather.
     Weather = 5,
-    /// Génération de la ville (P26).
+    /// Generation of the city (P26).
     CityGen = 6,
-    /// Part serveur de la ville, tirée par monde (P12, P26).
+    /// Server part of the city, drawn per world (P12, P26).
     CityServer = 7,
-    /// Génération de la population (P26).
+    /// Generation of the population (P26).
     PopGen = 8,
-    /// Couche cachée de la population (P26).
+    /// Hidden layer of the population (P26).
     PopHidden = 9,
-    /// Mobilier (P26).
+    /// Furnishing (P26).
     Furnish = 10,
-    /// Identification et reconnaissance.
+    /// Identification and recognition.
     Identification = 11,
 }
 
 impl Stream {
-    /// Nombre de flux.
+    /// Number of streams.
     pub const COUNT: usize = 12;
 
-    /// Tous les flux, dans l'ordre de leur rang.
+    /// All streams, in order of their rank.
     pub const ALL: [Self; Self::COUNT] = [
         Self::Ai,
         Self::Combat,
@@ -170,7 +170,7 @@ impl Stream {
         Self::Identification,
     ];
 
-    /// Nom stable du flux.
+    /// Stable name of the stream.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Ai => "Ai",
@@ -188,8 +188,9 @@ impl Stream {
         }
     }
 
-    /// Contexte BLAKE3 `derive_key` du flux : `"time_switcher 2026-10-30 stream <Nom> v1"` (K4).
-    /// Écrit en dur, comme BLAKE3 le demande ; un test vérifie l'accord avec [`Stream::name`].
+    /// BLAKE3 `derive_key` context of the stream:
+    /// `"time_switcher 2026-10-30 stream <Name> v1"` (K4). Hard-coded, as BLAKE3 requires; a
+    /// test checks that it agrees with [`Stream::name`].
     pub const fn context(self) -> &'static str {
         match self {
             Self::Ai => "time_switcher 2026-10-30 stream Ai v1",
@@ -209,15 +210,15 @@ impl Stream {
 }
 
 // spec: carnet architecture-securite.md §9.9 K2, K6
-/// Clés dérivées d'une [`WorldKey`], une fois, à la création ou au chargement du monde : une
-/// [`StreamKey`] par flux et la racine cosmétique privée. Pas de copie ni d'affichage.
+/// Keys derived from a [`WorldKey`], once, when the world is created or loaded: one
+/// [`StreamKey`] per stream and the private cosmetic root. No copy or display.
 pub struct StreamKeys {
     streams: [StreamKey; Stream::COUNT],
     cosmetic: CosmeticRoot,
 }
 
 impl StreamKeys {
-    /// Dérive toutes les clés par BLAKE3 `derive_key`, chacune sous son propre contexte.
+    /// Derives all the keys by BLAKE3 `derive_key`, each under its own context.
     pub fn derive(world: &WorldKey) -> Self {
         Self {
             streams: Stream::ALL.map(|s| StreamKey(blake3::derive_key(s.context(), &world.0))),
@@ -225,8 +226,8 @@ impl StreamKeys {
         }
     }
 
-    /// Clé du flux `stream`. `match` exhaustif à indices constants : un indice hors du tableau
-    /// serait refusé à la compilation (`unconditional_panic`), donc `get` ne panique jamais.
+    /// Key of stream `stream`. Exhaustive `match` with constant indices: an index outside the
+    /// array would be refused at compile time (`unconditional_panic`), so `get` never panics.
     pub const fn get(&self, stream: Stream) -> &StreamKey {
         let s = &self.streams;
         match stream {
@@ -245,10 +246,10 @@ impl StreamKeys {
         }
     }
 
-    /// Graine cosmétique de `subject` pour l'usage `usage` (`cosmetic/<usage>`) et le créneau
-    /// `slot` : BLAKE3 à clé, sous la racine cosmétique, de `usage ‖ subject (u64 LE) ‖ slot
-    /// (u64 LE)` (injectif : la fin a une longueur fixe). L'usage est une chaîne `'static`,
-    /// fixée à la compilation par le système appelant.
+    /// Cosmetic seed of `subject` for purpose `usage` (`cosmetic/<usage>`) and slot
+    /// `slot`: keyed BLAKE3, under the cosmetic root, of `usage ‖ subject (u64 LE) ‖ slot
+    /// (u64 LE)` (injective: the end has a fixed length). The purpose is a `'static` string,
+    /// fixed at compile time by the calling system.
     pub fn cosmetic_seed(&self, usage: &'static str, subject: StableId, slot: u64) -> CosmeticSeed {
         let mut hasher = blake3::Hasher::new_keyed(&self.cosmetic.0);
         hasher.update(usage.as_bytes());
@@ -267,22 +268,22 @@ impl fmt::Debug for StreamKeys {
 }
 
 // spec: carnet architecture-securite.md §9.9 K6 ; attendus-mesurables.md M27
-/// Graine d'un effet cosmétique (apparence, voix…), qui peut être envoyée au client.
+/// Seed of a cosmetic effect (appearance, voice...), which may be sent to the client.
 ///
-/// Elle ne se convertit en aucune clé et aucune fonction de tirage ne l'accepte : connaître
-/// des graines cosmétiques ne dit rien des flux (SEC0-22, M27).
+/// It converts to no key and no draw function accepts it: knowing cosmetic seeds says
+/// nothing about the streams (SEC0-22, M27).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CosmeticSeed(u64);
 
 impl CosmeticSeed {
-    /// Valeur de la graine.
+    /// Value of the seed.
     pub const fn value(self) -> u64 {
         self.0
     }
 }
 
 // spec: carnet architecture-securite.md §9.9 K3
-/// *Nonce* XChaCha de 192 bits : `subject (u64 LE) ‖ slot (u64 LE) ‖ purpose (u32 LE) ‖ 0u32`.
+/// 192-bit XChaCha *nonce*: `subject (u64 LE) ‖ slot (u64 LE) ‖ purpose (u32 LE) ‖ 0u32`.
 fn nonce(subject: StableId, slot: u64, purpose: u32) -> [u8; 24] {
     let mut n = [0u8; 24];
     n[..8].copy_from_slice(&subject.to_snapshot_raw().to_le_bytes());
@@ -292,11 +293,11 @@ fn nonce(subject: StableId, slot: u64, purpose: u32) -> [u8; 24] {
 }
 
 // spec: carnet architecture-securite.md §9.9 K3 ; §3.4 SEC0-22
-/// Bloc `block` (512 bits) du flux de clé XChaCha8 désigné par (sujet, créneau, usage), lu en
-/// huit `u64` petit-boutistes. Fonction pure.
+/// Block `block` (512 bits) of the XChaCha8 key stream designated by (subject, slot, purpose),
+/// read as eight little-endian `u64`s. Pure function.
 ///
-/// L'indice de bloc est un `u16` (décidé) : 65 536 blocs de 8 valeurs par triplet suffisent, et
-/// le compteur de 32 bits de XChaCha ne peut alors jamais s'épuiser, donc rien ne panique.
+/// The block index is a `u16` (decided): 65,536 blocks of 8 values per triple are enough, and
+/// XChaCha's 32-bit counter can then never run out, so nothing panics.
 pub fn draw_block_at(
     key: &StreamKey,
     subject: StableId,
@@ -317,17 +318,17 @@ pub fn draw_block_at(
     out
 }
 
-/// Premier bloc de (sujet, créneau, usage) : ses 8 valeurs.
+/// First block of (subject, slot, purpose): its 8 values.
 pub fn draw_block(key: &StreamKey, subject: StableId, slot: u64, purpose: u32) -> [u64; 8] {
     draw_block_at(key, subject, slot, purpose, 0)
 }
 
 // spec: revues/architecture.md §6.4 ; carnet architecture-securite.md §9.9 K2, K3
-/// Tirage pur : même clé de flux et même (sujet, créneau, usage) donnent la même valeur, quel
-/// que soit l'ordre d'exécution. C'est la première valeur de [`draw_block`].
+/// Pure draw: the same stream key and the same (subject, slot, purpose) give the same value,
+/// whatever the execution order. It is the first value of [`draw_block`].
 ///
-/// `slot` est le tick, l'indice d'un bloc d'agenda ou un compteur propre au sujet ; `purpose`
-/// distingue les tirages d'un même système au même créneau.
+/// `slot` is the tick, the index of a schedule block or a counter specific to the subject;
+/// `purpose` tells apart the draws of one system in the same slot.
 pub fn draw(key: &StreamKey, subject: StableId, slot: u64, purpose: u32) -> u64 {
     draw_block(key, subject, slot, purpose)[0]
 }
