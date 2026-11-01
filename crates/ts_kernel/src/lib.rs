@@ -1,16 +1,16 @@
 // spec: 05-architecture.md §2.3 ; revues/architecture.md §6
-//! Noyau de simulation de time_switcher, sans affichage ni E/S.
+//! Simulation kernel of time_switcher, with no display and no I/O.
 //!
-//! Phase 0 : profil de construction (SEC0-20), temps, identifiants stables, argent, aléa à clé,
-//! ordonnanceur à événements datés, phases du tick, greffons, boucle de simulation, empreinte
-//! d'état, instantané, décodeur canonique et budgets de calcul. Chemin
-//! sensible : ce fichier déclare le module `build_profile`, qui porte les `compile_error!`, et
-//! le module `canonical`, qui lit des octets non fiables (AS-36).
+//! Phase 0: build profile (SEC0-20), time, stable identifiers, money, keyed randomness,
+//! dated-event scheduler, tick phases, plugins, simulation loop, state fingerprint,
+//! snapshot, canonical decoder and compute budgets. Sensitive path: this file declares the
+//! `build_profile` module, which carries the `compile_error!`s, and the `canonical` module,
+//! which reads untrusted bytes (AS-36).
 
 #![forbid(unsafe_code)]
 
 // spec: attendus-mesurables.md M7
-/// Vérifie à la compilation que `size_of::<Type>()` vaut `n` octets (M7).
+/// Checks at compile time that `size_of::<Type>()` is `n` bytes (M7).
 ///
 /// ```
 /// ts_kernel::assert_size!(u32, 4);
@@ -24,7 +24,7 @@ macro_rules! assert_size {
     ($t:ty, $n:expr) => {
         const _: () = ::core::assert!(
             ::core::mem::size_of::<$t>() == $n,
-            ::core::concat!("taille inattendue pour ", ::core::stringify!($t), " (M7)"),
+            ::core::concat!("unexpected size for ", ::core::stringify!($t), " (M7)"),
         );
     };
 }
@@ -42,7 +42,7 @@ mod sim;
 mod state;
 mod time;
 
-/// `bevy_ecs`, réexporté pour que les crates de règles en partagent la version.
+/// `bevy_ecs`, re-exported so that the rules crates share its version.
 pub use bevy_ecs;
 
 pub use budget::WorkBudget;

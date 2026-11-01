@@ -1,14 +1,14 @@
 [package]
 name = "ts_kernel"
 version = "0.0.0"
-description = "Noyau de simulation de time_switcher : bibliothèque sans affichage ni E/S."
+description = "Simulation kernel of time_switcher: a library with no display and no I/O."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
-# Profils de construction (SEC0-20) : aucune fonctionnalité par défaut. `public` ne s'active
-# qu'en ligne de commande, jamais depuis un autre Cargo.toml ; elle exclut les quatre autres.
+# Build profiles (SEC0-20): no default feature. `public` is only enabled on the command line,
+# never from another Cargo.toml; it excludes the other four.
 [features]
 default = []
 dev-bench = []
