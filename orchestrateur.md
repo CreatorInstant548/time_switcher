@@ -148,3 +148,15 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
   - Elle ne contient que la correction du faux écart (P1). P2 à P4 n'avaient pas encore été poussés.
   - `-Check` après `pull` : code 2, avec HTTP 422 sur `fork-pr-workflows-private-repos`, attendu sur un dépôt public. Les fusions restent gelées.
   - **Suite** : nouvelle PR avec P2 à P4 (réglages publics, filtre sur l'auteur des approbations, test en mode public), puis une deuxième fusion web unique par l'utilisateur, et enfin `-Apply`, `-Check` et `verify-main` par l'orchestrateur.
+- **Fusion web de la #83 par l'utilisateur** (dc9dd98, 01/11 à 18:40 UTC), faite **avant** le `review-ok` et l'`archsec-ok`. Seuls `ci-ok`, les tests de l'auteur et un `/security-review` sans constat la couvraient. Les approbations seront postées après coup, après une relecture neuve de la tête 77919881.
+  - **Relecture de l'orchestrateur avant `-Apply`** :
+    - le diff du JSON ne fait que durcir, et les rulesets sont inchangés ;
+    - le script n'envoie que des `PATCH` et des `PUT`, aucun `DELETE`.
+  - **`-Apply`** : 12 écritures faites.
+    - visibilité, analyse des secrets et protection des poussées ;
+    - Dependabot ;
+    - Actions et approbation des forks (`all_external_contributors`) ;
+    - signalement privé des vulnérabilités ;
+    - limite d'interaction `collaborators_only` pour six mois.
+  - **`-Check`** : conforme.
+  - **Fusions dégelées** : #73, #70, puis #79, #80 et #81.
