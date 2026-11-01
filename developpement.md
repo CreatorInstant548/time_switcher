@@ -372,3 +372,8 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - **#73** (T3j) : `review-ok` sur f77f623. Lot AS-44 en cours : AA1 `head.sha != sha`, AA2 G3 sur la fenêtre `7d`, AA3 fermeture de la fenêtre.
   - **#70** (T9b) : approuvée, elle attend le dégel.
   - Issues #71, #8 (test d'intégration de `repo-settings -Check` en CI, à faire dans T3b).
+- 01/11 : **le dépôt est passé en public** (décision de l'utilisateur). La limite de CI tombe et Actions repart.
+  - `-Check` échoue en public : `fork-pr-workflows-private-repos` répond 422.
+  - **#74 élargie**, sur décision de l'orchestrateur : `repo` en public, `fork-pr-contributor-approval = all_external_contributors`, `secret_scanning` et `push_protection` activés, signalement privé des vulnérabilités, avec des tests en public et en privé. Les conditions d'archi-sécu sont attendues avant de figer la tête. Ensuite : la fusion web unique, puis #73 et #70.
+  - Consignes **T10** (`ts_py`) et **T11** (`ts_viz`) envoyées à archi-sécu (V).
+  - **T14e** (traduction en anglais du noyau) lancée.
