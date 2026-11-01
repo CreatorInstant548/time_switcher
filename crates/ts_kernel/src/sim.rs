@@ -13,7 +13,7 @@ use bevy_ecs::schedule::{Schedule, Schedules};
 use bevy_ecs::world::World;
 use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 
-use crate::phase::phase_schedule;
+use crate::phase::{ExecutorSwitch, phase_schedule};
 use crate::rng::{StreamKeys, WorldKey};
 use crate::state::{
     StableIndex, StateEntry, StateWriter, hash_world, stable_entities, undeclared_components,
@@ -84,8 +84,41 @@ impl StateHash for TimedEvent {
 pub enum Threads {
     /// One thread: sequential executor, one-thread pool for `par_iter`.
     Single,
-    /// `n` threads: parallel `bevy_ecs` executor.
+    /// `n` threads: `n`-thread pool for `par_iter`, and the parallel `bevy_ecs` executor for
+    /// the phases that [`ParallelPhases`] selects.
     Fixed(NonZeroU16),
+}
+
+// spec: revues/architecture.md §9.1, §9.2
+/// Work from which a phase runs on the parallel executor by default; see
+/// [`ParallelPhases::FromWork`]. A speed setting, never a game value.
+// PROVISIONAL(design #88): to calibrate on the phase 1 systems; the result does not depend on it.
+pub const PARALLEL_FROM_WORK: u32 = 256;
+
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md §9.10 L6
+/// Which phases run on the parallel `bevy_ecs` executor with [`Threads::Fixed`]; the others
+/// run on the single-threaded executor, where `par_iter` still uses the whole pool. Ignored
+/// with [`Threads::Single`].
+///
+/// **No effect on the result** (R1), only on speed: see `AdaptiveExecutor` in `phase.rs`.
+/// The choice is made before each phase from the configuration and the world state alone,
+/// and kept outside the `World`, so no system can see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParallelPhases {
+    /// Every phase, every tick: the behaviour before issue #67. The determinism proofs use it
+    /// to exercise the parallel executor on small worlds.
+    Always,
+    /// Only a phase with at least two systems (a single system gains nothing from the
+    /// parallel executor), and only when its **work** reaches this value: the entities in
+    /// full simulation ([`LodComplete`]) at the start of the phase, plus the events due in
+    /// the tick (none yet in [`Phase::Input`]). Counted in work units, never in time.
+    FromWork(u32),
+}
+
+impl Default for ParallelPhases {
+    fn default() -> Self {
+        Self::FromWork(PARALLEL_FROM_WORK)
+    }
 }
 
 impl Threads {
@@ -106,6 +139,8 @@ pub struct SimConfig {
     pub tick_hz: u32,
     /// Number of compute threads.
     pub threads: Threads,
+    /// Phases on the parallel executor, with [`Threads::Fixed`]. Speed only.
+    pub parallel_phases: ParallelPhases,
     /// Disabled plugins, by name; each must be [`Plugin::disableable`].
     pub disabled_plugins: Vec<&'static str>,
 }
@@ -115,6 +150,7 @@ impl Default for SimConfig {
         Self {
             tick_hz: 20,
             threads: Threads::Single,
+            parallel_phases: ParallelPhases::default(),
             disabled_plugins: Vec::new(),
         }
     }
@@ -356,6 +392,10 @@ pub struct RunReport {
 pub struct Sim {
     world: World,
     phases: Vec<Schedule>,
+    /// Indexed like `phases`: with [`Threads::Fixed`], the executor switch of the phase and
+    /// its number of systems; `None` with [`Threads::Single`].
+    switches: Vec<Option<(ExecutorSwitch, usize)>>,
+    parallel_phases: ParallelPhases,
     tick_ms: i64,
     active: Vec<(&'static str, u32)>,
     rules: RulesFingerprint,
@@ -473,12 +513,13 @@ impl Sim {
         world.insert_resource(StableIds(StableIdAllocator::for_new_world()));
         world.insert_resource(WorldStreams(StreamKeys::derive(world_key)));
 
+        let (phases, switches): (Vec<_>, Vec<_>) = Phase::ALL
+            .iter()
+            .map(|&p| phase_schedule(p, cfg.threads))
+            .unzip();
         let mut b = SimBuilder {
             world,
-            phases: Phase::ALL
-                .iter()
-                .map(|&p| phase_schedule(p, cfg.threads))
-                .collect(),
+            phases,
             current: "",
             state: Vec::new(),
             migrations: Vec::new(),
@@ -514,12 +555,21 @@ impl Sim {
                 return Err(BuildError::Schedule { phase, message });
             }
         }
+        // After `initialize`, so that the count includes the sync points that `bevy_ecs`
+        // inserted: an upper bound of the systems that can run together (speed only).
+        let switches = switches
+            .into_iter()
+            .zip(&phases)
+            .map(|(switch, schedule)| switch.map(|s| (s, schedule.systems_len())))
+            .collect();
         let active: Vec<_> = plugins.iter().map(|p| (p.name(), p.version())).collect();
         let rules = RulesFingerprint::of(&active);
         let complete = world.query_filtered::<Entity, With<LodComplete>>();
         Ok(Self {
             world,
             phases,
+            switches,
+            parallel_phases: cfg.parallel_phases,
             tick_ms,
             active,
             rules,
@@ -577,12 +627,12 @@ impl Sim {
     pub fn step(&mut self) -> StepReport {
         let tick_start = self.now();
         let last = tick_start.add_millis(self.tick_ms - 1);
-        self.phases[Phase::Input.index()].run(&mut self.world);
+        self.run_phase(Phase::Input, 0);
         let due = self.world.resource_mut::<EventQueue>().pop_due(last);
         let due_events = due.len();
         self.world.resource_mut::<DueEvents>().0 = due;
-        for schedule in &mut self.phases[Phase::Scheduled.index()..] {
-            schedule.run(&mut self.world);
+        for &phase in &Phase::ALL[Phase::Scheduled.index()..] {
+            self.run_phase(phase, due_events);
         }
         self.world.resource_mut::<DueEvents>().0.clear();
         self.world.resource_mut::<SimClock>().now = last.add_millis(1);
@@ -591,6 +641,28 @@ impl Sim {
             tick_start,
             due_events,
         }
+    }
+
+    // spec: revues/architecture.md §9.1, §9.2
+    /// Runs one phase. With [`Threads::Fixed`], first picks its executor (speed only, see
+    /// [`ParallelPhases`]) from the configuration and the world state alone: nothing is
+    /// carried from one tick to the next.
+    fn run_phase(&mut self, phase: Phase, due_events: usize) {
+        if let Some((switch, systems)) = &self.switches[phase.index()] {
+            let parallel = match self.parallel_phases {
+                ParallelPhases::Always => true,
+                ParallelPhases::FromWork(from) => {
+                    *systems >= 2 && {
+                        // Exact and cheap: `With<LodComplete>` is an archetype filter, so the
+                        // lower bound is the sum of the matched table sizes.
+                        let complete = self.complete.iter(&self.world).size_hint().0;
+                        complete.saturating_add(due_events) >= from as usize
+                    }
+                }
+            };
+            switch.set_parallel(parallel);
+        }
+        self.phases[phase.index()].run(&mut self.world);
     }
 
     /// True if an entity carries [`LodComplete`].
