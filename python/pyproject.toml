@@ -21,6 +21,12 @@ dependencies = []
 # - maturin: builds the crate ts_py into the environment (maturin develop).
 [dependency-groups]
 base = ["maturin==1.15.0", "numpy==2.5.4", "pytest==9.1.1"]
+# Optional group (AS-48, VZ7): converts positions.parquet to a Rerun recording (python/viz/).
+# Installed by nobody by default: not by `cargo xtask py`, not by the CI (default-groups below).
+# Install it by hand: `uv sync --locked --group viz` (docs/dev/visualisation.md).
+# - rerun-sdk: the only way to write a .rrd. Wheels only (no-build below), hashes in uv.lock.
+#   It brings pyarrow, which reads the Parquet file: nothing else is added for that.
+viz = ["rerun-sdk==0.38.1"]
 
 [tool.uv]
 # uv never builds this project: `cargo xtask py` builds ts_py with maturin develop.

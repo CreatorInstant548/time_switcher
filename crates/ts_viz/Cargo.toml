@@ -1,0 +1,27 @@
+[package]
+name = "ts_viz"
+version = "0.0.0"
+description = "Development visualisation of time_switcher: positions of the toy world as positions.parquet, converted to Rerun by an optional Python script."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "ts-viz"
+path = "src/main.rs"
+
+# Tool crate (xtask manifests.rs, TOOLS), outside `default-members` (A13), in no public binary.
+# No `rerun` crate (AS-48, VZ7): the output is a plain Parquet file, written like
+# `metrics.parquet` of ts_runner (`parquet` without `arrow` and without compression, Y1) in a
+# directory prepared by `ts_runner::out_dir` (Y3). No new dependency.
+[dependencies]
+blake3.workspace = true
+parquet.workspace = true
+ts_data = { path = "../ts_data" }
+ts_kernel = { path = "../ts_kernel" }
+ts_runner = { path = "../ts_runner" }
+ts_toy = { path = "../ts_toy" }
+
+[lints]
+workspace = true
