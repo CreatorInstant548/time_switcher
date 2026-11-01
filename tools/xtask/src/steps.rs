@@ -349,8 +349,8 @@ struct GitleaksSetup {
     sha256: String,
     config: PathBuf,
     ignore_dir: PathBuf,
-    /// Folder written for this run only, removed at its end (local mode).
-    temp: Option<PathBuf>,
+    /// Folder written for this run only, removed when the setup is dropped (local mode).
+    _temp: Option<TempDir>,
 }
 
 /// Removes the folder written by [`gitleaks_local`] when the step ends, whatever the outcome.
@@ -376,18 +376,24 @@ pub fn ci_mode() -> bool {
 fn gitleaks_local(cx: &Ctx) -> Result<GitleaksSetup, String> {
     let lock = cx.git(&["show", "origin/main:tools/dev/tools.lock"])?;
     let config = cx.git(&["show", "origin/main:tools/dev/hooks/gitleaks.toml"])?;
+    let (bin, sha256) = (
+        PathBuf::from(lock_value(&lock, "gitleaks.path")?),
+        lock_value(&lock, "gitleaks.sha256")?,
+    );
     let dir = sys::ts_cache()
         .join("tmp")
         .join(format!("xtask-gitleaks-config-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir); // leftover of an earlier run with this process id
     std::fs::create_dir_all(&dir).map_err(|e| format!("{} : {e}", dir.display()))?;
+    // From here on, the folder is removed whatever happens.
+    let temp = TempDir(dir.clone());
     sys::write(&dir.join("gitleaks.toml"), config.as_bytes())?;
     Ok(GitleaksSetup {
-        bin: PathBuf::from(lock_value(&lock, "gitleaks.path")?),
-        sha256: lock_value(&lock, "gitleaks.sha256")?,
+        bin,
+        sha256,
         config: dir.join("gitleaks.toml"),
-        ignore_dir: dir.clone(),
-        temp: Some(dir),
+        ignore_dir: dir,
+        _temp: Some(temp),
     })
 }
 
@@ -443,7 +449,7 @@ fn gitleaks_ci(cx: &Ctx) -> Result<GitleaksSetup, String> {
         sha256: lock_value(&lock, "gitleaks.linux.sha256")?,
         config,
         ignore_dir: dir,
-        temp: None,
+        _temp: None,
     })
 }
 
@@ -461,9 +467,8 @@ pub fn gitleaks(cx: &Ctx) -> Outcome {
         sha256,
         config,
         ignore_dir: dir,
-        temp,
+        _temp,
     } = setup;
-    let _temp = temp.map(TempDir);
     let expected = sha256.to_ascii_lowercase();
     if !bin.is_file() || tri!(sys::sha256(&cx.root, &bin)) != expected {
         return Outcome::Fail(format!(

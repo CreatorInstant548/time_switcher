@@ -76,10 +76,15 @@ fn step(n: &str, what: &str) {
     println!("\n[{n}] {what}");
 }
 
-/// Étape 1 : copie principale propre, sur `main`, à jour d'`origin/main` (par `--ff-only`).
+/// Étape 1 : copie principale propre, sur `main`, égale à `origin/main` dès le lancement.
 /// Rend faux en `--dry-run` lancé hors de la copie principale (m1).
+///
+/// AS-50 retires J2 (binary fingerprint). What remains of it costs no process: `cargo xtask`
+/// rebuilds the binary from the clean main copy before it runs, so a copy equal to `origin/main`
+/// at launch means a binary built from `main`. A copy behind it is brought up to date by
+/// `git pull --ff-only`, then the merge is refused: the next launch rebuilds `xtask` from the new
+/// `main` instead of checking with the code of the old one.
 fn main_copy(repo: &Repo) -> Result<bool, String> {
-    let pull = "git pull --ff-only dans la copie principale";
     if repo.git(&["branch", "--show-current"])? != "main" {
         return Err(refuse(
             "la copie principale n'est pas sur main",
@@ -93,9 +98,6 @@ fn main_copy(repo: &Repo) -> Result<bool, String> {
         ));
     }
     repo.git(&["fetch", "--quiet", "origin"])?;
-    if !repo.dry_run {
-        repo.git(&["pull", "--ff-only", "--quiet"])?;
-    }
     let revs = repo.git(&["rev-parse", "HEAD", "origin/main"])?;
     let behind = match revs.lines().collect::<Vec<_>>()[..] {
         [head, main] => head != main,
@@ -104,12 +106,15 @@ fn main_copy(repo: &Repo) -> Result<bool, String> {
     if behind && repo.dry_run {
         // La vraie fusion fait git pull --ff-only ; les contrôles suivants lisent origin/main.
         println!(
-            "  AVERTISSEMENT (--dry-run) : copie principale en retard d'origin/main ({pull})."
+            "  AVERTISSEMENT (--dry-run) : copie principale en retard d'origin/main ; la vraie \
+             fusion la met à jour, puis demande de relancer."
         );
     } else if behind {
+        repo.git(&["pull", "--ff-only", "--quiet"])?;
         return Err(refuse(
-            "la copie principale n'est pas à jour d'origin/main",
-            pull,
+            "la copie principale était en retard d'origin/main : elle vient d'être mise à jour \
+             par git pull --ff-only, et ce binaire a été construit depuis l'ancien main",
+            "relancer cargo xtask merge <PR> : cargo reconstruit xtask depuis le nouveau main",
         ));
     }
     if same_path(&repo.here, &repo.main) {
@@ -132,11 +137,17 @@ fn main_copy(repo: &Repo) -> Result<bool, String> {
 }
 
 /// AS-50 AU2: the open anomaly issues of `verify-main` written by the owner (P3, the same filter
-/// as the approvals), by one paginated read of the open issues, whatever their labels; a pull
-/// request is not an issue. Their numbers.
+/// as the approvals), by one paginated read of the open issues created by the owner's login,
+/// whatever their labels; the full P3 filter is applied again here, and a pull request is not an
+/// issue. Their numbers.
 fn open_anomalies(repo: &Repo) -> Result<Vec<u64>, String> {
+    let owner = repo
+        .slug
+        .split_once('/')
+        .map(|(o, _)| o)
+        .unwrap_or_default();
     let list = repo.api_all(&format!(
-        "repos/{}/issues?state=open&per_page=100",
+        "repos/{}/issues?state=open&creator={owner}&per_page=100",
         repo.slug
     ))?;
     Ok(list
@@ -320,17 +331,28 @@ fn run(repo: &Repo, pr: u64) -> Result<bool, String> {
         "aucune issue d'anomalie de verify-main ouverte par le propriétaire (AS-50 AU2)",
     );
     let open = open_anomalies(repo)?;
-    if !open.is_empty() {
+    let mut suspended = None;
+    if open.is_empty() {
+        println!("  aucune");
+    } else {
         let list: Vec<String> = open.iter().map(|n| format!("#{n}")).collect();
-        return Err(refuse(
+        let why = refuse(
             format!(
                 "fusions suspendues : issue(s) d'anomalie de verify-main ouverte(s) : {}",
                 list.join(", ")
             ),
-            "lever l'anomalie (J5), puis fermer l'issue ; cargo xtask verify-main la revérifie",
-        ));
+            "lever l'anomalie (J5, ou -Apply pour les réglages), puis fermer l'issue ; \
+             cargo xtask verify-main la revérifie",
+        );
+        if !repo.dry_run {
+            return Err(why);
+        }
+        // --dry-run shows every other check; its result stays this refusal.
+        println!(
+            "  REFUS : {why}\n  --dry-run poursuit les contrôles ; le résultat restera un refus."
+        );
+        suspended = Some(why);
     }
-    println!("  aucune");
     step(
         "3-4",
         "PR ouverte, hors fork, base main, fusionnable, à jour ; titre (A31)",
@@ -463,6 +485,9 @@ fn run(repo: &Repo, pr: u64) -> Result<bool, String> {
         }
     }
     step("11", "fusion");
+    if let Some(why) = suspended {
+        return Err(why);
+    }
     // m5: state read again right before gh pr merge (head SHA, mergeable, behind_by = 0).
     let again = pr_state(repo, pr)?;
     if again["headRefOid"].as_str() != Some(sha.as_str()) {
@@ -819,8 +844,8 @@ mod tests {
                 "{absent}: {calls:#?}"
             );
         }
-        // 25 commands for a PR outside the sensitive paths and `.github/`: 13 `git`, 12 `gh`.
-        assert!(calls.len() <= 25, "{} commands: {calls:#?}", calls.len());
+        // 24 commands for a PR outside the sensitive paths and `.github/`: 12 `git`, 12 `gh`.
+        assert!(calls.len() <= 24, "{} commands: {calls:#?}", calls.len());
         // A PR that changes a workflow (path compared without case) gets J1 and J8; it is
         // sensitive, so it carries both approvals.
         let extra = vec![
@@ -876,6 +901,15 @@ mod tests {
                 "{calls:#?}"
             );
         }
+        // --dry-run goes on with every other check, and its result stays the refusal.
+        let anomaly_list = issues(json!([anomaly()]));
+        let (result, calls) = scenario_in(true, true, anomaly_list);
+        assert!(result.unwrap_err().contains("#41"));
+        assert!(
+            calls.iter().any(|c| c.contains("/check-runs")),
+            "{calls:#?}"
+        );
+        assert!(!calls.iter().any(|c| c.starts_with("gh pr merge")));
         let mut stranger = anomaly();
         stranger["user"]["login"] = json!("someone");
         stranger["author_association"] = json!("NONE");
@@ -886,6 +920,25 @@ mod tests {
         other["number"] = json!(42);
         let (result, calls) = scenario_with(false, issues(json!([stranger, pr, other])));
         assert_eq!(result, Ok(true), "{calls:#?}");
+    }
+
+    /// What remains of J2 (AS-50): a main copy behind `origin/main` at launch is updated by
+    /// `git pull --ff-only`, then the merge is refused before any GitHub read, so that the next
+    /// launch rebuilds `xtask` from the new `main`. `--dry-run` only warns and pulls nothing.
+    #[test]
+    fn behind_main_copy_is_pulled_then_refused() {
+        let behind = vec![(
+            "git rev-parse HEAD origin/main".to_owned(),
+            format!("{SHA}\n{MAIN}"),
+        )];
+        let (result, calls) = scenario_with(false, behind.clone());
+        let e = result.unwrap_err();
+        assert!(e.contains("relancer cargo xtask merge"), "{e}");
+        assert!(calls.iter().any(|c| c.starts_with("git pull --ff-only")));
+        assert!(!calls.iter().any(|c| c.starts_with("gh ")), "{calls:#?}");
+        let (result, calls) = scenario_in(true, true, behind);
+        assert_eq!(result, Ok(true), "{calls:#?}");
+        assert!(!calls.iter().any(|c| c.starts_with("git pull")));
     }
 
     /// AS-50: a PR from a fork is never merged.

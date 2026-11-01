@@ -181,8 +181,8 @@ En cas d'erreur interne, la commande est refusée.
 ### 3.3 Fusion : `cargo xtask merge <PR>`
 
 `cargo xtask merge` a remplacé `merge-pr.ps1` (T3) : c'est le **seul chemin de fusion**. C'est un chemin sensible, validé par archi-sécu. Le détail est dans [xtask](xtask.md) §6. Depuis AS-50 (#55), il ne contrôle plus que la PR elle-même, en une vingtaine d'appels : ni l'historique de `main` (`verify-main`), ni les réglages GitHub (`-Check`), ni les crochets, ni le binaire (J2), ni l'exception de réparation (AS-38). Dans l'ordre, le premier contrôle qui échoue arrête tout. Les numéros sont ceux qu'affiche la commande (`[1]`, `[3-4]`, etc.) :
-- **[1] Copie principale** propre, sur `main`, mise à jour par `git pull --ff-only`, et lancement depuis cette copie. La commande est refusée en mode CI.
-- **[2] Aucune *issue* d'anomalie ouverte** (AS-50 AU2, AU3) : une seule lecture des *issues* ouvertes, quelles que soient leurs étiquettes. Une *issue* écrite par le propriétaire (même filtre que P3) dont le titre est celui d'une anomalie de `verify-main` (commit de `main`, ou écart des réglages GitHub) suspend toutes les fusions. Une anomalie trouvée la nuit, ou par `-Check` lancé chaque jour par l'orchestrateur, arrête donc encore les fusions, sans relire l'historique. On la lève (J5, ou `-Apply`), puis on ferme l'*issue*.
+- **[1] Copie principale** propre, sur `main`, **égale à `origin/main` dès le lancement** (après `git fetch`), et lancement depuis cette copie. La commande est refusée en mode CI. Ce qui reste de J2, sans coût : `cargo xtask` reconstruit le binaire depuis la copie propre avant de le lancer, donc une copie égale à `origin/main` donne un binaire construit depuis `main`. Une copie en retard est mise à jour par `git pull --ff-only`, puis la fusion est refusée : il suffit de relancer `cargo xtask merge <PR>`, qui reconstruit `xtask` depuis le nouveau `main`.
+- **[2] Aucune *issue* d'anomalie ouverte** (AS-50 AU2, AU3) : une seule lecture des *issues* ouvertes créées par le propriétaire, quelles que soient leurs étiquettes. Une *issue* écrite par le propriétaire (même filtre que P3) dont le titre est celui d'une anomalie de `verify-main` (commit de `main`, ou écart des réglages GitHub) suspend toutes les fusions ; `--dry-run` poursuit les autres contrôles, mais son résultat reste un refus. Ces *issues* sont ouvertes par `cargo xtask verify-main` lancé en local : la tâche de nuit, en `--dry-run`, ne peut pas en ouvrir. Une anomalie trouvée la nuit arrête donc les fusions dès que l'orchestrateur a lancé `cargo xtask verify-main`, chaque jour (AU3). On la lève (J5, ou `-Apply`), puis on ferme l'*issue*. **Limite** (l'exception AS-38 est retirée) : la PR qui corrige l'anomalie est elle-même refusée tant que l'*issue* est ouverte. On ferme l'*issue* juste avant de la fusionner ; si la correction n'aboutit pas, `verify-main` la rouvre au passage suivant.
 - **[3-4] État de la PR** : ouverte, **venue du dépôt lui-même** (`isCrossRepository` faux : jamais une PR de *fork*), base `main`, hors brouillon, `MERGEABLE`, en retard de 0 commit sur `main`, titre conforme (A31).
 - **[5] `ci-ok`** vert sur le SHA de tête, venu de `ci.yml` (G3).
 - **[6] Liste complète des fichiers**, par l'API `pulls/<n>/files` paginée. Un renommage compte ses deux chemins (I10). Le nombre de fichiers doit égaler `changedFiles`. L'arbre de tête est refusé s'il contient des chemins égaux à la casse près, ou un chemin non ASCII sous un chemin sensible (B1).
@@ -197,13 +197,13 @@ En cas d'erreur interne, la commande est refusée.
 
 `--dry-run` fait tous les contrôles, sans fusion ; hors de la copie principale, son résultat est au mieux « OK sauf copie principale » (code 3).
 
-**Durée** (#55) : une PR hors des chemins sensibles et de `.github/` coûte 25 processus (13 `git`, 12 `gh`), contre environ 500 avant AS-50 sur l'historique du 01/11 (49 commits), dont la relecture GitHub de chaque commit sensible, `hooks verify` et `repo-settings.ps1 -Check`. Une PR sensible ajoute la lecture des commentaires et `git rev-parse` ; une PR qui modifie `.github/` ajoute J1 et J8.
+**Durée** (#55) : une PR hors des chemins sensibles et de `.github/` coûte 24 processus (12 `git`, 12 `gh`), contre environ 500 avant AS-50 sur l'historique du 01/11 (49 commits), dont la relecture GitHub de chaque commit sensible, `hooks verify` et `repo-settings.ps1 -Check`. Une PR sensible ajoute la lecture des commentaires et `git rev-parse` ; une PR qui modifie `.github/` ajoute J1 et J8.
 
 **Ce qui n'est plus vérifié à la fusion** (AS-50) et où il l'est encore :
 - l'historique de `main` : `cargo xtask verify-main`, lancé seul, et chaque nuit (`--origin 7d`, `all` le dimanche) ; une anomalie ouvre une *issue* qui arrête les fusions ([2]) ;
 - les réglages GitHub : `repo-settings.ps1 -Check`, lancé chaque jour par l'orchestrateur (AU3, §6.3) ; un écart ouvre une *issue* qui arrête les fusions ([2]) ;
 - les crochets : retirés (§2) ;
-- le binaire construit depuis `main` (J2) : retiré. `merge` reste lancé depuis la copie principale à jour.
+- le binaire construit depuis `main` (J2) : l'empreinte est retirée ; il reste la règle de l'étape [1] (copie égale à `origin/main` au lancement).
 
 ### 3.4 Coût, limites et risques connus
 
