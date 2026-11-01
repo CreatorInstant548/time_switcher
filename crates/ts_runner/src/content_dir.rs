@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 // spec: carnet architecture-securite.md SEC0-25, SEC0-26
 use ts_data::{Code, ContentPack, Diagnostic, Limits, LoadErrors, SourceFile, read_bounded};
 
+use crate::out_dir::is_link;
+
 fn fail(code: Code, file: &str) -> LoadErrors {
     LoadErrors::single(Diagnostic::new(code, file, (0, 0), ""))
 }
@@ -39,11 +41,7 @@ fn fail(code: Code, file: &str) -> LoadErrors {
 /// content itself. Hardening with `O_NOFOLLOW` or `FILE_FLAG_OPEN_REPARSE_POINT` is tracked
 /// separately.
 pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, LoadErrors> {
-    if fs::symlink_metadata(root)
-        .map_err(|_| fail(Code::ReadFailed, ""))?
-        .file_type()
-        .is_symlink()
-    {
+    if is_link(&fs::symlink_metadata(root).map_err(|_| fail(Code::ReadFailed, ""))?) {
         return Err(fail(Code::SymlinkRefused, ""));
     }
     let mut files = Vec::new();
@@ -58,13 +56,14 @@ pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, Loa
         })?;
         visited = visited.saturating_add(entries.len());
         for (os_name, path) in entries {
-            let kind = fs::symlink_metadata(&path)
-                .map_err(|_| fail(Code::ReadFailed, &rel))?
-                .file_type();
+            let md = fs::symlink_metadata(&path).map_err(|_| fail(Code::ReadFailed, &rel))?;
+            // Any reparse point counts as a link on Windows, as for `--out` (one policy).
+            let link = is_link(&md);
+            let kind = md.file_type();
             let is_ron = path
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("ron"));
-            if !(kind.is_symlink() || kind.is_dir() || (kind.is_file() && is_ron)) {
+            if !(link || kind.is_dir() || (kind.is_file() && is_ron)) {
                 continue;
             }
             let Ok(name) = os_name.into_string() else {
@@ -75,7 +74,7 @@ pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, Loa
             } else {
                 format!("{rel}/{name}")
             };
-            if kind.is_symlink() {
+            if link {
                 return Err(fail(Code::SymlinkRefused, &child));
             } else if kind.is_dir() {
                 if depth >= limits.max_dir_depth {
@@ -119,7 +118,7 @@ fn read_dir_sorted(dir: &Path, room: usize) -> Result<Vec<(OsString, PathBuf)>, 
 
 /// Opens one file, checks the opened handle is a regular file (AS-35), then reads it bounded.
 #[allow(clippy::disallowed_methods)] // host: opens one content file.
-fn read_file(path: &Path, rel: &str, limits: &Limits) -> Result<SourceFile, Diagnostic> {
+pub(crate) fn read_file(path: &Path, rel: &str, limits: &Limits) -> Result<SourceFile, Diagnostic> {
     let failed = || Diagnostic::new(Code::ReadFailed, rel, (0, 0), "");
     let file = fs::File::open(path).map_err(|_| failed())?;
     let meta = file.metadata().map_err(|_| failed())?;

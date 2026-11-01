@@ -71,6 +71,7 @@
 | M29 | Rythme de progression | ≈ 100 XP par heure au palier 0 bien joué ; tâches de travail ≤ 30 XP par heure réelle ; niveau 80 en ≈ 300 à 400 h au meilleur palier | 04 §1.1 | Joueurs synthétiques (`ts_meta`, `ts-sim`) | 2 |
 | M30 | Invariants d'équilibrage et catalogue d'exploits | Tous verts dans la CI, y compris « sonde de la classe cachée » et « relance puis abandon » | 05 §2.24 ; clôture de l'équilibrage, P2 | CI et agents adverses | 2 |
 | M31 | Constance de la modération par session | ≥ 90 % sur l'échantillon rejugé chaque mois **[à calibrer]** | social §9.4 | Rejugement mensuel | 5 |
+| M38 | Exploits face à un adversaire qui connaît la formule | Invariants d'équilibrage et des signatures verts face à des agents adverses qui reçoivent la formule et les paramètres exacts | [04](04-joueur.md) §2 ; [README](README.md), A14 | CI et agents adverses | 2 |
 
 ## 8. Contenus et client
 
