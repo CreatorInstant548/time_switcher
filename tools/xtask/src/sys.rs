@@ -24,6 +24,15 @@ pub fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
+/// Names of the environment variables of this process (`cargo xtask py` strips some of them
+/// from its children).
+#[allow(clippy::disallowed_methods)] // tool: reads the names, never the values.
+pub fn env_names() -> Vec<String> {
+    std::env::vars_os()
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect()
+}
+
 #[allow(clippy::disallowed_methods)] // outil : xtask lit les fichiers du dépôt.
 pub fn read(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("lecture impossible de {} : {e}", path.display()))

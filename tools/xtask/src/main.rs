@@ -15,6 +15,7 @@ mod hooks;
 mod manifests;
 mod merge;
 mod metadata;
+mod py;
 mod scan;
 mod sensitive;
 mod sha256;
@@ -89,7 +90,7 @@ const STEPS: [Step; 14] = [
     ("spec-map", "spec-map check", steps::spec_map),
 ];
 
-const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask determinism [--full] [--bless] | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--origin <n>d|all] | cargo xtask hooks install|verify [--dry-run]";
+const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask determinism [--full] [--bless] | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--origin <n>d|all] | cargo xtask hooks install|verify [--dry-run] | cargo xtask py";
 
 struct Options {
     all: bool,
@@ -144,6 +145,7 @@ fn main() -> ExitCode {
         Some("merge") => return merge::main(&args[1..]),
         Some("hooks") => return hooks::main(&args[1..]),
         Some("verify-main") => return verify_main::main(&args[1..]),
+        Some("py") => return py::main(&args[1..]),
         _ => {}
     }
     let opts = match parse(&args) {
