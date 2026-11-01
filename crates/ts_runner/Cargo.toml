@@ -1,14 +1,26 @@
 [package]
 name = "ts_runner"
 version = "0.0.0"
-description = "Tool host of time_switcher (phase 0: reads content directories for ts_data)."
+description = "Tool host of time_switcher: content directories for ts_data, and the ts-sim runner."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[[bin]]
+name = "ts-sim"
+path = "src/main.rs"
+
+# Tool crate (xtask manifests.rs, TOOLS): it alone may depend on the test crate `ts_toy`, and it
+# is in no public binary. `parquet` without `arrow` and without any compression (Y1).
 [dependencies]
+blake3.workspace = true
+parquet.workspace = true
+ron.workspace = true
+serde.workspace = true
 ts_data = { path = "../ts_data" }
+ts_kernel = { path = "../ts_kernel" }
+ts_toy = { path = "../ts_toy" }
 
 [lints]
 workspace = true
