@@ -72,7 +72,7 @@ fn phases_run_in_order_once_per_tick() {
     assert_eq!(sim.world().resource::<PhaseLog>().0, Phase::ALL);
 }
 
-/// Événements vus par la phase `Scheduled` : (début du tick, date, rang, genre).
+/// Events seen by the `Scheduled` phase: (tick start, date, rank, kind).
 #[derive(Resource, Default)]
 struct Seen(Vec<(i64, i64, u64, u32)>);
 
@@ -142,7 +142,7 @@ fn complete_setup(b: &mut SimBuilder) {
     b.world_mut().spawn(LodComplete);
 }
 
-/// Avec ou sans saut de temps, les mêmes événements sont traités dans les mêmes ticks.
+/// With or without a time skip, the same events are handled in the same ticks.
 #[test]
 fn time_skip_matches_ticking() {
     let stop = StopCondition::At(SimTime::from_millis(60_000));
@@ -161,7 +161,7 @@ fn time_skip_matches_ticking() {
             skipped_ticks: 0
         }
     );
-    // Ticks 0, 50, 100 (120), 10 100 (relance à 10 120) et 30 000.
+    // Ticks 0, 50, 100 (120), 10,100 (restart at 10,120) and 30,000.
     assert_eq!(
         skip,
         RunReport {
@@ -265,7 +265,7 @@ fn double(mut c: ResMut<Counter>) {
     c.0 *= 2;
 }
 
-/// L7 : deux écritures de la même ressource sans ordre, dans une phase, sont refusées.
+/// L7: two writes of the same resource with no order, in one phase, are refused.
 #[test]
 fn unordered_writes_are_rejected() {
     let ambiguous = [plugin("amb", |b| {
@@ -275,10 +275,10 @@ fn unordered_writes_are_rejected() {
     match build(&ambiguous).unwrap_err() {
         BuildError::Schedule { phase, message } => {
             assert_eq!(phase, Phase::Act);
-            // Les noms des systèmes demandent la fonctionnalité `debug`, refusée (L1).
+            // System names require the `debug` feature, which is refused (L1).
             assert!(message.contains("conflicting data access"), "{message}");
         }
-        e => panic!("erreur inattendue : {e}"),
+        e => panic!("unexpected error: {e}"),
     }
     let ordered = [plugin("ord", |b| {
         b.insert_resource(Counter::default());
@@ -407,7 +407,7 @@ fn tick_hz_must_divide_1000() {
     assert_eq!(Sim::build(cfg, &[], &key()).unwrap().tick_millis(), 1);
 }
 
-/// Les tests de cette crate tournent tous à un fil ; une autre demande est refusée.
+/// The tests of this crate all run on one thread; a request for another is refused.
 #[test]
 fn thread_pool_is_fixed_per_process() {
     build(&[]).unwrap();

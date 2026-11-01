@@ -1,5 +1,5 @@
-//! État enregistrable : encodage canonique (`StateHash`), registre des composants et des
-//! ressources d'état, empreintes par famille et globale.
+//! Recordable state: canonical encoding (`StateHash`), registry of state components and
+//! resources, per-family and global fingerprints.
 
 use core::any::Any;
 use core::fmt;
@@ -16,22 +16,22 @@ use crate::canonical::{
 };
 use crate::{DayOrigin, Money, SimTime, StableId};
 
-/// Contexte BLAKE3 de l'empreinte d'une famille, écrit en dur.
+/// BLAKE3 context of a family's fingerprint, hard-coded.
 pub(crate) const FAMILY_CONTEXT: &str = "time_switcher 2026-10-30 state family v1";
-/// Contexte BLAKE3 de l'empreinte globale, écrit en dur.
+/// BLAKE3 context of the global fingerprint, hard-coded.
 pub(crate) const GLOBAL_CONTEXT: &str = "time_switcher 2026-10-30 state global v1";
-/// Famille du noyau : horloge, origine des jours, compteurs et ordonnanceur.
+/// Kernel family: clock, day origin, counters and scheduler.
 pub const KERNEL_FAMILY: &str = "kernel";
 
-/// Destination des octets canoniques : un hacheur ou un tampon.
+/// Destination of the canonical bytes: a hasher or a buffer.
 enum Sink<'a> {
     Hasher(&'a mut blake3::Hasher),
     Bytes(&'a mut Vec<u8>),
 }
 
 // spec: revues/architecture.md §11.3 ; carnet architecture-securite.md §9.10 L3
-/// Écrivain de l'encodage canonique : entiers en petit-boutiste, flottants par leurs bits
-/// (`to_bits`, jamais de conversion décimale), suites précédées de leur longueur en `u64`.
+/// Writer of the canonical encoding: integers in little-endian, floats by their bits
+/// (`to_bits`, never a decimal conversion), sequences preceded by their length as a `u64`.
 pub struct StateWriter<'a>(Sink<'a>);
 
 impl fmt::Debug for StateWriter<'_> {
@@ -52,19 +52,19 @@ impl StateWriter<'_> {
         }
     }
 
-    /// Longueur d'une suite.
+    /// Length of a sequence.
     pub fn count(&mut self, n: usize) {
-        // Conversion exacte : `usize` tient sur 64 bits sur toutes nos cibles.
+        // Exact conversion: `usize` fits in 64 bits on all our targets.
         self.u64(n as u64);
     }
 
-    /// Octets précédés de leur longueur.
+    /// Bytes preceded by their length.
     pub fn bytes(&mut self, bytes: &[u8]) {
         self.count(bytes.len());
         self.raw(bytes);
     }
 
-    /// Chaîne UTF-8 précédée de sa longueur en octets.
+    /// UTF-8 string preceded by its length in bytes.
     pub fn str(&mut self, s: &str) {
         self.bytes(s.as_bytes());
     }
@@ -89,14 +89,14 @@ impl StateWriter<'_> {
         self.raw(&v.to_le_bytes());
     }
 
-    /// `f64` par ses bits, LE.
+    /// `f64` by its bits, LE.
     pub fn f64(&mut self, v: f64) {
         self.u64(v.to_bits());
     }
 }
 
 // spec: revues/architecture.md §11.3, §7.1 ; carnet architecture-securite.md §9.10 L3
-/// Encodage canonique d'une valeur d'état, pour l'empreinte et pour l'instantané.
+/// Canonical encoding of a state value, for the fingerprint and for the snapshot.
 ///
 /// The encoding must be **self-delimiting** (prefix-free): no encoded value is a prefix of
 /// another one of the same type, so concatenated values stay unambiguous. Use fixed-width
@@ -105,7 +105,7 @@ impl StateWriter<'_> {
 /// pointer, no hash-table order, no `Debug` text. Its decoding twin is
 /// [`crate::StateDecode`].
 pub trait StateHash {
-    /// Écrit la valeur.
+    /// Writes the value.
     fn hash_state(&self, w: &mut StateWriter<'_>);
 }
 
@@ -190,8 +190,8 @@ impl<T: StateHash> StateHash for Vec<T> {
 }
 
 // spec: revues/architecture.md §6.1, §11.3
-/// Composant : l'identité durable d'une entité. Seules les entités qui le portent entrent
-/// dans l'empreinte et dans l'instantané, triées par [`StableId`].
+/// Component: the durable identity of an entity. Only the entities that carry it enter the
+/// fingerprint and the snapshot, sorted by [`StableId`].
 ///
 /// It is immutable: its hooks keep [`StableIndex`] up to date on spawn, insert, removal
 /// and despawn.
@@ -271,55 +271,55 @@ impl StableIndex {
 }
 
 impl StableEntity {
-    /// Entité d'identité `id`.
+    /// Entity with identity `id`.
     pub const fn new(id: StableId) -> Self {
         Self(id)
     }
 
-    /// Identité de l'entité.
+    /// Identity of the entity.
     pub const fn id(self) -> StableId {
         self.0
     }
 }
 
-/// Valeur d'état capturée, opaque.
+/// Captured state value, opaque.
 pub(crate) type Boxed = Box<dyn Any + Send + Sync>;
 
-/// Valeurs capturées d'un type d'état.
+/// Captured values of a state type.
 pub(crate) enum Captured {
     Component(Vec<(StableId, Boxed)>),
     Resource(Option<Boxed>),
 }
 
-/// Écriture canonique d'un type de composant pour les entités données.
+/// Canonical writing of a component type for the given entities.
 type WriteComponent = fn(&World, &[(StableId, Entity)], &mut StateWriter<'_>);
-/// Copie des valeurs d'un type de composant pour les entités données.
+/// Copy of the values of a component type for the given entities.
 type CaptureComponent = fn(&World, &[(StableId, Entity)]) -> Vec<(StableId, Boxed)>;
 /// Decoding of a component type's values from the canonical encoding.
 type DecodeComponent = fn(&mut StateReader<'_>) -> Result<Vec<(StableId, Boxed)>, CanonicalError>;
 /// Decoding of a resource type's value from the canonical encoding.
 type DecodeResource = fn(&mut StateReader<'_>) -> Result<Option<Boxed>, CanonicalError>;
 
-/// Accès à un type d'état, sans connaître le type.
+/// Access to a state type, without knowing the type.
 #[derive(Clone, Copy)]
 pub(crate) enum StateKind {
     Component {
         write: WriteComponent,
         capture: CaptureComponent,
-        /// Rend `false` si la valeur n'est pas du bon type.
+        /// Returns `false` if the value is not of the right type.
         insert: fn(&mut World, Entity, &(dyn Any + Send + Sync)) -> bool,
         decode: DecodeComponent,
     },
     Resource {
         write: fn(&World, &mut StateWriter<'_>),
         capture: fn(&World) -> Option<Boxed>,
-        /// Insère la valeur, ou retire la ressource si `None` ; `false` si le type ne va pas.
+        /// Inserts the value, or removes the resource if `None`; `false` if the type does not fit.
         insert: fn(&mut World, Option<&(dyn Any + Send + Sync)>) -> bool,
         decode: DecodeResource,
     },
 }
 
-/// Un type d'état déclaré par un greffon.
+/// A state type declared by a plugin.
 #[derive(Clone, Copy)]
 pub(crate) struct StateEntry {
     pub(crate) family: &'static str,
@@ -431,7 +431,7 @@ impl StateEntry {
     }
 }
 
-/// Entités d'identité durable, triées par [`StableId`].
+/// Entities with a durable identity, sorted by [`StableId`].
 pub(crate) fn stable_entities(world: &World) -> Vec<(StableId, Entity)> {
     world
         .get_resource::<StableIndex>()
@@ -457,12 +457,12 @@ pub(crate) fn undeclared_components(world: &World, known: &[ComponentId]) -> usi
 }
 
 // spec: revues/architecture.md §11.3
-/// Empreinte BLAKE3 de 32 octets.
+/// 32-byte BLAKE3 fingerprint.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StateDigest([u8; 32]);
 
 impl StateDigest {
-    /// Octets de l'empreinte.
+    /// Bytes of the fingerprint.
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -478,17 +478,17 @@ impl fmt::Debug for StateDigest {
 }
 
 // spec: revues/architecture.md §7.1, §11.3 ; carnet architecture-securite.md §9.10 L4
-/// Empreintes d'état : une par famille, triées par nom, et l'empreinte globale.
+/// State fingerprints: one per family, sorted by name, and the global fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateHashes {
-    /// Empreinte globale, sur les empreintes des familles triées par nom.
+    /// Global fingerprint, over the family fingerprints sorted by name.
     pub global: StateDigest,
-    /// Empreinte de chaque famille, triées par nom.
+    /// Fingerprint of each family, sorted by name.
     pub families: Vec<(&'static str, StateDigest)>,
 }
 
 impl StateHashes {
-    /// Empreinte d'une famille.
+    /// Fingerprint of a family.
     pub fn family(&self, name: &str) -> Option<StateDigest> {
         self.families
             .iter()
@@ -497,7 +497,7 @@ impl StateHashes {
     }
 }
 
-/// Encode une famille : son nom, puis chaque type d'état dans l'ordre de déclaration.
+/// Encodes a family: its name, then each state type in declaration order.
 pub(crate) fn write_family(
     world: &World,
     entities: &[(StableId, Entity)],
@@ -515,7 +515,7 @@ pub(crate) fn write_family(
         .enumerate()
         .filter(|(_, e)| e.family == family)
     {
-        // Conversion exacte : moins de 2^32 types d'état.
+        // Exact conversion: fewer than 2^32 state types.
         w.u32(i as u32);
         match e.kind {
             StateKind::Component { write, .. } => write(world, entities, w),
@@ -524,7 +524,7 @@ pub(crate) fn write_family(
     }
 }
 
-/// Familles présentes, triées : le noyau et celles des types déclarés.
+/// Families present, sorted: the kernel and those of the declared types.
 pub(crate) fn families(entries: &[StateEntry]) -> Vec<&'static str> {
     let mut names: Vec<_> = entries.iter().map(|e| e.family).collect();
     names.push(KERNEL_FAMILY);
@@ -533,7 +533,7 @@ pub(crate) fn families(entries: &[StateEntry]) -> Vec<&'static str> {
     names
 }
 
-/// Empreintes de toutes les familles et globale.
+/// Fingerprints of all the families and the global one.
 pub(crate) fn hash_world(
     world: &World,
     entries: &[StateEntry],
@@ -569,7 +569,7 @@ pub(crate) fn hash_world(
     }
 }
 
-/// Contexte BLAKE3 de l'empreinte d'une valeur isolée, écrit en dur.
+/// BLAKE3 context of the fingerprint of a single value, hard-coded.
 const VALUE_CONTEXT: &str = "time_switcher 2026-10-30 state value v1";
 
 // spec: revues/architecture.md §11.3 ; carnet architecture-securite.md §10
@@ -594,7 +594,7 @@ pub(crate) fn encode_with(f: impl FnOnce(&mut StateWriter<'_>)) -> Vec<u8> {
     out
 }
 
-/// Encodage canonique complet, familles triées, dans un tampon.
+/// Full canonical encoding, families sorted, in a buffer.
 pub(crate) fn encode_world(
     world: &World,
     entries: &[StateEntry],
@@ -620,7 +620,7 @@ mod tests {
         out
     }
 
-    /// Vecteurs figés de l'encodage des valeurs (L3).
+    /// Frozen vectors of the encoding of values (L3).
     #[test]
     fn value_encoding_reference_vectors() {
         assert_eq!(encode(&|w| 0x0102_u16.hash_state(w)), [2, 1]);

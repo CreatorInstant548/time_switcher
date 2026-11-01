@@ -1,31 +1,31 @@
-//! Ordonnanceur à événements datés : calendrier à roues à quatre niveaux, plus un tas.
+//! Dated-event scheduler: a four-level timing wheel, plus a heap.
 
 use core::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, VecDeque};
 
 use crate::SimTime;
 
-/// Nombre de cases de chaque niveau : millisecondes d'une seconde, secondes d'une minute,
-/// minutes d'une heure, heures d'un jour.
+/// Number of slots of each level: milliseconds of a second, seconds of a minute,
+/// minutes of an hour, hours of a day.
 const RADIX: [i64; LEVELS] = [1000, 60, 60, 24];
-/// Largeur d'une case de chaque niveau, en millisecondes.
+/// Width of a slot of each level, in milliseconds.
 const UNIT: [i64; LEVELS] = [1, 1000, 60_000, 3_600_000];
-/// Largeur de l'ensemble d'un niveau, en millisecondes.
+/// Width of the whole of a level, in milliseconds.
 const SPAN: [i64; LEVELS] = [1000, 60_000, 3_600_000, SimTime::MILLIS_PER_DAY];
 const LEVELS: usize = 4;
 
 // spec: revues/architecture.md §8.1, §11.3
-/// Événement daté sorti de l'ordonnanceur : sa date, son rang d'insertion et sa charge.
+/// Dated event leaving the scheduler: its date, its insertion rank and its payload.
 ///
-/// L'ordre total est `(at, seq)` : deux événements de même date sortent dans l'ordre où ils
-/// ont été insérés.
+/// The total order is `(at, seq)`: two events with the same date leave in the order in which
+/// they were inserted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scheduled<E> {
-    /// Date de l'événement.
+    /// Date of the event.
     pub at: SimTime,
-    /// Rang d'insertion, unique dans l'ordonnanceur.
+    /// Insertion rank, unique within the scheduler.
     pub seq: u64,
-    /// Charge de l'événement.
+    /// Payload of the event.
     pub event: E,
 }
 
@@ -35,7 +35,7 @@ impl<E> Scheduled<E> {
     }
 }
 
-/// Entrée du tas, ordonnée par `(at, seq)` seulement.
+/// Heap entry, ordered by `(at, seq)` only.
 #[derive(Debug)]
 struct HeapEntry<E>(Scheduled<E>);
 
@@ -62,7 +62,7 @@ std::thread_local! {
     static SHIFTS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
-/// Un niveau du calendrier : ses cases, et un mot de 64 bits par groupe de 64 cases occupées.
+/// One level of the wheel: its slots, and one 64-bit word per group of 64 occupied slots.
 #[derive(Debug)]
 struct Level<E> {
     slots: Vec<VecDeque<Scheduled<E>>>,
@@ -77,7 +77,7 @@ impl<E> Level<E> {
         }
     }
 
-    /// Insère en gardant la case triée par `seq` croissant.
+    /// Inserts while keeping the slot sorted by increasing `seq`.
     ///
     /// Callers insert in increasing `seq` order (new events carry the largest `seq`; cascaded
     /// batches are sorted by `seq` first), so this is an append. The sorted insert stays as
@@ -97,7 +97,7 @@ impl<E> Level<E> {
         }
     }
 
-    /// Première case occupée d'indice `>= from`.
+    /// First occupied slot with index `>= from`.
     fn next_occupied(&self, from: usize) -> Option<usize> {
         let mut word = from / 64;
         let mut bits = *self.occupied.get(word)? & (!0_u64 << (from % 64));
@@ -112,30 +112,30 @@ impl<E> Level<E> {
 }
 
 // spec: revues/architecture.md §8.1, §6.5 ; §9.2
-/// Ordonnanceur à événements datés (`Scheduler`).
+/// Dated-event scheduler (`Scheduler`).
 ///
-/// - **Calendrier à roues** à quatre niveaux, alignés sur le jour du monde : milliseconde,
-///   seconde, minute et heure du **jour courant**. Les dates des jours suivants attendent dans
-///   un **tas**, qui garde aussi les dates déjà passées, servies en premier.
-/// - **Ordre total** `(at, seq)` : `seq` compte les insertions, dans l'ordre ; il fait partie
-///   de l'état du monde.
-/// - Aucun tirage ni horloge murale : seule la date de jeu compte.
+/// - **Timing wheel** with four levels, aligned on the world day: millisecond, second,
+///   minute and hour of the **current day**. Dates of the following days wait in a
+///   **heap**, which also keeps the dates already past, served first.
+/// - **Total order** `(at, seq)`: `seq` counts the insertions, in order; it is part of the
+///   state of the world.
+/// - No draw and no wall clock: only the game date counts.
 ///
-/// Invariant : un événement d'une case du niveau `k` a le même jour et les mêmes chiffres de
-/// niveau supérieur à `k` que le curseur, et un chiffre de niveau `k` supérieur au sien
-/// (égal ou supérieur au niveau 0). Le curseur n'avance que jusqu'à une date demandée.
+/// Invariant: an event in a slot of level `k` has the same day and the same digits above
+/// level `k` as the cursor, and a level-`k` digit greater than the cursor's (equal or
+/// greater at level 0). The cursor only advances up to a requested date.
 #[derive(Debug)]
 pub struct Scheduler<E> {
-    /// Date jusqu'où le calendrier est déroulé ; jamais au-delà d'une date demandée.
+    /// Date up to which the wheel is unrolled; never beyond a requested date.
     cursor: SimTime,
     levels: [Level<E>; LEVELS],
-    /// Dates d'un jour postérieur au curseur, et dates antérieures au curseur.
+    /// Dates of a day after the cursor, and dates before the cursor.
     heap: BinaryHeap<Reverse<HeapEntry<E>>>,
     next_seq: u64,
     len: usize,
 }
 
-/// Jour de `t` et position dans ce jour, en millisecondes.
+/// Day of `t` and position within that day, in milliseconds.
 fn split(t: SimTime) -> (i64, i64) {
     let ms = t.as_millis();
     (
@@ -144,14 +144,14 @@ fn split(t: SimTime) -> (i64, i64) {
     )
 }
 
-/// Chiffre de niveau `k` d'une position dans le jour.
+/// Level-`k` digit of a position within the day.
 fn digit(rem: i64, k: usize) -> usize {
-    // Conversion exacte : le chiffre est dans `0..RADIX[k]`.
+    // Exact conversion: the digit is in `0..RADIX[k]`.
     ((rem / UNIT[k]) % RADIX[k]) as usize
 }
 
 impl<E> Scheduler<E> {
-    /// Ordonnanceur vide, déroulé jusqu'à `start` (la date courante du monde).
+    /// Empty scheduler, unrolled up to `start` (the current date of the world).
     pub fn new(start: SimTime) -> Self {
         Self {
             cursor: start,
@@ -162,31 +162,31 @@ impl<E> Scheduler<E> {
         }
     }
 
-    /// Nombre d'événements en attente.
+    /// Number of pending events.
     pub fn len(&self) -> usize {
         self.len
     }
 
-    /// Vrai si aucun événement n'attend.
+    /// True if no event is waiting.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Prochain rang d'insertion.
+    /// Next insertion rank.
     pub fn next_seq(&self) -> u64 {
         self.next_seq
     }
 
-    /// Programme `event` à la date `at` et rend son rang. Une date déjà passée est permise :
-    /// l'événement sort au prochain appel, avant ceux de dates plus tardives.
+    /// Schedules `event` at date `at` and returns its rank. A date already past is allowed:
+    /// the event leaves on the next call, before those with later dates.
     ///
     /// # Panics
     ///
-    /// Si le compteur `seq` déborde (2^64 insertions).
+    /// If the `seq` counter overflows (2^64 insertions).
     pub fn schedule(&mut self, at: SimTime, event: E) -> u64 {
         let seq = self.next_seq;
         let Some(next) = seq.checked_add(1) else {
-            panic!("dépassement de seq");
+            panic!("seq overflow");
         };
         self.next_seq = next;
         self.place(Scheduled { at, seq, event });
@@ -194,7 +194,7 @@ impl<E> Scheduler<E> {
         seq
     }
 
-    /// Range un événement selon le curseur courant.
+    /// Places an event according to the current cursor.
     fn place(&mut self, item: Scheduled<E>) {
         let (day, rem) = split(item.at);
         let (cday, crem) = split(self.cursor);
@@ -210,8 +210,8 @@ impl<E> Scheduler<E> {
     }
 
     // spec: revues/architecture.md §12.1, §11.3
-    /// Événements en attente, dans l'ordre `(at, seq)`, pour l'empreinte et l'instantané.
-    /// Le curseur n'en fait pas partie : il ne change aucune sortie.
+    /// Pending events, in `(at, seq)` order, for the fingerprint and the snapshot.
+    /// The cursor is not part of it: it changes no output.
     pub fn pending(&self) -> Vec<&Scheduled<E>> {
         let mut out: Vec<_> = self
             .levels
@@ -224,8 +224,8 @@ impl<E> Scheduler<E> {
     }
 
     // spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §9.10 L5
-    /// Ordonnanceur restauré à la date `now`, avec son compteur et ses événements, rangs
-    /// compris. `None` si un rang est en double ou n'est pas inférieur à `next_seq`.
+    /// Scheduler restored at date `now`, with its counter and its events, ranks included.
+    /// `None` if a rank is duplicated or is not below `next_seq`.
     pub fn restore(now: SimTime, next_seq: u64, items: Vec<Scheduled<E>>) -> Option<Self> {
         let mut seqs: Vec<_> = items.iter().map(|e| e.seq).collect();
         seqs.sort_unstable();
@@ -244,7 +244,7 @@ impl<E> Scheduler<E> {
         Some(s)
     }
 
-    /// Plus ancienne date en attente, sans rien dérouler.
+    /// Oldest pending date, without unrolling anything.
     pub fn peek_next_time(&self) -> Option<SimTime> {
         let late = self.heap.peek().map(|Reverse(e)| e.0.at);
         if let Some(t) = late.filter(|&t| t < self.cursor) {
@@ -262,14 +262,14 @@ impl<E> Scheduler<E> {
         late
     }
 
-    /// Sort le prochain événement si sa date est au plus `until`, dans l'ordre `(at, seq)`.
+    /// Pops the next event if its date is at most `until`, in `(at, seq)` order.
     pub fn next_due(&mut self, until: SimTime) -> Option<Scheduled<E>> {
         let item = self.advance(until)?;
         self.len -= 1;
         Some(item)
     }
 
-    /// Sort, dans l'ordre `(at, seq)`, tous les événements de date au plus `until`.
+    /// Pops, in `(at, seq)` order, all the events with a date at most `until`.
     pub fn pop_due(&mut self, until: SimTime) -> Vec<Scheduled<E>> {
         let mut out = Vec::new();
         while let Some(item) = self.next_due(until) {
@@ -280,7 +280,7 @@ impl<E> Scheduler<E> {
 
     fn advance(&mut self, until: SimTime) -> Option<Scheduled<E>> {
         loop {
-            // Dates passées d'abord : elles précèdent le curseur, donc tout le calendrier.
+            // Past dates first: they precede the cursor, hence the whole wheel.
             if let Some(Reverse(top)) = self.heap.peek()
                 && top.0.at < self.cursor
             {
@@ -306,9 +306,9 @@ impl<E> Scheduler<E> {
         }
     }
 
-    /// Avance le curseur au début de la prochaine case occupée d'un niveau supérieur, ou du
-    /// prochain jour du tas, et en redistribue le contenu. Rend `Some(false)` s'il n'y a plus
-    /// rien, `None` si la prochaine case commence après `until`.
+    /// Advances the cursor to the start of the next occupied slot of a higher level, or of the
+    /// next day in the heap, and redistributes its content. Returns `Some(false)` if there is
+    /// nothing left, `None` if the next slot starts after `until`.
     fn cascade(&mut self, until: SimTime, crem: i64) -> Option<bool> {
         for k in 1..LEVELS {
             let Some(s) = self.levels[k].next_occupied(digit(crem, k) + 1) else {
@@ -376,7 +376,7 @@ mod tests {
         SimTime::from_millis(ms)
     }
 
-    /// Générateur de test : l'aléa à clé du noyau, compteur par appel.
+    /// Test generator: the core's keyed randomness, a counter per call.
     struct Draws {
         keys: StreamKeys,
         n: u64,
@@ -398,8 +398,8 @@ mod tests {
         }
     }
 
-    /// Date aléatoire : surtout proche, parfois des jours ou des années plus loin, parfois
-    /// dans le passé du curseur, souvent sur une même milliseconde.
+    /// Random date: mostly near, sometimes days or years away, sometimes in the cursor's
+    /// past, often on the same millisecond.
     fn random_time(d: &mut Draws, now: i64) -> i64 {
         match d.below(8) {
             0 => now + d.below(50) as i64,
@@ -413,8 +413,8 @@ mod tests {
         }
     }
 
-    /// 10^5 événements au hasard, insérés par vagues entre des sorties partielles : l'ordre de
-    /// sortie est celui d'un tri simple par `(at, seq)`.
+    /// 10^5 random events, inserted in waves between partial pops: the pop order is that of a
+    /// simple sort by `(at, seq)`.
     #[test]
     fn order_matches_sorted_reference_on_100k_events() {
         let mut d = Draws::new(42);
@@ -460,7 +460,7 @@ mod tests {
                 .into_iter()
                 .map(|e| ((e.at.as_millis(), e.seq), e.event))
                 .collect();
-            assert_eq!(got, expected, "sortie jusqu'à {until}");
+            assert_eq!(got, expected, "output up to {until}");
             popped += got.len();
             now = until.min(now + 400 * DAY);
         }
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn equal_dates_leave_in_insertion_order() {
         let mut s = Scheduler::new(SimTime::EPOCH);
-        // Mêmes dates, rangées d'abord à des niveaux différents puis redescendues.
+        // Same dates, first placed at different levels and then cascaded back down.
         for (i, at) in [5000, 70, 5000, 3_600_000 + 1, 70, 5000, 3_600_000 + 1]
             .into_iter()
             .enumerate()
@@ -515,8 +515,8 @@ mod tests {
         assert_eq!(out, [1, 3, 2, 4, 0]);
     }
 
-    /// Événements à la frontière d'un tick de 50 ms : la date `until` est incluse, la
-    /// suivante non.
+    /// Events at the boundary of a 50 ms tick: the date `until` is included, the next one
+    /// is not.
     #[test]
     fn tick_boundaries_are_inclusive_of_until() {
         let mut s = Scheduler::new(SimTime::EPOCH);
@@ -538,8 +538,8 @@ mod tests {
         assert!(s.is_empty());
     }
 
-    /// Une date déjà passée, ou égale à celle qui est en train de sortir, sort au prochain
-    /// appel, dans l'ordre `(at, seq)`.
+    /// A date already past, or equal to the one being popped, leaves on the next call, in
+    /// `(at, seq)` order.
     #[test]
     fn past_and_current_dates_are_served_next() {
         let mut s = Scheduler::new(SimTime::EPOCH);
@@ -557,8 +557,8 @@ mod tests {
         assert_eq!(s.pop_due(t(800)).len(), 1);
     }
 
-    /// Un ordonnanceur restauré à une autre date de curseur sort les mêmes événements, dans le
-    /// même ordre, et continue la numérotation.
+    /// A scheduler restored at another cursor date pops the same events, in the same order,
+    /// and continues the numbering.
     #[test]
     fn restore_keeps_order_and_counter() {
         let mut d = Draws::new(9);
