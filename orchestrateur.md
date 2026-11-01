@@ -167,3 +167,11 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
 - **Responsable qualité et essais lancé** (01/11) : `local_04514fcc-b19f-4655-8b29-d6a6e9a7f237`, sur la copie principale, sans worktree. Sa mission porte sur les points 2 et 4 de §5 :
   - déterminisme et performances en profil `sim` ;
   - mêmes campagnes avec `ts-sim run` après la fusion de la #70.
+- **Nouvelle condition de fin de phase, décidée par l'utilisateur le 01/11** : toutes les issues sont résolues (§5, point 5, PR #86).
+  - Une issue est résolue par un correctif fusionné, ou par une clôture motivée par le rôle concerné. Un report ne compte pas.
+  - 28 issues étaient ouvertes ce jour-là :
+    - dev : 22, dont les sécurité d'abord (#77, #63, #48, #50, #6) ;
+    - conception : #76, #45, #44, #43 ;
+    - archi : #72, à clore, puisque `-Check` est conforme ;
+    - nuit : #75, à clore après une nuit verte.
+  - Les quatre responsables sont prévenus.
