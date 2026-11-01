@@ -130,9 +130,17 @@ Une phase est terminée quand :
 1. le responsable architecture et sécurité a validé l'audit de sécurité et les exigences bloquantes de la phase ;
 2. le responsable qualité a validé ses campagnes : déterminisme, performances, invariants d'équilibrage ;
 3. le responsable conception a vérifié que ce qui est construit respecte la conception ;
-4. pour une phase jouable, le responsable qualité a joué la version et l'a fait jouer par des robots `Joueur`, et ses constats sont traités ou planifiés. La version est mise à la disposition de l'utilisateur ; ses retours, s'il en donne, sont traités comme les autres, mais la phase ne les attend pas.
+4. pour une phase jouable, le responsable qualité a joué la version et l'a fait jouer par des robots `Joueur`. Chacun de ses constats devient une *issue*, soumise au point 5. La version est mise à la disposition de l'utilisateur. La phase n'attend pas ses retours, mais un retour reçu avant la fin devient une *issue*, soumise elle aussi au point 5 ;
+5. **toutes les *issues* GitHub ouvertes sont résolues (décidé par l'utilisateur le 01/11)**. La vérification est mécanique : `gh issue list --state open` ne renvoie rien.
+   - **Une *issue* est résolue** dans l'un de ces trois cas :
+     - **corrigée** : le correctif est fusionné, et l'*issue* est close avec le lien de cette PR ;
+     - **sans objet** : le responsable du rôle concerné la clôt par une décision écrite et motivée, en anglais dans l'*issue* (doublon, sans objet, déjà corrigé ailleurs), avec le lien vers l'*issue*, la PR ou le commit qui le montre ;
+     - **travail d'une phase prévue plus tard (décidé)** : c'est le seul cas de report admis, et il ne vaut que pour une demande de travail neuf que [05-architecture.md](../conception/05-architecture.md) §5 place déjà dans une phase suivante (par exemple une fonction du client, prévue en phase 3). L'*issue* est alors inscrite dans le reliquat de cette phase, dans `feuille-de-route.md` sur la branche `pilotage`, puis close avec le lien vers cette ligne. C'est l'orchestrateur qui en décide.
+   - **Ne se reportent jamais** : un défaut, une dette, un durcissement de sécurité, une valeur provisoire à fixer, ni une question sur ce qui est déjà construit. Ceux-là sont corrigés ou tranchés dans la phase.
+   - **Issue sans rôle ou à plusieurs rôles** : l'orchestrateur la confie à un rôle, ou la tranche lui-même.
+   - **Issues ouvertes par la tâche de nuit (`nightly-failure`) ou par `verify-main`** : elles sont closes seulement après une vérification suivante verte.
 
-L'orchestrateur constate ces quatre points dans son carnet et ouvre la phase suivante.
+L'orchestrateur constate ces cinq points dans son carnet et ouvre la phase suivante.
 
 ## 6. L'utilisateur ne fait aucune action (décidé, demande de l'utilisateur du 29/10)
 
