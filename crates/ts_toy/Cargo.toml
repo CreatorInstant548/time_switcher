@@ -19,10 +19,5 @@ ts_kernel = { path = "../ts_kernel" }
 [dev-dependencies]
 ts_persist = { path = "../ts_persist" }
 
-# Wall time of the time skip per thread count (issue #67): a measurement, not a test.
-[[bench]]
-name = "time_skip"
-harness = false
-
 [lints]
 workspace = true

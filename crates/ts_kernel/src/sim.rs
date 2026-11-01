@@ -392,8 +392,9 @@ pub struct RunReport {
 pub struct Sim {
     world: World,
     phases: Vec<Schedule>,
-    /// With [`Threads::Fixed`]: one executor switch per phase and its number of systems.
-    switches: Vec<(ExecutorSwitch, usize)>,
+    /// Indexed like `phases`: with [`Threads::Fixed`], the executor switch of the phase and
+    /// its number of systems; `None` with [`Threads::Single`].
+    switches: Vec<Option<(ExecutorSwitch, usize)>>,
     parallel_phases: ParallelPhases,
     tick_ms: i64,
     active: Vec<(&'static str, u32)>,
@@ -554,12 +555,12 @@ impl Sim {
                 return Err(BuildError::Schedule { phase, message });
             }
         }
-        // After `initialize`: the number of systems includes the sync points that `bevy_ecs`
-        // inserted.
+        // After `initialize`, so that the count includes the sync points that `bevy_ecs`
+        // inserted: an upper bound of the systems that can run together (speed only).
         let switches = switches
             .into_iter()
             .zip(&phases)
-            .filter_map(|(switch, schedule)| switch.map(|s| (s, schedule.systems_len())))
+            .map(|(switch, schedule)| switch.map(|s| (s, schedule.systems_len())))
             .collect();
         let active: Vec<_> = plugins.iter().map(|p| (p.name(), p.version())).collect();
         let rules = RulesFingerprint::of(&active);
@@ -647,7 +648,7 @@ impl Sim {
     /// [`ParallelPhases`]) from the configuration and the world state alone: nothing is
     /// carried from one tick to the next.
     fn run_phase(&mut self, phase: Phase, due_events: usize) {
-        if let Some((switch, systems)) = self.switches.get(phase.index()) {
+        if let Some((switch, systems)) = &self.switches[phase.index()] {
             let parallel = match self.parallel_phases {
                 ParallelPhases::Always => true,
                 ParallelPhases::FromWork(from) => {

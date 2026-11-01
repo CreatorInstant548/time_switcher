@@ -2,7 +2,7 @@
 //! Wall time of the toy world in time skip, per thread count (issue #67).
 //!
 //! ```text
-//! cargo bench -p ts_toy --bench time_skip --profile <dev|sim> -- [--days <n>] [--repeat <n>] [--threads <n>]...
+//! cargo bench -p ts_runner --bench time_skip --profile <dev|sim> -- [--days <n>] [--repeat <n>] [--threads <n>]...
 //! ```
 //!
 //! The bench runs itself once per thread count (1, 2, 4 and 8 by default) and per
@@ -111,6 +111,14 @@ fn measure(exe: &std::path::Path, days: i64, threads: u16) -> Result<(u128, u128
         .args(["--threads", &threads.to_string()])
         .output()
         .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "{threads} threads: {} ({})",
+            out.status,
+            stderr.trim()
+        ));
+    }
     let text = String::from_utf8_lossy(&out.stdout);
     let line = text
         .lines()
@@ -143,15 +151,18 @@ fn parent(args: &Args) -> Result<(), String> {
     );
     // Per thread count: the wall times of its runs, in microseconds.
     let mut runs: Vec<Vec<u128>> = vec![Vec::new(); args.threads.len()];
-    let (mut ticks, mut hashes) = (0, Vec::new());
+    let (mut ticks, mut hashes) = (None, Vec::new());
     for _ in 0..args.repeat {
         for (i, &n) in args.threads.iter().enumerate() {
             let (t, micros, hash) = measure(&exe, args.days, n)?;
-            ticks = t;
+            if *ticks.get_or_insert(t) != t {
+                return Err(format!("{n} threads ran {t} ticks, another run {ticks:?}"));
+            }
             runs[i].push(micros);
             hashes.push(hash);
         }
     }
+    let ticks = ticks.unwrap_or(0);
     println!("threads       ticks   fastest (ms)   µs/tick   median (ms)   µs/tick");
     for (&n, times) in args.threads.iter().zip(&mut runs) {
         times.sort_unstable();

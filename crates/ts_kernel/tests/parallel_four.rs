@@ -18,7 +18,9 @@ fn four_threads_match_reference() {
 
 // spec: revues/architecture.md §9.1, §9.2
 /// The executor of each phase changes the speed only: every policy gives the reference
-/// fingerprint, also reached on 1 thread, and the policy does pick the executor.
+/// fingerprint, also reached on 1 thread, and the policy does pick the executor. The
+/// placement checks rely on `bevy_ecs =0.20.0`: its parallel executor never runs a system
+/// on the calling thread; revisit them when `bevy_ecs` changes.
 #[test]
 fn executor_choice_does_not_change_result() {
     let threads = Threads::Fixed(NonZeroU16::new(4).unwrap());

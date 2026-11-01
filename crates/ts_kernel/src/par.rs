@@ -15,6 +15,8 @@ pub const PAR_ITER_FROM: usize = 64;
 ///
 /// Why: each `par_iter` opens a scope on the pool and wakes a pool thread, a few
 /// microseconds per call even for three entities, which the time skip pays at every tick.
+/// For **cheap** work per entity only: a system whose work per entity is costly (a model
+/// inference, a path search) calls `par_iter_mut` directly, which spreads even a few entities.
 ///
 /// **No effect on the result** (R1): `par_iter` is only allowed when each entity writes its
 /// own components and draws from the keyed randomness (§9.2, point 2), so the order of the
