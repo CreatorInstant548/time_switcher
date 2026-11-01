@@ -714,7 +714,7 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::github::{Output, Run};
+    use crate::github::{Output, Run, issues_path, owner_item};
 
     use super::*;
 
@@ -1059,8 +1059,10 @@ mod tests {
     /// merge refuses before reading any approval.
     #[test]
     fn carried_approvals_need_ci_ok_on_head() {
-        let comments = json!([{"body": format!("review-ok: {MAIN}")},
-                              {"body": format!("archsec-ok: {MAIN}")}]);
+        let comments = json!([
+            owner_item(&format!("review-ok: {MAIN}")),
+            owner_item(&format!("archsec-ok: {MAIN}"))
+        ]);
         let extra = vec![
             (
                 "gh api --paginate repos/o/r/commits/".to_owned(),
@@ -1090,8 +1092,10 @@ mod tests {
         let f = "tools/xtask/src/x.rs";
         // m2: merge reads the trees of `a` and of the head from the fetched objects.
         let entry = |blob: &str| format!("100644 blob {}\t{f}\0", blob.repeat(40));
-        let comments = json!([{"body": format!("review-ok: {a}")},
-                              {"body": format!("archsec-ok: {a}")}]);
+        let comments = json!([
+            owner_item(&format!("review-ok: {a}")),
+            owner_item(&format!("archsec-ok: {a}"))
+        ]);
         let extra = |listed: &[&str], a_blob: &str| -> Vec<(String, String)> {
             let listed: Vec<_> = listed.iter().map(|s| json!({"sha": s})).collect();
             [
@@ -1184,8 +1188,10 @@ mod tests {
     /// while `-Check` drifts (code 1) and `-Check -SourceCommit <head>` does not. `more` answers
     /// and `codes` replace those of the same key.
     fn repair_setup(more: Vec<(String, String)>, codes: Vec<(String, i32)>) -> Setup {
-        let comments = json!([{"body": format!("review-ok: {SHA}")},
-                              {"body": format!("archsec-ok: {SHA}")}]);
+        let comments = json!([
+            owner_item(&format!("review-ok: {SHA}")),
+            owner_item(&format!("archsec-ok: {SHA}"))
+        ]);
         let mut extra: Vec<(String, String)> = vec![
             (
                 "gh api --paginate repos/o/r/pulls/7/files".to_owned(),
@@ -1203,7 +1209,10 @@ mod tests {
                 "gh api --paginate repos/o/r/issues/7/comments".to_owned(),
                 comments.to_string(),
             ),
-            ("gh issue list".to_owned(), "[]".to_owned()),
+            (
+                format!("gh api --paginate {}", issues_path("o/r")),
+                "[]".to_owned(),
+            ),
             ("gh issue create".to_owned(), "u".to_owned()),
         ];
         extra.extend(more);
@@ -1403,7 +1412,7 @@ mod tests {
     /// AS-38, condition 4: a missing approval, or no `ci-ok` on the head: refused.
     #[test]
     fn repair_refused_without_approval_or_ci_ok() {
-        let comments = json!([{"body": format!("review-ok: {SHA}")}]);
+        let comments = json!([owner_item(&format!("review-ok: {SHA}"))]);
         let more = vec![(
             "gh api --paginate repos/o/r/issues/7/comments".to_owned(),
             comments.to_string(),
