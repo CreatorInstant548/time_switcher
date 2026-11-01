@@ -27,8 +27,11 @@ cargo-deny.linux.archive_sha256 = "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74d
 cargo-audit.version = "0.22.2"
 cargo-audit.source = "crates.io (cargo install --locked --version 0.22.2 cargo-audit)"
 
+# CI only (nightly.yml, fuzz job): built with the dated nightly FUZZ_TOOLCHAIN, never on a workstation (A14).
+# crates.io source: the crate checksum comes from the registry index, checked by cargo itself.
+cargo-fuzz.version = "0.13.2"
+cargo-fuzz.source = "crates.io (cargo install --locked --version 0.13.2 cargo-fuzz)"
+
 # Places réservées, à remplir à l'installation de l'outil (même forme) :
-# cargo-fuzz.version = ""
-# cargo-fuzz.source = "crates.io (cargo install --locked --version <v> cargo-fuzz)"
 # maturin.version = ""
 # maturin.source = "crates.io (cargo install --locked --version <v> maturin)"

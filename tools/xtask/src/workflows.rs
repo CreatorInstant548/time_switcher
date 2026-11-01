@@ -352,6 +352,127 @@ pub fn check_workflow(text: &str) -> Vec<String> {
     errors
 }
 
+/// Pinned installer of the CI tools; its keys live in [`TOOLS_LOCK`] (SEC0-06, G6).
+pub const INSTALL_SCRIPT: &str = "tools/ci/install-tools.sh";
+pub const TOOLS_LOCK: &str = "tools/dev/tools.lock";
+
+/// Value of `key` in `tools.lock`, read exactly as `lock_value` of [`INSTALL_SCRIPT`] reads it:
+/// first line matching `^<key> *= *"(.*)".*` (greedy, up to the last quote), `None` when absent
+/// or empty. A looser reader would accept a line the script then refuses at run time (#75).
+fn sh_lock_value<'a>(lock: &'a str, key: &str) -> Option<&'a str> {
+    lock.lines()
+        .find_map(|line| {
+            let rest = line.strip_prefix(key)?.trim_start_matches(' ');
+            let rest = rest.strip_prefix('=')?.trim_start_matches(' ');
+            let rest = rest.strip_prefix('"')?;
+            Some(&rest[..rest.rfind('"')?])
+        })
+        .filter(|v| !v.is_empty())
+}
+
+/// `tools.lock` keys read by each subcommand of the installer: its `case` line `name) function ;;`
+/// gives the function, whose body (up to the first line `}`) gives the `lock_value '<key>'` calls.
+fn installer_keys(script: &str) -> Vec<(String, Vec<String>)> {
+    let ident = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    };
+    let mut bodies: Vec<(String, Vec<String>)> = Vec::new();
+    let mut current: Option<(String, Vec<String>)> = None;
+    for line in script.lines() {
+        if let Some(name) = line.strip_suffix("() {").filter(|n| ident(n)) {
+            current = Some((name.to_owned(), Vec::new()));
+        } else if line == "}" {
+            bodies.extend(current.take());
+        } else if let Some((_, keys)) = current.as_mut() {
+            for call in line.split("lock_value '").skip(1) {
+                if let Some((key, _)) = call.split_once('\'') {
+                    keys.push(key.replace("\\.", "."));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for line in script.lines() {
+        let Some((name, rest)) = line.trim().split_once(") ") else {
+            continue;
+        };
+        let Some(function) = rest.strip_suffix(";;").map(str::trim) else {
+            continue;
+        };
+        if !(ident(name) && ident(function)) {
+            continue;
+        }
+        let keys = bodies
+            .iter()
+            .find(|(f, _)| f == function)
+            .map(|(_, k)| k.clone())
+            .unwrap_or_default();
+        out.push((name.to_owned(), keys));
+    }
+    out
+}
+
+/// Every call of the installer in a workflow must name a known subcommand whose `tools.lock`
+/// keys are all present and non-empty (#75: `cargo-fuzz` was called by nightly.yml with no
+/// pinned version, so the weekly fuzzing failed on its first run). `workflows`: (path, text).
+pub fn tool_lock_errors(workflows: &[(String, String)], script: &str, lock: &str) -> Vec<String> {
+    let known = installer_keys(script);
+    let mut errors = Vec::new();
+    for (path, text) in workflows {
+        for (i, line) in text.lines().enumerate() {
+            let n = i + 1;
+            if line.trim_start().starts_with('#') {
+                continue; // YAML or shell comment: nothing runs
+            }
+            // Split on the file name: any path or quoting of the script is still a call.
+            for call in line.split("install-tools.sh").skip(1) {
+                let mut words = call
+                    .split_whitespace()
+                    .map(|w| w.trim_matches(['"', '\'']))
+                    .filter(|w| !w.is_empty());
+                let keys = match words.next() {
+                    Some("version") => match words.next() {
+                        Some(tool) if !tool.is_empty() && !tool.contains('$') => {
+                            vec![format!("{tool}.version")]
+                        }
+                        _ => {
+                            errors.push(format!(
+                                "{path} : line {n} : install-tools.sh version without a literal tool name"
+                            ));
+                            continue;
+                        }
+                    },
+                    Some(sub) => match known.iter().find(|(name, _)| name == sub) {
+                        Some((_, keys)) => keys.clone(),
+                        None => {
+                            errors.push(format!(
+                                "{path} : line {n} : unknown install-tools.sh subcommand `{sub}`"
+                            ));
+                            continue;
+                        }
+                    },
+                    None => {
+                        errors.push(format!(
+                            "{path} : line {n} : install-tools.sh without a subcommand"
+                        ));
+                        continue;
+                    }
+                };
+                for key in keys {
+                    if sh_lock_value(lock, &key).is_none() {
+                        errors.push(format!(
+                            "{path} : line {n} : {key} missing or empty in {TOOLS_LOCK} (SEC0-06)"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    errors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,5 +642,129 @@ mod tests {
             "      run: |\n        echo \"$TITLE\"\n        cargo",
         );
         assert_eq!(check_workflow(&flush), Vec::<String>::new());
+    }
+
+    const SCRIPT: &str = include_str!("../../ci/install-tools.sh");
+    const LOCK: &str = include_str!("../../dev/tools.lock");
+
+    fn repo_workflows() -> Vec<(String, String)> {
+        vec![
+            (
+                "ci.yml".into(),
+                include_str!("../../../.github/workflows/ci.yml").into(),
+            ),
+            (
+                "nightly.yml".into(),
+                include_str!("../../../.github/workflows/nightly.yml").into(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn reads_lock_values_like_the_installer() {
+        let lock = "# a.version = \"1\"\n a.version = \"2\"\na.versionx = \"3\"\nb.version = \"\"\n\
+                    c.version=\"4\"\nc.version = \"5\"\nd.version = 6\ne.version  =  \"7\" # \"x\"\n";
+        assert_eq!(
+            sh_lock_value(lock, "a.version"),
+            None,
+            "comment, indent, prefix"
+        );
+        assert_eq!(sh_lock_value(lock, "b.version"), None, "empty");
+        assert_eq!(
+            sh_lock_value(lock, "c.version"),
+            Some("4"),
+            "first line wins"
+        );
+        assert_eq!(sh_lock_value(lock, "d.version"), None, "unquoted");
+        assert_eq!(
+            sh_lock_value(lock, "e.version"),
+            Some("7\" # \"x"),
+            "greedy, as sed"
+        );
+        assert_eq!(sh_lock_value(LOCK, "cargo-fuzz.version"), Some("0.13.2"));
+    }
+
+    #[test]
+    fn maps_installer_subcommands_to_their_keys() {
+        let keys = installer_keys(SCRIPT);
+        let of = |sub: &str| keys.iter().find(|(s, _)| s == sub).map(|(_, k)| k.clone());
+        assert_eq!(of("rust"), Some(vec![]));
+        assert_eq!(
+            of("cargo-fuzz"),
+            Some(vec!["cargo-fuzz.version".to_owned()])
+        );
+        assert_eq!(
+            of("cargo-audit"),
+            Some(vec!["cargo-audit.version".to_owned()])
+        );
+        let gitleaks = of("gitleaks").unwrap();
+        assert!(gitleaks.contains(&"gitleaks.linux.sha256".to_owned()));
+        assert!(gitleaks.contains(&"gitleaks.version".to_owned()));
+        assert_eq!(
+            of("gitleaks-selftest"),
+            Some(vec!["gitleaks.linux.path".to_owned()])
+        );
+        assert_eq!(
+            of("version"),
+            None,
+            "handled apart: its key depends on the call"
+        );
+    }
+
+    /// #75: nightly.yml called `install-tools.sh cargo-fuzz` while tools.lock had no
+    /// `cargo-fuzz.version`; the weekly fuzzing failed at run time instead of in the PR.
+    #[test]
+    fn refuses_an_installer_call_without_its_pin() {
+        let flows = repo_workflows();
+        assert_eq!(tool_lock_errors(&flows, SCRIPT, LOCK), Vec::<String>::new());
+        let unpinned: String = LOCK
+            .lines()
+            .filter(|l| !l.starts_with("cargo-fuzz.version"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let errors = tool_lock_errors(&flows, SCRIPT, &unpinned);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("nightly.yml : line "), "{errors:?}");
+        assert!(
+            errors[0].contains("cargo-fuzz.version missing or empty"),
+            "{errors:?}"
+        );
+        let empty = LOCK.replace(
+            "cargo-fuzz.version = \"0.13.2\"",
+            "cargo-fuzz.version = \"\"",
+        );
+        assert_eq!(tool_lock_errors(&flows, SCRIPT, &empty).len(), 1);
+        for (call, what) in [
+            ("bash tools/ci/install-tools.sh maturin", "unknown"),
+            ("bash ./tools/ci/install-tools.sh \"maturin\"", "unknown"),
+            (
+                "bash tools/ci/install-tools.sh version maturin",
+                "maturin.version missing",
+            ),
+            (
+                "bash tools/ci/install-tools.sh version \"$T\"",
+                "literal tool name",
+            ),
+            ("bash tools/ci/install-tools.sh", "without a subcommand"),
+        ] {
+            let flow = vec![(
+                "w.yml".to_owned(),
+                format!("    steps:\n      - run: {call}\n"),
+            )];
+            let errors = tool_lock_errors(&flow, SCRIPT, LOCK);
+            assert!(
+                errors.len() == 1 && errors[0].contains(what),
+                "{call}: {errors:?}"
+            );
+        }
+        let comment = vec![(
+            "w.yml".to_owned(),
+            "# install-tools.sh maturin\n      - run: |\n          # bash install-tools.sh maturin\n"
+                .to_owned(),
+        )];
+        assert_eq!(
+            tool_lock_errors(&comment, SCRIPT, LOCK),
+            Vec::<String>::new()
+        );
     }
 }

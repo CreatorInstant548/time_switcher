@@ -211,6 +211,11 @@ jobs:
       - name: cargo-fuzz épinglé
         if: steps.gate.outputs.changed == 'true'
         run: bash tools/ci/install-tools.sh cargo-fuzz
+      # Initial corpus of the decode target (SEC0-24), regenerated on each run, never committed.
+      # --locked also refuses a stale fuzz/Cargo.lock: cargo fuzz has no --locked option.
+      - name: Corpus initial
+        if: steps.gate.outputs.changed == 'true'
+        run: cargo "+$FUZZ_TOOLCHAIN" run --locked --manifest-path fuzz/seeds/Cargo.toml -- fuzz/corpus/decode
       - name: Fuzzing de toutes les cibles
         if: steps.gate.outputs.changed == 'true'
         run: |

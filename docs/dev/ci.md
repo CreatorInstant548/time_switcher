@@ -72,7 +72,8 @@ Les valeurs viennent de `tools/dev/tools.lock` (clés `*.linux.*`, même version
 - **`cargo xtask check`, étape `gitleaks`, mode CI** (A2) : actif quand `CI=true` et `GITHUB_ACTIONS=true`. Binaire désigné par `gitleaks.linux.path` (relatif à `TS_CACHE`) et vérifié par `gitleaks.linux.sha256` ; configuration refusée si elle diffère d'un octet de celle d'`origin/main`. Options identiques au mode local. En local, rien ne change.
 - **cargo-deny** : binaire officiel (`x86_64-unknown-linux-musl`), archive vérifiée par son SHA-256.
 - **cargo-audit** : `cargo install --locked --version`, dans `~/ts-tools/cargo-audit`.
-- **cargo-fuzz** : `cargo install --locked --version` avec la *nightly* datée `FUZZ_TOOLCHAIN` de `nightly.yml` ; sa version s'ajoute à `tools.lock` avec `fuzz/`.
+- **cargo-fuzz** : `cargo install --locked --version` avec la *nightly* datée `FUZZ_TOOLCHAIN` de `nightly.yml`. Version 0.13.2 (*issue* #75 ; publiée le 09/06/2026, antérieure à `nightly-2026-10-01`). Pas d'empreinte dans `tools.lock`, comme `cargo-audit` : cargo vérifie celle de crates.io.
+- **Contrôle des épingles** (étape `workflows` de `xtask check`, *issue* #75) : chaque appel de `install-tools.sh <outil>` ou `install-tools.sh version <outil>` dans un workflow doit nommer une sous-commande connue du script, et chaque clé que sa fonction lit (`lock_value '<clé>'`) doit être présente et non vide dans `tools.lock`, lue comme le script la lit. Sans ce contrôle, `fuzz/` est arrivé sans `cargo-fuzz.version`, et le fuzzing du dimanche a échoué à l'installation au lieu d'être refusé dans la PR.
 
 **Actions** (liste fermée, épinglées par SHA de 40 caractères, version en commentaire) :
 
@@ -122,7 +123,7 @@ puis il fait J4 avec ces faits frais. Sans `--origin` (`cargo xtask merge`), un 
 - **Le dimanche** (même heure), en plus, et seulement si `main` a changé depuis la dernière exécution hebdomadaire réussie (`main-changed.sh`, par l'API, avec `actions: read`) :
   - `windows` : `cargo xtask check --all` hors étapes de sécurité de `ci.yml` ;
   - `gitleaks-history` : gitleaks sur tout l'historique de toutes les branches, `--text`, avec son auto-test ;
-  - `fuzz` : 60 min réparties entre les cibles de `fuzz/`. **Sauté** tant que `fuzz/` n'existe pas. Les plantages sont téléversés, gardés 7 jours ;
+  - `fuzz` : corpus initial de `decode` écrit par `fuzz/seeds` (`cargo run --locked`, qui refuse aussi un `fuzz/Cargo.lock` périmé, `cargo fuzz` n'ayant pas d'option `--locked`), puis 60 min réparties entre les cibles de `fuzz/`. **Sauté** tant que `fuzz/` n'existe pas. Les plantages (`fuzz/artifacts/`) sont téléversés, gardés 7 jours ;
   - `determinism` (Y5, T9c) : `cargo xtask determinism --full`, sous Linux. La version courte et l'an complet (365 jours simulés, instantané au jour 182) tournent à 1 et à 4 fils, dans des processus distincts, chacun comparé à ses propres valeurs dorées de `data/golden/ts_toy.json` (clés `short.*` et `year.*`). Durée de l'an complet : 75 s mesurées en local (Windows, debug, deux processus), plus la compilation de `ts_toy` et de ses dépendances ; la durée en CI sera relevée à la première exécution du dimanche (en CI, la version courte va environ 6 fois plus vite qu'en local (1 s contre 6,3 s), voir §7). Droits : `actions` et `contents` en lecture. Un échec rejoint `report`, qui ouvre `nightly-failure` ;
   - `windows` comprend aussi l'étape `determinism` (version courte), comme `rust-windows`.
 - **`workflow_dispatch`** (essais) lance tout, sans contrôle de changement de `main`. Aucune entrée (`inputs`).

@@ -731,19 +731,27 @@ pub fn local_paths(cx: &Ctx) -> Outcome {
 pub fn workflows(cx: &Ctx) -> Outcome {
     let files = tri!(cx.files());
     let mut errors = Vec::new();
-    let mut count = 0;
+    let mut flows = Vec::new();
     for rel in files.iter().filter(|f| f.starts_with(".github/workflows/")) {
         if !(rel.ends_with(".yml") || rel.ends_with(".yaml")) {
             errors.push(format!("{rel} : fichier inattendu dans .github/workflows/"));
             continue;
         }
-        count += 1;
         let text = String::from_utf8_lossy(&tri!(cx.read(rel))).into_owned();
         errors.extend(
             workflows::check_workflow(&text)
                 .into_iter()
                 .map(|e| format!("{rel} : {e}")),
         );
+        flows.push((rel.clone(), text));
+    }
+    let count = flows.len();
+    if count > 0 {
+        // Every installer call needs its pins in tools.lock (#75).
+        let script =
+            String::from_utf8_lossy(&tri!(cx.read(workflows::INSTALL_SCRIPT))).into_owned();
+        let lock = String::from_utf8_lossy(&tri!(cx.read(workflows::TOOLS_LOCK))).into_owned();
+        errors.extend(workflows::tool_lock_errors(&flows, &script, &lock));
     }
     match (count, errors.is_empty()) {
         (0, true) => Outcome::Skipped("aucun workflow".to_owned()),
