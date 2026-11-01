@@ -355,6 +355,29 @@ pub fn check_workflow(text: &str) -> Vec<String> {
 /// Pinned installer of the CI tools; its keys live in [`TOOLS_LOCK`] (SEC0-06, G6).
 pub const INSTALL_SCRIPT: &str = "tools/ci/install-tools.sh";
 pub const TOOLS_LOCK: &str = "tools/dev/tools.lock";
+const SCRIPT_NAME: &str = "install-tools.sh";
+
+/// Body of the installer's `lock_value` (lines trimmed, comments left out), which
+/// [`sh_lock_value`] mirrors. The check compares it instead of assuming it (fail closed).
+const LOCK_VALUE_BODY: [&str; 4] = [
+    "local v",
+    r#"v=$(sed -n "s/^$1 *= *\"\(.*\)\".*/\1/p" "$lock" | head -n 1)"#,
+    r#"[ -n "$v" ] || fail "$1 absent ou vide dans tools/dev/tools.lock.""#,
+    r#"printf '%s' "$v""#,
+];
+/// Body of the dispatcher's `version)` entry, for which `version <tool>` reads `<tool>.version`:
+/// compared to the script as well, since its key is not a literal.
+const VERSION_ENTRY: [&str; 2] = [
+    r#"v=$(lock_value "$(printf '%s' "${2:?outil manquant}" | sed 's/\./\\./g')\.version")"#,
+    r#"printf 'version=%s\n' "$v" >> "${GITHUB_OUTPUT:-/dev/stdout}" ;;"#,
+];
+/// Dispatcher heads that switch on the first argument.
+const DISPATCH_HEADS: [&str; 4] = [
+    "case ${1:-} in",
+    "case \"${1:-}\" in",
+    "case $1 in",
+    "case \"$1\" in",
+];
 
 /// Value of `key` in `tools.lock`, read exactly as `lock_value` of [`INSTALL_SCRIPT`] reads it:
 /// first line matching `^<key> *= *"(.*)".*` (greedy, up to the last quote), `None` when absent
@@ -370,64 +393,157 @@ fn sh_lock_value<'a>(lock: &'a str, key: &str) -> Option<&'a str> {
         .filter(|v| !v.is_empty())
 }
 
+/// A function or subcommand name. The same characters make a word in [`Function::read`], so
+/// that a call of `a-b` is followed like a call of `a_b`.
 fn ident(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
 }
 
-/// A function of the installer: `name() {` at column 0, up to the first line `}`.
+/// A function of the installer: `name() {` at column 0 up to the first line `}`, or
+/// `name() { …; }` on one line.
 struct Function<'a> {
     name: &'a str,
+    /// Its body lines, trimmed, comments left out.
+    body: Vec<&'a str>,
     /// Keys of its `lock_value '<key>'` calls, `\.` unescaped.
     keys: Vec<String>,
     /// Words of its body, to find the other functions it calls.
     words: Vec<&'a str>,
-    /// A `lock_value` call whose key is not a single-quoted literal: unreadable here.
+    /// A `lock_value` call whose key is not a readable literal (see [`lock_key`]).
     opaque: bool,
 }
 
-/// The functions, and the first line that calls `lock_value` outside of them, the definition of
-/// `lock_value` and the dispatcher (a one-line helper, say): its keys could not be attributed.
-fn installer_functions(script: &str) -> (Vec<Function<'_>>, Option<usize>) {
-    let mut out = Vec::new();
-    let mut stray = None;
+impl<'a> Function<'a> {
+    fn new(name: &'a str) -> Self {
+        Function {
+            name,
+            body: Vec::new(),
+            keys: Vec::new(),
+            words: Vec::new(),
+            opaque: false,
+        }
+    }
+
+    fn read(&mut self, line: &'a str) {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return;
+        }
+        self.body.push(line);
+        for call in line.split("lock_value").skip(1) {
+            match lock_key(call) {
+                Some(key) => self.keys.push(key),
+                None => self.opaque = true,
+            }
+        }
+        self.words.extend(
+            line.split(|c: char| !(c.is_ascii_alphanumeric() || "_-".contains(c)))
+                .filter(|w| !w.is_empty()),
+        );
+    }
+}
+
+/// Key of a `lock_value` call, from the text that follows the name: a single-quoted literal of
+/// [`ident`] segments joined by `\.`, ending the word. Anything else (a variable, an unescaped
+/// `.`, a concatenation such as `'a\.b'"$X"`) is `None`: the check cannot read it.
+fn lock_key(call: &str) -> Option<String> {
+    let (key, rest) = call.strip_prefix(" '")?.split_once('\'')?;
+    let ends = rest
+        .chars()
+        .next()
+        .is_none_or(|c| c.is_whitespace() || ");|&".contains(c));
+    let segments: Vec<&str> = key.split("\\.").collect();
+    (ends && segments.iter().all(|s| ident(s))).then(|| segments.join("."))
+}
+
+/// A function definition at the top level of the script.
+enum Definition<'a> {
+    /// `name() {`, possibly followed by a comment.
+    Open(&'a str),
+    /// `name() { …; }`, with its body.
+    OneLine(&'a str, &'a str),
+    /// Any other form (`function name`, `name () {`, an indented or non-[`ident`] name…).
+    Other,
+}
+
+fn definition(line: &str) -> Option<Definition<'_>> {
+    let t = line.trim_start();
+    if t.split_whitespace().next() == Some("function") {
+        return Some(Definition::Other);
+    }
+    let (name, rest) = t.split_at(t.find(['(', ' ', '\t'])?);
+    if !rest.trim_start().starts_with("()") {
+        return None;
+    }
+    if t.len() != line.len() || !ident(name) {
+        return Some(Definition::Other);
+    }
+    let Some(body) = rest.strip_prefix("() {") else {
+        return Some(Definition::Other);
+    };
+    if body.is_empty() || body.starts_with(" #") {
+        return Some(Definition::Open(name));
+    }
+    match body.trim_end().strip_suffix('}') {
+        Some(inner) if body.starts_with(' ') => Some(Definition::OneLine(name, inner)),
+        _ => Some(Definition::Other),
+    }
+}
+
+/// The functions, or why the script cannot be read (first offending line): a definition in
+/// another form, a name defined twice (the shell keeps the last one), an unclosed function, or a
+/// `lock_value` call outside a function and outside the dispatcher.
+fn installer_functions(script: &str) -> (Vec<Function<'_>>, Option<String>) {
+    let mut out: Vec<Function> = Vec::new();
+    let mut refused = None;
     let mut dispatcher = false;
     let mut current: Option<Function> = None;
     for (i, line) in script.lines().enumerate() {
-        if current.is_none() {
-            dispatcher = (dispatcher || line.starts_with("case ")) && line != "esac";
-            let comment = line.trim_start().starts_with('#');
-            let definition = line.starts_with("lock_value() {");
-            if line.contains("lock_value") && !(dispatcher || comment || definition) {
-                stray = stray.or(Some(i + 1));
+        if let Some(f) = current.as_mut() {
+            if line == "}" {
+                out.extend(current.take());
+            } else {
+                f.read(line);
             }
+            continue;
         }
-        if let Some(name) = line.strip_suffix("() {").filter(|n| ident(n)) {
-            current = Some(Function {
-                name,
-                keys: Vec::new(),
-                words: Vec::new(),
-                opaque: false,
-            });
-        } else if line == "}" {
-            out.extend(current.take());
-        } else if let Some(f) = current.as_mut() {
-            if line.trim_start().starts_with('#') {
-                continue;
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        dispatcher = (dispatcher || line.starts_with("case ")) && line != "esac";
+        let defined = out.len();
+        let why = match definition(line) {
+            Some(Definition::Open(name)) => {
+                current = Some(Function::new(name));
+                None
             }
-            for call in line.split("lock_value").skip(1) {
-                let key = call.strip_prefix(" '").and_then(|c| c.split_once('\''));
-                match key {
-                    Some((key, _)) if !key.is_empty() => f.keys.push(key.replace("\\.", ".")),
-                    _ => f.opaque = true,
-                }
+            Some(Definition::OneLine(name, body)) => {
+                let mut f = Function::new(name);
+                f.read(body);
+                out.push(f);
+                None
             }
-            f.words
-                .extend(line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')));
+            Some(Definition::Other) => {
+                Some("defines a function in another form than `name() {` at column 0".to_owned())
+            }
+            None if line.contains("lock_value") && !dispatcher => {
+                Some("calls lock_value outside a function".to_owned())
+            }
+            None => None,
+        };
+        let name = current.as_ref().or(out.get(defined)).map(|f| f.name);
+        let twice = name.filter(|n| out[..defined].iter().any(|f| f.name == *n));
+        let why = why.or(twice.map(|n| format!("defines {n} twice")));
+        if let Some(why) = why {
+            refused.get_or_insert(format!("line {} of the script {why}", i + 1));
         }
     }
-    (out, stray)
+    if let Some(f) = current {
+        refused.get_or_insert(format!("function {} is not closed by a line `}}`", f.name));
+    }
+    (out, refused)
 }
 
 /// Keys read by `name` and by the functions it calls, transitively; `Err` when one of them is
@@ -457,48 +573,99 @@ fn function_keys(functions: &[Function], name: &str) -> Result<Vec<String>, Stri
     Ok(keys)
 }
 
-/// `tools.lock` keys read by each subcommand of the installer's dispatcher (the `case` at column
-/// 0, up to `esac`): an entry `a|b) function ;;` maps each of its names to the keys read by its
-/// function. Entries of another form (`version)`, `*)`) are not listed: a workflow call to them
-/// is refused, except `version <tool>`, handled by [`tool_lock_errors`].
-fn installer_keys(script: &str) -> Vec<(String, Result<Vec<String>, String>)> {
-    let (functions, stray) = installer_functions(script);
+/// What a subcommand of the installer reads in `tools.lock`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Reads {
+    /// These keys, read by its function and the functions it calls.
+    Keys(Vec<String>),
+    /// `version <tool>`: the key `<tool>.version`.
+    ToolVersion,
+}
+
+/// What each subcommand of the installer's dispatcher (the `case` at column 0, up to `esac`)
+/// reads. An entry `a|b) function ;;` maps each of its names to the keys read by its function;
+/// the `version)` entry must be [`VERSION_ENTRY`]. Any other entry, an entry after a glob
+/// pattern (it may never run), a `lock_value` other than [`LOCK_VALUE_BODY`] or a script that
+/// [`installer_functions`] cannot read gives an `Err`, reported when a workflow calls it.
+fn installer_keys(script: &str) -> Vec<(String, Result<Reads, String>)> {
+    let (functions, refused) = installer_functions(script);
+    let reader = functions.iter().find(|f| f.name == "lock_value");
+    let refused = refused.or_else(|| {
+        (!reader.is_some_and(|f| f.body == LOCK_VALUE_BODY))
+            .then(|| "lock_value differs from the reader this check mirrors".to_owned())
+    });
+    let mut lines = script.lines();
+    let head = lines.by_ref().find(|l| l.starts_with("case "));
+    let refused = refused.or_else(|| {
+        head.filter(|h| !DISPATCH_HEADS.contains(h))
+            .map(|h| format!("the dispatcher `{h}` does not switch on the first argument"))
+    });
+    let body: Vec<&str> = lines
+        .take_while(|l| *l != "esac")
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    let pattern = |p: &str| {
+        !p.is_empty()
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-|*?".contains(&b))
+    };
     let mut out = Vec::new();
-    let dispatcher = script
-        .lines()
-        .skip_while(|l| !l.starts_with("case "))
-        .skip(1)
-        .take_while(|l| *l != "esac");
-    for line in dispatcher {
-        let Some((names, rest)) = line.trim().split_once(") ") else {
+    let mut shadowed = None;
+    let mut i = 0;
+    while i < body.len() {
+        let Some((names, first)) = body[i].split_once(')').filter(|(p, _)| pattern(p)) else {
+            i += 1;
             continue;
         };
-        let Some(function) = rest.strip_suffix(";;").map(str::trim).filter(|f| ident(f)) else {
-            continue;
-        };
-        let keys = match stray {
-            Some(n) => Err(format!(
-                "line {n} of the script calls lock_value outside a `name() {{` function"
+        let mut entry = vec![first.trim()];
+        while !entry.last().is_some_and(|l| l.ends_with(";;")) && i + 1 < body.len() {
+            i += 1;
+            entry.push(body[i]);
+        }
+        i += 1;
+        let reads = match (&refused, &shadowed, entry.as_slice()) {
+            (Some(e), _, _) => Err(e.clone()),
+            (None, Some(glob), _) => Err(format!("its entry follows the glob pattern `{glob})`")),
+            (None, None, [one]) => match one.strip_suffix(";;").map(str::trim) {
+                Some(f) if ident(f) => function_keys(&functions, f).map(Reads::Keys),
+                _ => Err(format!(
+                    "dispatcher entry `{names})` is not `name) function ;;`"
+                )),
+            },
+            (None, None, ["", rest @ ..]) if names == "version" && *rest == VERSION_ENTRY[..] => {
+                Ok(Reads::ToolVersion)
+            }
+            (None, None, _) => Err(format!(
+                "dispatcher entry `{names})` is neither `name) function ;;` nor the known `version)` entry"
             )),
-            None => function_keys(&functions, function),
         };
-        for name in names.split('|').filter(|n| ident(n)) {
-            out.push((name.to_owned(), keys.clone()));
+        for name in names.split('|') {
+            if ident(name) {
+                out.push((name.to_owned(), reads.clone()));
+            } else {
+                shadowed.get_or_insert(name.to_owned());
+            }
         }
     }
     out
 }
 
 /// Arguments of each call of the installer on a workflow line. A mention is a call when the
-/// script is the first word, or follows `bash`, `sh`, an option, `run:` or a shell separator; a
-/// path filter, an `echo` or a trailing comment is not. Arguments stop at a comment or separator.
+/// script path (plain characters, possibly quoted) is the first word, or follows `bash`, `sh`,
+/// an option, `run:` or a separate shell separator. Arguments stop at a comment or separator.
+/// Any other mention is not a call, and [`tool_lock_errors`] refuses it.
 fn installer_calls(line: &str) -> Vec<Vec<&str>> {
     const SEPARATORS: [&str; 6] = ["&&", "||", ";", "|", "then", "do"];
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let mut calls = Vec::new();
     for (i, token) in tokens.iter().enumerate() {
         let path = token.trim_matches(['"', '\'']);
-        if !(path == "install-tools.sh" || path.ends_with("/install-tools.sh")) {
+        let named = path == SCRIPT_NAME || path.ends_with("/install-tools.sh");
+        let plain = path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_./-".contains(&b));
+        if !(named && plain) {
             continue;
         }
         let call = match i.checked_sub(1).map(|p| tokens[p]) {
@@ -529,33 +696,94 @@ fn installer_calls(line: &str) -> Vec<Vec<&str>> {
     calls
 }
 
+/// Line `i` is a path filter of a trigger, which names the installer without running it:
+/// `paths: [ … ]` or `paths-ignore: [ … ]`, or a `- path` item of such a list. Every entry must
+/// be a plain path or glob, so that no shell text can pass for a filter.
+fn path_filter_entry(lines: &[&str], i: usize) -> bool {
+    const FILTERS: [&str; 2] = ["paths", "paths-ignore"];
+    let glob = |s: &str| {
+        let s = s.trim().trim_matches(['"', '\'']);
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_./*!-".contains(&b))
+    };
+    let Some(l) = parse(lines[i]) else {
+        return false;
+    };
+    let value = strip_comment(l.value);
+    if let Some(key) = l.key.as_deref() {
+        let list = value.strip_prefix('[').and_then(|v| v.strip_suffix(']'));
+        return FILTERS.contains(&key) && !l.item && list.is_some_and(|v| v.split(',').all(glob));
+    }
+    if !glob(value) {
+        return false;
+    }
+    for prev in lines[..i].iter().rev() {
+        let t = prev.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        return match parse(prev) {
+            Some(p) if p.item && p.key.is_none() && p.dash == l.dash => continue,
+            Some(p) => {
+                !p.item
+                    && p.col < l.dash
+                    && strip_comment(p.value).is_empty()
+                    && p.key.as_deref().is_some_and(|k| FILTERS.contains(&k))
+            }
+            None => false,
+        };
+    }
+    false
+}
+
+/// A tool name that `version <tool>` turns into the key `<tool>.version` (the `version)` entry
+/// escapes `.` only, so nothing else may reach its regex).
+fn version_tool(tool: &str) -> bool {
+    tool.split('.').all(ident)
+}
+
 /// Every call of the installer in a workflow must name a known subcommand whose `tools.lock`
 /// keys are all present and non-empty (#75: `cargo-fuzz` was called by nightly.yml with no
-/// pinned version, so the weekly fuzzing failed on its first run). `workflows`: (path, text).
+/// pinned version, so the weekly fuzzing failed on its first run). Every other non-comment line
+/// that names the installer is refused, path filters excepted: a call the check cannot
+/// recognise must not pass unchecked. `workflows`: (path, text).
 pub fn tool_lock_errors(workflows: &[(String, String)], script: &str, lock: &str) -> Vec<String> {
     let known = installer_keys(script);
+    let lookup = |sub: &str| known.iter().find(|(name, _)| name == sub).map(|(_, r)| r);
     let mut errors = Vec::new();
     for (path, text) in workflows {
-        for (i, line) in text.lines().enumerate() {
-            if line.trim_start().starts_with('#') {
-                continue; // YAML or shell comment: nothing runs
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains(SCRIPT_NAME)
+                || line.trim_start().starts_with('#') // YAML or shell comment: nothing runs
+                || path_filter_entry(&lines, i)
+            {
+                continue;
             }
             let at = format!("{path} : line {}", i + 1);
-            for args in installer_calls(line) {
+            let calls = installer_calls(line);
+            if calls.len() != line.matches(SCRIPT_NAME).count() {
+                errors.push(format!(
+                    "{at} : unrecognised mention of {SCRIPT_NAME}: write each call as \
+                     `bash {INSTALL_SCRIPT} <subcommand>`; a paths: filter is the only other form"
+                ));
+                continue;
+            }
+            for args in calls {
                 let keys = match args.as_slice() {
-                    ["version", tool, ..] if !tool.contains('$') => {
-                        Ok(vec![format!("{tool}.version")])
-                    }
-                    ["version", ..] => {
-                        Err("install-tools.sh version without a literal tool name".to_owned())
-                    }
-                    [sub, ..] => match known.iter().find(|(name, _)| name == sub) {
-                        Some((_, keys)) => keys
-                            .clone()
-                            .map_err(|e| format!("install-tools.sh {sub}: {e}")),
-                        None => Err(format!("unknown install-tools.sh subcommand `{sub}`")),
-                    },
                     [] => Err("install-tools.sh without a subcommand".to_owned()),
+                    [sub, rest @ ..] => match (lookup(sub), rest) {
+                        (None, _) => Err(format!("unknown install-tools.sh subcommand `{sub}`")),
+                        (Some(Err(e)), _) => Err(format!("install-tools.sh {sub}: {e}")),
+                        (Some(Ok(Reads::Keys(keys))), _) => Ok(keys.clone()),
+                        (Some(Ok(Reads::ToolVersion)), [tool, ..]) if version_tool(tool) => {
+                            Ok(vec![format!("{tool}.version")])
+                        }
+                        (Some(Ok(Reads::ToolVersion)), _) => {
+                            Err("install-tools.sh version without a literal tool name".to_owned())
+                        }
+                    },
                 };
                 match keys {
                     Ok(keys) => errors.extend(
@@ -760,6 +988,41 @@ mod tests {
         ]
     }
 
+    /// A test script: the installer's `lock_value`, then `rest`.
+    fn with_reader(rest: &str) -> String {
+        format!(
+            "lock_value() {{\n  {}\n}}\n{rest}",
+            LOCK_VALUE_BODY.join("\n  ")
+        )
+    }
+
+    fn keys_of(script: &str, sub: &str) -> Option<Result<Reads, String>> {
+        let keys = installer_keys(script);
+        keys.into_iter().find(|(s, _)| s == sub).map(|(_, k)| k)
+    }
+
+    fn owned(keys: &[&str]) -> Option<Result<Reads, String>> {
+        Some(Ok(Reads::Keys(
+            keys.iter().map(|s| s.to_string()).collect(),
+        )))
+    }
+
+    fn refusal(script: &str, sub: &str) -> String {
+        match keys_of(script, sub) {
+            Some(Err(e)) => e,
+            other => panic!("{sub} accepted: {other:?}"),
+        }
+    }
+
+    /// Errors of `run: <call>` in a one-step workflow.
+    fn call_errors(call: &str, script: &str) -> Vec<String> {
+        let flow = vec![(
+            "w.yml".to_owned(),
+            format!("    steps:\n      - run: {call}\n"),
+        )];
+        tool_lock_errors(&flow, script, LOCK)
+    }
+
     #[test]
     fn reads_lock_values_like_the_installer() {
         let lock = "# a.version = \"1\"\n a.version = \"2\"\na.versionx = \"3\"\nb.version = \"\"\n\
@@ -785,47 +1048,117 @@ mod tests {
 
     #[test]
     fn maps_installer_subcommands_to_their_keys() {
-        let keys = installer_keys(SCRIPT);
-        let of = |sub: &str| keys.iter().find(|(s, _)| s == sub).map(|(_, k)| k.clone());
-        let owned = |k: &[&str]| Some(Ok(k.iter().map(|s| s.to_string()).collect()));
+        let of = |sub: &str| keys_of(SCRIPT, sub);
         assert_eq!(of("rust"), owned(&[]));
         assert_eq!(of("cargo-fuzz"), owned(&["cargo-fuzz.version"]));
         assert_eq!(of("cargo-audit"), owned(&["cargo-audit.version"]));
-        let gitleaks = of("gitleaks").unwrap().unwrap();
+        let Some(Ok(Reads::Keys(gitleaks))) = of("gitleaks") else {
+            panic!("gitleaks: {:?}", of("gitleaks"));
+        };
         assert!(gitleaks.contains(&"gitleaks.linux.sha256".to_owned()));
         assert!(gitleaks.contains(&"gitleaks.version".to_owned()));
         assert_eq!(of("gitleaks-selftest"), owned(&["gitleaks.linux.path"]));
-        assert_eq!(
-            of("version"),
-            None,
-            "handled apart: its key depends on the call"
-        );
+        assert_eq!(of("version"), Some(Ok(Reads::ToolVersion)));
         // Nested `case` entries are not subcommands; alternations name each subcommand;
-        // a helper's keys count; a missing function or a computed key fails closed.
-        let script = "helper() {\n  lock_value 'h\\.version'\n}\nf() {\n  case $a in amd64) g ;; esac\n  helper\n}\n\
-                      opaque() {\n  lock_value \"$1\\.version\"\n}\n\
-                      case ${1:-} in\n  a|b) f ;;\n  c) missing ;;\n  d) opaque ;;\nesac\n";
-        let keys = installer_keys(script);
-        let of = |sub: &str| keys.iter().find(|(s, _)| s == sub).map(|(_, k)| k.clone());
-        assert_eq!(of("a"), owned(&["h.version"]));
-        assert_eq!(of("b"), owned(&["h.version"]));
-        assert_eq!(of("amd64"), None);
-        assert!(of("c").unwrap().unwrap_err().contains("missing not found"));
-        assert!(
-            of("d")
-                .unwrap()
-                .unwrap_err()
-                .contains("not a single-quoted literal")
+        // a helper's keys count, one-line helpers too; a missing function or a computed key
+        // fails closed.
+        let script = with_reader(
+            "helper() {\n  lock_value 'h\\.version'\n}\nf() {\n  case $a in amd64) g ;; esac\n  helper\n  one\n}\n\
+             one() { lock_value 'o\\.v'; }\nopaque() {\n  lock_value \"$1\\.version\"\n}\n\
+             case ${1:-} in\n  a|b) f ;;\n  c) missing ;;\n  d) opaque ;;\nesac\n",
         );
-        let one_line =
-            "x() { lock_value 'k\\.v'; }\nf() {\n  x\n}\ncase ${1:-} in\n  a) f ;;\nesac\n";
-        let keys = installer_keys(one_line);
+        assert_eq!(keys_of(&script, "a"), owned(&["h.version", "o.v"]));
+        assert_eq!(keys_of(&script, "b"), owned(&["h.version", "o.v"]));
+        assert_eq!(keys_of(&script, "amd64"), None);
+        assert!(refusal(&script, "c").contains("missing not found"));
+        assert!(refusal(&script, "d").contains("not a single-quoted literal"));
+        let stray = with_reader(
+            "x=$(lock_value 'k\\.v')\nf() {\n  x\n}\ncase ${1:-} in\n  a) f ;;\nesac\n",
+        );
+        assert!(refusal(&stray, "a").contains("line 7 of the script calls lock_value outside"));
+    }
+
+    /// Review of #90, minor 1: a `-` in a function name is followed like any other character
+    /// of a name, so its keys count.
+    #[test]
+    fn follows_helpers_with_a_dash() {
+        let script = with_reader(
+            "f() {\n  a-b x\n}\na-b() {\n  helper\n}\nhelper() {\n  lock_value 'h\\.v'\n}\n\
+             case ${1:-} in\n  s) f ;;\nesac\n",
+        );
+        assert_eq!(keys_of(&script, "s"), owned(&["h.v"]));
+    }
+
+    /// Review of #90: what the check cannot read in the script is refused, not skipped.
+    #[test]
+    fn refuses_what_it_cannot_read_in_the_script() {
+        let base = "f() {\n  lock_value 'a\\.b'\n}\ncase ${1:-} in\n  s) f ;;\nesac\n";
+        assert_eq!(keys_of(&with_reader(base), "s"), owned(&["a.b"]));
+        for (from, to, why) in [
+            // Minor 2: a concatenated or unescaped key is not a literal.
+            ("'a\\.b'", "'a\\.b'\"$X\"", "not a single-quoted literal"),
+            ("'a\\.b'", "'a.b'", "not a single-quoted literal"),
+            ("'a\\.b'", "'a\\.b'x", "not a single-quoted literal"),
+            // Definitions the check would not follow.
+            (
+                "f() {",
+                "function f {",
+                "line 7 of the script defines a function",
+            ),
+            ("f() {", "f () {", "defines a function"),
+            ("f() {", "f()\n{", "defines a function"),
+            ("case", "a.b() {\n  :\n}\ncase", "defines a function"),
+            ("case", "  g() { :; }\ncase", "defines a function"),
+            ("case", "f() { :; }\ncase", "defines f twice"),
+            ("\n}\n", "\n", "is not closed"),
+            // Dispatcher: other subject, other entry form, entry after a glob.
+            (
+                "case ${1:-} in",
+                "case ${2:-} in",
+                "does not switch on the first argument",
+            ),
+            ("s) f ;;", "s)\n    f ;;", "neither"),
+            ("s) f ;;", "s) f \"$@\" ;;", "is not `name) function ;;`"),
+            ("s) f ;;", "s*) f ;;\n  s) f ;;", "follows the glob pattern"),
+        ] {
+            let script = with_reader(&base.replacen(from, to, 1));
+            let e = refusal(&script, "s");
+            assert!(e.contains(why), "{to}: {e}");
+        }
+    }
+
+    /// Review of #90, important 2: the `version)` entry and `lock_value` are compared to the
+    /// text this check mirrors; any change is refused.
+    #[test]
+    fn refuses_a_changed_reader() {
+        let version = "lock_value \"$2\\.linux\\.version\")";
+        let line = SCRIPT
+            .lines()
+            .find(|l| l.contains("v=$(lock_value"))
+            .unwrap();
+        for script in [
+            SCRIPT.replace(line, &format!("    v=$({version}")),
+            SCRIPT.replace("sed 's/\\./\\\\./g'", "sed 's/x/x/'"),
+            SCRIPT.replace("head -n 1)", "tail -n 1)"),
+        ] {
+            assert_ne!(script, SCRIPT);
+            let errors = call_errors(
+                "bash tools/ci/install-tools.sh version cargo-audit",
+                &script,
+            );
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].contains("install-tools.sh version: "),
+                "{errors:?}"
+            );
+        }
+        let errors = call_errors(
+            "bash tools/ci/install-tools.sh cargo-audit",
+            &SCRIPT.replace("head -n 1)", "tail -n 1)"),
+        );
         assert!(
-            keys[0]
-                .1
-                .as_ref()
-                .unwrap_err()
-                .contains("line 1 of the script")
+            errors.len() == 1 && errors[0].contains("lock_value differs"),
+            "{errors:?}"
         );
     }
 
@@ -843,7 +1176,7 @@ mod tests {
         );
         assert_eq!(args("a && bash ./install-tools.sh y && b"), [["y"]]);
         assert_eq!(
-            args("bash tools/ci/install-tools.sh z # see install-tools.sh docs"),
+            args("bash tools/ci/install-tools.sh z # see the docs"),
             [["z"]]
         );
         for none in [
@@ -851,8 +1184,49 @@ mod tests {
             "  - 'tools/ci/install-tools.sh'",
             "echo \"install-tools.sh failed\"",
             "cat tools/ci/install-tools.sh",
+            "run: $(tools/ci/install-tools.sh x)",
         ] {
             assert!(args(none).is_empty(), "{none}");
+        }
+    }
+
+    /// Review of #90, important 1: a mention that is not a recognised call is refused, so that
+    /// a call written in another form cannot skip the check (the failure of #75 itself).
+    #[test]
+    fn refuses_unrecognised_mentions() {
+        for call in [
+            "\"bash tools/ci/install-tools.sh cargo-fuzz\"",
+            "'bash tools/ci/install-tools.sh cargo-fuzz'",
+            "(bash tools/ci/install-tools.sh cargo-fuzz)",
+            "echo $(bash tools/ci/install-tools.sh cargo-fuzz)",
+            "true;bash tools/ci/install-tools.sh cargo-fuzz",
+            "true&&bash tools/ci/install-tools.sh cargo-fuzz",
+            ". tools/ci/install-tools.sh cargo-fuzz",
+            "echo \"install-tools.sh failed\"",
+            "bash tools/ci/install-tools.sh rust # see install-tools.sh",
+            "bash tools/ci/install-tools.sh rust; bash tools/ci/install-tools.sh;",
+            "s=tools/ci/install-tools.sh",
+        ] {
+            let errors = call_errors(call, SCRIPT);
+            assert!(
+                errors.len() == 1 && errors[0].contains("unrecognised mention of install-tools.sh"),
+                "{call}: {errors:?}"
+            );
+        }
+        // Path filters name the script without running it; a lookalike item does not pass.
+        let filters = "on:\n  push:\n    paths: ['tools/ci/install-tools.sh', \"docs/**\"]\n  \
+                       pull_request:\n    paths-ignore:\n      # pinned installer\n      \
+                       - 'tools/ci/install-tools.sh'\n      - tools/**\n";
+        let flow = vec![("w.yml".to_owned(), filters.to_owned())];
+        assert_eq!(tool_lock_errors(&flow, SCRIPT, LOCK), Vec::<String>::new());
+        for bad in [
+            "    branches:\n      - 'tools/ci/install-tools.sh'\n",
+            "    paths:\n      - x;tools/ci/install-tools.sh\n",
+            "    paths: [x, $(bash tools/ci/install-tools.sh cargo-fuzz)]\n",
+        ] {
+            let flow = vec![("w.yml".to_owned(), format!("on:\n  push:\n{bad}"))];
+            let errors = tool_lock_errors(&flow, SCRIPT, LOCK);
+            assert_eq!(errors.len(), 1, "{bad}: {errors:?}");
         }
     }
 
@@ -879,6 +1253,34 @@ mod tests {
                 "{errors:?}"
             );
         }
+        // Every way of writing the call, recognised or not, is refused without the pin.
+        let i = "bash tools/ci/install-tools.sh cargo-fuzz";
+        for run in [
+            i.to_owned(),
+            format!("FOO=1 {i}"),
+            format!("env FOO=1 {i}"),
+            format!("timeout 600 {i}"),
+            format!("bash -e {}", &i[5..]),
+            format!("bash -c '{}'", &i[5..]),
+            format!("|\n          {{ {i}; }}"),
+            format!("|\n          if true; then {i}; fi"),
+            format!(">\n          {i}"),
+            format!(
+                "|\n          {} \\\n            cargo-fuzz",
+                &i[..i.len() - 11]
+            ),
+            "|\n          s=tools/ci/install-tools.sh\n          bash \"$s\" cargo-fuzz".to_owned(),
+            format!("echo cargo-fuzz | xargs {}", &i[..i.len() - 11]),
+        ] {
+            let flow = vec![(
+                "w.yml".to_owned(),
+                format!("    steps:\n      - run: {run}\n"),
+            )];
+            assert!(
+                !tool_lock_errors(&flow, SCRIPT, &without).is_empty(),
+                "{run}"
+            );
+        }
         for (call, what) in [
             ("bash tools/ci/install-tools.sh maturin", "unknown"),
             ("bash ./tools/ci/install-tools.sh \"maturin\"", "unknown"),
@@ -890,13 +1292,13 @@ mod tests {
                 "bash tools/ci/install-tools.sh version \"$T\"",
                 "literal tool name",
             ),
+            (
+                "bash tools/ci/install-tools.sh version a.*",
+                "literal tool name",
+            ),
             ("bash tools/ci/install-tools.sh", "without a subcommand"),
         ] {
-            let flow = vec![(
-                "w.yml".to_owned(),
-                format!("    steps:\n      - run: {call}\n"),
-            )];
-            let errors = tool_lock_errors(&flow, SCRIPT, LOCK);
+            let errors = call_errors(call, SCRIPT);
             assert!(
                 errors.len() == 1 && errors[0].contains(what),
                 "{call}: {errors:?}"
