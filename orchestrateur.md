@@ -175,3 +175,9 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
     - archi : #72, à clore, puisque `-Check` est conforme ;
     - nuit : #75, à clore après une nuit verte.
   - Les quatre responsables sont prévenus.
+  - #86 fusionnée (4673cc4) après relecture. Il y a trois cas de résolution, dont un seul report admis : le travail neuf que 05 §5 place dans une phase suivante, décidé par l'orchestrateur.
+  - **À faire par l'orchestrateur** :
+    - créer la section « Reliquat par phase » de `feuille-de-route.md` dès le premier report ;
+    - rouvrir les issues reportées à l'ouverture de leur phase.
+  - #72 close. #76 close. #43 à #45 seront closes à la fusion de la #87.
+- **T11 (visualiseur)** : arrêt sur VZ1 et VZ6. Rerun 0.38.1 tire tokio, hyper, ring (code C) et de la télémétrie. Le dev propose un fichier Parquet des positions, avec une conversion vers `.rrd` par un script Python optionnel. Décision d'archi-sécu attendue.
