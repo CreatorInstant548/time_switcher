@@ -1,0 +1,2 @@
+// Toy world for one simulated year (ts-sim run, phase 0). Test scenario, no game value.
+Scenario(name: "toy_year", world: Toy, duration: Days(365))
