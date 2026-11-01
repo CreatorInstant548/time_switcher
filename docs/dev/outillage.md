@@ -199,7 +199,7 @@ En cas d'erreur interne, la commande est refusée.
 
 `cargo xtask merge` a remplacé `merge-pr.ps1` (T3) : c'est le **seul chemin de fusion**. C'est un chemin sensible, validé par archi-sécu. Le détail est dans [xtask](xtask.md) §6. Dans l'ordre, le premier contrôle qui échoue arrête tout. Les numéros sont ceux qu'affiche la commande (`[1]`, `[3-4]`, etc.) :
 - **[1] Copie principale** propre, sur `main`, mise à jour par `git pull --ff-only`. Le binaire doit être construit depuis `main` (J2). La commande est refusée en mode CI.
-- **[2] `verify-main`** (approbations de chaque commit de `main` qui touche un chemin sensible, réglages GitHub et attestation du *ruleset*) et **`hooks verify`** : une anomalie suspend les fusions. Depuis T3e-2 (AS-31 E3), un commit non sensible n'a plus à venir d'une PR avec `ci-ok` aux yeux de `verify-main` : le *ruleset* `main` l'impose (§6.4).
+- **[2] `verify-main`** (approbations de chaque commit de `main` qui touche un chemin sensible, réglages GitHub et attestation du *ruleset*) et **`hooks verify`** : une anomalie suspend les fusions. Depuis T3e-2 (AS-31 E3), un commit non sensible n'a plus à venir d'une PR avec `ci-ok` aux yeux de `verify-main` lancé par `merge` : le *ruleset* `main` l'impose (§6.4). La tâche de nuit rétablit J3 (squash d'une PR fusionnée) sur ces commits, par `verify-main --origin` : chaque nuit, J3 et G3 sur les 7 derniers jours ; le dimanche, J3 seul sur tout l'historique (AS-42, AS-44 ; `docs/dev/ci.md` §4).
   - **Exception de réparation (AS-38)** : un écart des réglages **seul** (historique et crochets conformes) laisse passer une **PR de réparation**, vérifiée à l'étape **[6a]**, juste après la liste des fichiers. Il faut que toutes ces conditions soient réunies :
     - la PR ne modifie **que** `tools/ci/repo-settings.json`, selon la liste complète de l'étape [6] : les deux chemins d'un renommage, le diff local compris. La comparaison se fait octet par octet : une variante de casse ou un nom court 8.3 du fichier est un autre chemin (G8, B1) ;
     - le fichier de la tête passe les **invariants S2** du script de la copie principale, égal à `origin/main` (S4), et jamais ceux de la PR. Ces invariants fixent la valeur sûre de chaque champ (AS-41, §6.2) : la voie de réparation ne peut donc pas entériner un affaiblissement fait à la main sur GitHub ;
@@ -350,7 +350,7 @@ Codes de sortie : 0 conforme, 1 écart ou écriture refusée, 2 usage, préalabl
 
 | Barrière | Serveur (GitHub) | Local |
 |---|---|---|
-| PR obligatoire, `ci-ok` de GitHub Actions, branche à jour, historique linéaire | *ruleset* `main` | `cargo xtask merge` (G3, toujours en place, E5) ; `verify-main` seulement pour les commits sensibles (contrôle d'origine retiré par T3e-2) |
+| PR obligatoire, `ci-ok` de GitHub Actions, branche à jour, historique linéaire | *ruleset* `main` | `cargo xtask merge` (G3, toujours en place, E5) ; `verify-main` pour les commits sensibles (contrôle d'origine retiré de `merge` par T3e-2) ; chaque nuit, J3 et G3 sur les commits de la semaine par `verify-main --origin 7d`, et J3 sur tout l'historique par `all` le dimanche (AS-42, AS-44) |
 | Poussée forcée vers `main` | *ruleset* `main` | — (retiré par T3e-1) ; `reference-transaction` pour la copie locale de `main` |
 | Poussée forcée vers `pilotage` et les autres branches | *ruleset* `pilotage` (aucun pour les branches de tâche) | `pre-push`, `guard-git` |
 | Suppression de `main` et de `pilotage` | *rulesets* | `pre-push`, `guard-git` ; `reference-transaction` pour la copie locale de `main` |
