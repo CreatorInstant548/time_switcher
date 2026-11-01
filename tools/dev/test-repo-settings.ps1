@@ -42,7 +42,18 @@ $mutations = [ordered]@{
   'fusion classique'                 = { param($c) $c.repo['allow_merge_commit'] = $true }
   'rebase'                           = { param($c) $c.repo['allow_rebase_merge'] = $true }
   'fusion automatique'               = { param($c) $c.repo['allow_auto_merge'] = $true }
-  'repo : clé hors liste'            = { param($c) $c.repo['visibility'] = 'public' }
+  'repo : clé hors liste'            = { param($c) $c.repo['has_wiki'] = $false }
+  'private repository'               = { param($c) $c.repo['visibility'] = 'private' }
+  'no secret scanning'               = { param($c) $c.repo['security_and_analysis']['secret_scanning']['status'] = 'disabled' }
+  'no push protection'               = { param($c) $c.repo['security_and_analysis'].Remove('secret_scanning_push_protection') }
+  'extra security_and_analysis key'  = { param($c) $c.repo['security_and_analysis']['secret_scanning_validity_checks'] = @{ status = 'disabled' } }
+  'no vulnerability reporting'       = { param($c) $c.private_vulnerability_reporting['enabled'] = $false }
+  'no Dependabot security updates'   = { param($c) $c.repo['security_and_analysis']['dependabot_security_updates']['status'] = 'disabled' }
+  'interaction limit widened'        = { param($c) $c.interaction_limits['limit'] = 'existing_users' }
+  'interaction limit shortened'      = { param($c) $c.interaction_limits['expiry'] = 'one_day' }
+  'interaction limit section missing' = { param($c) $c.Remove('interaction_limits') }
+  'reporting section missing'        = { param($c) $c.Remove('private_vulnerability_reporting') }
+  'reporting section not an object'  = { param($c) $c['private_vulnerability_reporting'] = $true }
   'allowed_actions all'              = { param($c) $c.actions.permissions['allowed_actions'] = 'all' }
   'sans sha_pinning_required'        = { param($c) $c.actions.permissions.Remove('sha_pinning_required') }
   'motif hors liste'                 = { param($c) $c.actions.selected_actions['patterns_allowed'] = @($c.actions.selected_actions['patterns_allowed']) + 'evil/action@*' }
@@ -51,7 +62,8 @@ $mutations = [ordered]@{
   'actions vérifiées permises'       = { param($c) $c.actions.selected_actions['verified_allowed'] = $true }
   'jeton en écriture'                = { param($c) $c.actions.workflow['default_workflow_permissions'] = 'write' }
   'Actions qui approuvent'           = { param($c) $c.actions.workflow['can_approve_pull_request_reviews'] = $true }
-  'workflows des forks'              = { param($c) $c.actions.fork_pr_workflows_private_repos['run_workflows_from_fork_pull_requests'] = $true }
+  'fork PRs: first-timers only'      = { param($c) $c.actions.fork_pr_contributor_approval['approval_policy'] = 'first_time_contributors' }
+  'old private-repo fork section'    = { param($c) $c.actions['fork_pr_workflows_private_repos'] = @{ run_workflows_from_fork_pull_requests = $false } }
   'section en plus'                  = { param($c) $c['autre'] = @{} }
   'section actions manquante'        = { param($c) $c.actions.Remove('workflow') }
   'motif retiré, action utilisée'    = { param($c) $c.actions.selected_actions['patterns_allowed'] = @('actions/checkout@*') }
@@ -75,6 +87,8 @@ $pins = [ordered]@{
   pull_request           = @({ param($c) (Get-Rule $c 'ruleset_main' 'pull_request')['parameters'] }, $PullRequestParameters)
   required_status_checks = @({ param($c) (Get-Rule $c 'ruleset_main' 'required_status_checks')['parameters'] }, $StatusCheckParameters)
   repo                   = @({ param($c) $c.repo }, $RepoValues)
+  private_vulnerability_reporting = @({ param($c) $c.private_vulnerability_reporting }, $ReportingValues)
+  interaction_limits     = @({ param($c) $c.interaction_limits }, $InteractionValues)
 }
 foreach ($k in $ActionsValues.Keys) { $pins["actions.$k"] = @({ param($c) $c.actions[$k] }.GetNewClosure(), $ActionsValues[$k]) }
 foreach ($s in $pins.Keys) {
@@ -150,6 +164,20 @@ foreach ($c in @(@('~ALL', 'pilotage', $true), @('~DEFAULT_BRANCH', 'main', $tru
 
 # Attestation qui remplace R6.4 (AS-31, T3e-2) : Get-Drift complet, sur des réponses de l'API simulées.
 # Get-Api est redéfinie ici, après le chargement du script : Get-Drift appelle donc cette simulation.
+# AS-45 P2: interaction limit, against a fixed instant; absent, other limit, too close or unreadable
+# expiry: drift. ConvertFrom-Json may hand over a DateTime instead of the string.
+$now = [DateTimeOffset]::Parse('2026-11-01T12:00:00Z', [Globalization.CultureInfo]::InvariantCulture)
+foreach ($c in @(@('long expiry', @{ limit = 'collaborators_only'; origin = 'repository'; expires_at = '2027-04-30T12:00:00Z' }, 0),
+                 @('exactly 14 days', @{ limit = 'collaborators_only'; expires_at = '2026-11-15T12:00:00Z' }, 0),
+                 @('long expiry as DateTime', @{ limit = 'collaborators_only'; expires_at = [datetime]::new(2027, 1, 1, 0, 0, 0, [DateTimeKind]::Utc) }, 0),
+                 @('no limit', @{}, 1), @('null answer', $null, 1), @('other limit', @{ limit = 'existing_users'; expires_at = '2027-04-30T12:00:00Z' }, 1),
+                 @('expires in 13 days', @{ limit = 'collaborators_only'; expires_at = '2026-11-14T12:00:00Z' }, 1),
+                 @('already expired', @{ limit = 'collaborators_only'; expires_at = '2026-10-01T00:00:00Z' }, 1),
+                 @('no expiry', @{ limit = 'collaborators_only' }, 1), @('unreadable expiry', @{ limit = 'collaborators_only'; expires_at = 'soon' }, 1))) {
+  $d = [Collections.Generic.List[string]]::new(); Add-InteractionDrift $InteractionValues $c[1] $now $d
+  Check "interaction limit, $($c[0]): $($c[2]) drift(s), read $($d.Count) ($($d -join ' ; '))" ($d.Count -eq $c[2] -and -not ($d | Where-Object { [string]::IsNullOrWhiteSpace($_) }))
+}
+function Get-Expiry([int]$Days) { return [DateTimeOffset]::UtcNow.AddDays($Days).ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture) }
 function Copy-Json($V) { return ConvertFrom-Json (ConvertTo-Json -InputObject $V -Depth 30) -AsHashtable -Depth 50 -NoEnumerate }
 $cfg = New-Cfg
 function New-Fake {
@@ -159,6 +187,8 @@ function New-Fake {
     '/rulesets/10' = (Copy-Json $cfg.ruleset_pilotage) + @{ id = 10; current_user_can_bypass = 'never' }
     '/rules/branches/main?per_page=100' = @($EffectiveMain | ForEach-Object { @{ type = $_; ruleset_source_type = 'Repository'; ruleset_id = 9 } }) }
   foreach ($k in $ActionsApi.Keys) { $f[$ActionsApi[$k]] = Copy-Json $cfg.actions[$k] }
+  $f[$ReportingApi] = Copy-Json $cfg.private_vulnerability_reporting
+  $f[$InteractionApi] = @{ limit = $cfg.interaction_limits['limit']; origin = 'repository'; expires_at = (Get-Expiry 150) }
   return $f
 }
 function Get-Api([string]$Path, [int[]]$Allow = @()) {
@@ -197,13 +227,13 @@ $realDrift = ${function:Get-Drift}
 $DriftOut = $null
 function Get-Drift($C) { return , $script:DriftOut }
 try {
-  foreach ($c in @(@('liste vide renvoyée par Get-Drift', @(), 0, 'conforme à', 0), @('ligne d''écart vide', @(''), 2, 'ligne d''écart vide ou nulle', 0),
-                   @('ligne d''écart nulle', @($null), 2, 'ligne d''écart vide ou nulle', 0), @('ligne blanche parmi d''autres', @('x : écart', ' '), 2, 'vide ou nulle', 0))) {
+  foreach ($c in @(@('empty list returned by Get-Drift', @(), 0, 'conforme à', 0), @('empty drift line', @(''), 2, 'empty or null drift line', 0),
+                   @('null drift line', @($null), 2, 'empty or null drift line', 0), @('blank line among others', @('x : écart', ' '), 2, 'empty or null', 0))) {
     $DriftOut = [Collections.Generic.List[string]]::new(); foreach ($x in $c[1]) { $DriftOut.Add($x) }
     Test-CheckResult $c[0] { param($f) } $c[2] $c[3] $c[4]
   }
-  $DriftOut = $null; Test-CheckResult 'Get-Drift sans liste' { param($f) } 2 'liste attendue' 0
-  $DriftOut = @('x : écart'); Test-CheckResult 'Get-Drift en tableau' { param($f) } 2 'liste attendue' 0
+  $DriftOut = $null; Test-CheckResult 'Get-Drift without a list' { param($f) } 2 'list expected' 0
+  $DriftOut = @('x : écart'); Test-CheckResult 'Get-Drift returning an array' { param($f) } 2 'list expected' 0
 } finally { ${function:Get-Drift} = $realDrift }
 
 # Arguments et préalables S4, dans un dépôt jetable : copie « principale » clonée d'un dépôt nu local.
@@ -276,7 +306,7 @@ Check 'Read-Config lit le commit source, pas le disque' ($r -is [Collections.IDi
 Check 'Read-Config d''origin/main' ($o -is [Collections.IDictionary] -and $o.Contains('ruleset_main') -and -not $o.Contains('marque'))
 G -C $M checkout -q -- tools/ci/repo-settings.json
 $r = Run-Settings $M $S @('-Check', '-SourceCommit', $mark)
-Check "-SourceCommit : fichier du commit lu et refusé par S2 avant GitHub (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.Out -match 'sections attendues' -and $r.Out -notmatch 'distant')
+Check "-SourceCommit : fichier du commit lu et refusé par S2 avant GitHub (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.Out -match 'expected sections' -and $r.Out -notmatch 'distant')
 # AS-41 : un fichier affaibli dans la tête est refusé par S2, avec les invariants du script de la copie
 # principale (égal à origin/main par S4), même si la tête modifie aussi le script (refusé par ailleurs par
 # la condition 1 de merge).
@@ -305,7 +335,11 @@ Add-Content -LiteralPath $env:TS_FAKE_GH_LOG "$($args[-1])"
 $data = Get-Content -Raw -LiteralPath $env:TS_FAKE_GH_DATA | ConvertFrom-Json -AsHashtable -Depth 50
 $k = "$($args[-1])" -creplace '^repos/o/r', ''
 if ($args[0] -cne 'api' -or $args -contains '-X' -or -not $data.ContainsKey($k)) { exit 1 }
-ConvertTo-Json -InputObject $data[$k] -Depth 30 -Compress
+$v = $data[$k]
+if ($v -is [Collections.IDictionary] -and $v.Contains('__http')) {   # simulated HTTP error, printed like gh does
+  ConvertTo-Json -InputObject @{ message = 'simulated'; status = "$($v['__http'])" } -Compress; exit 1
+}
+ConvertTo-Json -InputObject $v -Depth 30 -Compress
 exit 0
 '@
 $env:TS_FAKE_GH_LOG = Join-Path $tmp 'gh.log'; $env:TS_FAKE_GH_DATA = Join-Path $tmp 'gh.json'
@@ -332,6 +366,49 @@ try {
   $r = Run-Faked { param($f) $f['/rulesets/9']['current_user_can_bypass'] = 'always' } @('-Check')
   Check "script entier, un champ qui dérive : code 1, une ligne ÉCART (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.DriftLines.Count -eq 1 -and
     $r.DriftLines[0] -cmatch '^  ÉCART : ruleset_main\.current_user_can_bypass : attendu "never", lu "always"' -and $r.Out -cmatch '-Check : 1 écart\(s\) avec ')
+  # Public repository as GitHub returns it (extra security_and_analysis keys are ignored); the
+  # private-repo fork endpoint (422 on a public repository) is never called.
+  $r = Run-Faked { param($f)
+    $f['']['private'] = $false
+    $f['']['security_and_analysis']['dependabot_security_updates'] = @{ status = 'enabled' }
+    $f['']['security_and_analysis']['secret_scanning_validity_checks'] = @{ status = 'disabled' }
+    $f['/actions/permissions/fork-pr-workflows-private-repos'] = @{ __http = 422 } } @('-Check')
+  Check "whole script, public repository: code 0, no drift line (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 0 -and $r.DriftLines.Count -eq 0 -and
+    $r.Calls -ccontains 'repos/o/r/actions/permissions/fork-pr-contributor-approval' -and $r.Calls -ccontains 'repos/o/r/private-vulnerability-reporting' -and
+    $r.Calls -ccontains 'repos/o/r/interaction-limits')
+  # AS-47: the fake gh notes every path; none is an endpoint reserved for private repositories.
+  Check "whole script, public repository: no private-repository endpoint called ($($r.Calls.Count) call(s): $($r.Calls -join ', '))" ($r.Calls.Count -gt 0 -and
+    -not ($r.Calls -cmatch 'fork-pr-workflows-private-repos'))
+  # Private repository: refused as non-public (code 1), the public-only endpoint answering 422 is a drift
+  # line, not an internal error.
+  $r = Run-Faked { param($f)
+    $f['']['visibility'] = 'private'; $f['']['private'] = $true
+    $f['']['security_and_analysis']['secret_scanning']['status'] = 'disabled'
+    $f['/actions/permissions/fork-pr-contributor-approval'] = @{ __http = 422 } } @('-Check')
+  Check "whole script, private repository: code 1, refused as non-public (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.DriftLines.Count -eq 3 -and
+    ($r.DriftLines -cmatch '^  ÉCART : repo\.visibility : attendu "public", lu "private"$').Count -eq 1 -and
+    ($r.DriftLines -cmatch '^  ÉCART : repo\.security_and_analysis\.secret_scanning\.status : attendu "enabled", lu "disabled"$').Count -eq 1 -and
+    ($r.DriftLines -cmatch '^  ÉCART : actions\.fork_pr_contributor_approval : .*\(HTTP 422\)$').Count -eq 1 -and
+    -not ($r.Calls -cmatch 'fork-pr-workflows-private-repos'))
+  # AS-45 P4: each P2 setting weakened on (public) GitHub gives exactly one drift line, code 1.
+  $weakened = [ordered]@{
+    'repository made private'      = @({ param($f) $f['']['visibility'] = 'private' }, '^  ÉCART : repo\.visibility : attendu "public", lu "private"$')
+    'secret scanning disabled'     = @({ param($f) $f['']['security_and_analysis']['secret_scanning']['status'] = 'disabled' }, 'repo\.security_and_analysis\.secret_scanning\.status : attendu "enabled", lu "disabled"$')
+    'push protection disabled'     = @({ param($f) $f['']['security_and_analysis']['secret_scanning_push_protection']['status'] = 'disabled' }, 'secret_scanning_push_protection\.status : attendu "enabled", lu "disabled"$')
+    'Dependabot updates disabled'  = @({ param($f) $f['']['security_and_analysis']['dependabot_security_updates']['status'] = 'disabled' }, 'dependabot_security_updates\.status : attendu "enabled", lu "disabled"$')
+    'security_and_analysis hidden' = @({ param($f) $f[''].Remove('security_and_analysis') }, 'repo\.security_and_analysis : absent de GitHub')
+    'fork PR approval weakened'    = @({ param($f) $f['/actions/permissions/fork-pr-contributor-approval']['approval_policy'] = 'first_time_contributors' }, 'approval_policy : attendu "all_external_contributors", lu "first_time_contributors"$')
+    'vulnerability reporting off'  = @({ param($f) $f[$ReportingApi]['enabled'] = $false }, '^  ÉCART : private_vulnerability_reporting\.enabled : attendu true, lu false$')
+    'no interaction limit'         = @({ param($f) $f[$InteractionApi] = @{} }, '^  ÉCART : interaction_limits\.limit: expected "collaborators_only", read null')
+    'interaction limit widened'    = @({ param($f) $f[$InteractionApi]['limit'] = 'existing_users' }, 'interaction_limits\.limit: expected "collaborators_only", read "existing_users"')
+    'interaction limit expiring'   = @({ param($f) $f[$InteractionApi]['expires_at'] = Get-Expiry 5 }, 'interaction_limits\.expires_at: .*less than 14 days away')
+    'interaction limit expired'    = @({ param($f) $f[$InteractionApi]['expires_at'] = Get-Expiry -3 }, 'interaction_limits\.expires_at: .*less than 14 days away')
+  }
+  foreach ($k in $weakened.Keys) {
+    $r = Run-Faked $weakened[$k][0] @('-Check')
+    Check "whole script, $k`: code 1, one drift line (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.DriftLines.Count -eq 1 -and
+      $r.DriftLines[0] -cmatch $weakened[$k][1] -and -not ($r.Calls -cmatch 'fork-pr-workflows-private-repos'))
+  }
   $r = Run-Faked { param($f) } @('-Check', '-SourceCommit', $weakSha)
   Check "script entier, fichier refusé par S2 : code 1 sans appel à GitHub (code $($r.Code), $($r.Calls.Count) appel(s) : $($r.Out.Trim()))" ($r.Code -eq 1 -and
     $r.Calls.Count -eq 0 -and $r.DriftLines.Count -eq 0 -and $r.Out -match 'repo\.allow_auto_merge doit valoir false')

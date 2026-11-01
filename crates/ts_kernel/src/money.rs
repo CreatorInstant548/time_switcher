@@ -1,31 +1,31 @@
-//! Argent entier : `Money` en centimes, barèmes en points de base, arrondi bancaire unique.
+//! Integer money: `Money` in cents, rates in basis points, a single banker's rounding.
 
 // spec: revues/architecture.md §6.3 ; carnet architecture-securite.md §9.9 K7
-/// Somme d'argent en **centimes d'écu**. Jamais de flottant.
+/// Sum of money in **cents of ecu**. Never a float.
 ///
-/// Addition, soustraction et négation sont vérifiées (`checked_*`) : elles rendent `None` au
-/// lieu d'enrouler. Il n'y a pas d'opérateur `+` ni `-`, pour que chaque dépassement soit
-/// traité par l'appelant (décidé).
+/// Addition, subtraction and negation are checked (`checked_*`): they return `None` instead
+/// of wrapping. There is no `+` or `-` operator, so that every overflow is handled by the
+/// caller (decided).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Money(i64);
 
 crate::assert_size!(Money, 8);
 
 impl Money {
-    /// Zéro.
+    /// Zero.
     pub const ZERO: Self = Self(0);
 
-    /// Somme de `cents` centimes.
+    /// A sum of `cents` cents.
     pub const fn from_cents(cents: i64) -> Self {
         Self(cents)
     }
 
-    /// Nombre de centimes.
+    /// Number of cents.
     pub const fn cents(self) -> i64 {
         self.0
     }
 
-    /// Somme, ou `None` en cas de dépassement.
+    /// Sum, or `None` on overflow.
     pub const fn checked_add(self, other: Self) -> Option<Self> {
         match self.0.checked_add(other.0) {
             Some(v) => Some(Self(v)),
@@ -33,7 +33,7 @@ impl Money {
         }
     }
 
-    /// Différence, ou `None` en cas de dépassement.
+    /// Difference, or `None` on overflow.
     pub const fn checked_sub(self, other: Self) -> Option<Self> {
         match self.0.checked_sub(other.0) {
             Some(v) => Some(Self(v)),
@@ -41,7 +41,7 @@ impl Money {
         }
     }
 
-    /// Opposé, ou `None` pour `i64::MIN` centimes.
+    /// Opposite, or `None` for `i64::MIN` cents.
     pub const fn checked_neg(self) -> Option<Self> {
         match self.0.checked_neg() {
             Some(v) => Some(Self(v)),
@@ -49,8 +49,8 @@ impl Money {
         }
     }
 
-    /// Part de la somme selon un barème : `self × rate / 10 000`, arrondie au pair par
-    /// [`div_round_half_even`] (calcul en `i128`), ou `None` si le résultat sort de `i64`.
+    /// Share of the sum under a rate: `self × rate / 10 000`, rounded half to even by
+    /// [`div_round_half_even`] (computed in `i128`), or `None` if the result leaves `i64`.
     pub fn checked_apply(self, rate: BasisPoints) -> Option<Self> {
         let product = i128::from(self.0) * i128::from(rate.0);
         let rounded = div_round_half_even(product, i128::from(BasisPoints::DENOMINATOR))?;
@@ -59,40 +59,40 @@ impl Money {
 }
 
 // spec: revues/architecture.md §6.3 ; carnet architecture-securite.md §9.9 K7
-/// Barème en **points de base** : 10 000 points valent 100 %. Négatif permis (remise, perte).
+/// Rate in **basis points**: 10 000 points are 100%. Negative allowed (discount, loss).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct BasisPoints(i64);
 
 crate::assert_size!(BasisPoints, 8);
 
 impl BasisPoints {
-    /// Points de base pour 100 %.
+    /// Basis points for 100%.
     pub const DENOMINATOR: i64 = 10_000;
 
-    /// Barème de `points` points de base.
+    /// A rate of `points` basis points.
     pub const fn new(points: i64) -> Self {
         Self(points)
     }
 
-    /// Nombre de points de base.
+    /// Number of basis points.
     pub const fn points(self) -> i64 {
         self.0
     }
 }
 
 // spec: revues/architecture.md §6.3 ; carnet architecture-securite.md §9.9 K7
-/// **Règle d'arrondi unique du cœur** : `numerator / denominator` arrondi au plus proche, les
-/// cas à mi-chemin allant à l'entier **pair** (arrondi bancaire). La règle est symétrique :
-/// l'arrondi de `−x` est l'opposé de celui de `x`.
+/// **The single rounding rule of the core**: `numerator / denominator` rounded to nearest,
+/// halfway cases going to the **even** integer (banker's rounding). The rule is symmetric:
+/// the rounding of `−x` is the opposite of that of `x`.
 ///
-/// Rend `None` si `denominator <= 0`. Ne déborde jamais : le quotient ne bouge que si le reste
-/// est non nul, donc si `denominator >= 2`, et le quotient tronqué vaut alors au plus
-/// `|numerator| / 2` en valeur absolue.
+/// Returns `None` if `denominator <= 0`. Never overflows: the quotient only moves if the
+/// remainder is non-zero, hence if `denominator >= 2`, and the truncated quotient then is at
+/// most `|numerator| / 2` in absolute value.
 pub fn div_round_half_even(numerator: i128, denominator: i128) -> Option<i128> {
     if denominator <= 0 {
         return None;
     }
-    // Division tronquée vers zéro : le reste a le signe du numérateur.
+    // Division truncated toward zero: the remainder has the sign of the numerator.
     let quotient = numerator / denominator;
     let remainder = numerator % denominator;
     let twice = remainder.unsigned_abs() * 2;
@@ -126,9 +126,9 @@ mod tests {
 
     #[test]
     fn non_half_cases_go_to_nearest() {
-        assert_eq!(div_round_half_even(6, 4), Some(2)); // 1,5
-        assert_eq!(div_round_half_even(5, 4), Some(1)); // 1,25
-        assert_eq!(div_round_half_even(7, 4), Some(2)); // 1,75
+        assert_eq!(div_round_half_even(6, 4), Some(2)); // 1.5
+        assert_eq!(div_round_half_even(5, 4), Some(1)); // 1.25
+        assert_eq!(div_round_half_even(7, 4), Some(2)); // 1.75
         assert_eq!(div_round_half_even(-5, 4), Some(-1));
         assert_eq!(div_round_half_even(-7, 4), Some(-2));
         assert_eq!(div_round_half_even(9, 3), Some(3));
@@ -163,13 +163,13 @@ mod tests {
     fn apply_rate_in_basis_points() {
         let m = Money::from_cents;
         assert_eq!(m(10_000).checked_apply(bps(1_950)), Some(m(1_950)));
-        // 0,5 centime : au pair.
+        // 0.5 cent: to even.
         assert_eq!(m(1).checked_apply(bps(5_000)), Some(m(0)));
         assert_eq!(m(3).checked_apply(bps(5_000)), Some(m(2)));
         assert_eq!(m(-1).checked_apply(bps(5_000)), Some(m(0)));
         assert_eq!(m(-3).checked_apply(bps(5_000)), Some(m(-2)));
         assert_eq!(m(5).checked_apply(bps(-5_000)), Some(m(-2)));
-        // 2,5 % de 1,00 écu = 2,5 centimes.
+        // 2.5% of 1.00 ecu = 2.5 cents.
         assert_eq!(m(100).checked_apply(bps(250)), Some(m(2)));
         assert_eq!(m(100).checked_apply(bps(350)), Some(m(4)));
         assert_eq!(m(123).checked_apply(bps(0)), Some(Money::ZERO));

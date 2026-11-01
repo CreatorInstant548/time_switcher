@@ -260,13 +260,15 @@ impl Repo {
         }
     }
 
-    /// Corps de tous les commentaires d'une PR.
+    /// Bodies of the PR comments written by the repository owner ([`by_owner`], AS-45 P3); every
+    /// other comment is ignored. Used by `merge`, `verify-main` and the carry-over (AS-40).
     pub fn comments(&self, pr: u64) -> Result<Vec<String>, String> {
         let all = self.api_all(&format!(
             "repos/{}/issues/{pr}/comments?per_page=100",
             self.slug
         ))?;
         all.iter()
+            .filter(|c| by_owner(c, &self.slug))
             .map(|c| {
                 c["body"]
                     .as_str()
@@ -321,21 +323,13 @@ impl Repo {
                 "distant hors de GitHub : issue « {title} » impossible"
             ));
         }
-        let list = self.gh(&[
-            "issue",
-            "list",
-            "-R",
-            &self.slug,
-            "--state",
-            "open",
-            "--label",
-            ISSUE_LABEL,
-            "--limit",
-            "500",
-            "--json",
-            "number,title,body",
-        ])?;
-        for i in pages(&list)? {
+        // Read through the API, which gives the author association that `gh issue list` lacks:
+        // only an issue of the owner can stand for the anomaly (AS-45 P3); pull requests are skipped.
+        let list = self.api_all(&issues_path(&self.slug))?;
+        for i in list
+            .iter()
+            .filter(|i| i.get("pull_request").is_none() && by_owner(i, &self.slug))
+        {
             let text = format!(
                 "{} {}",
                 i["title"].as_str().unwrap_or(""),
@@ -429,6 +423,34 @@ pub fn judge_ci(
         0 => Err(format!("aucun ci-ok de {CI_WORKFLOW} sur {sha} (G3)")),
         _ => Ok(()),
     }
+}
+
+/// API path of the open anomaly issues (`role:architecture`), all pages.
+pub fn issues_path(slug: &str) -> String {
+    format!("repos/{slug}/issues?state=open&labels={ISSUE_LABEL}&per_page=100")
+}
+
+/// AS-45 P3: a comment or issue counts only when its author is the repository owner: login equal
+/// to the owner part of `slug` (logins are unique regardless of case), `author_association` equal
+/// to `OWNER`, and account type `User`. On a public repository anyone can write
+/// `review-ok: <sha>`; the three conditions are all required.
+pub fn by_owner(item: &Value, slug: &str) -> bool {
+    let Some((owner, _)) = slug.split_once('/') else {
+        return false;
+    };
+    !owner.is_empty()
+        && item["user"]["login"]
+            .as_str()
+            .is_some_and(|l| l.eq_ignore_ascii_case(owner))
+        && item["author_association"].as_str() == Some("OWNER")
+        && item["user"]["type"].as_str() == Some("User")
+}
+
+/// A comment or issue of the owner `o` of the test slug `o/r`, as the API returns it.
+#[cfg(test)]
+pub fn owner_item(body: &str) -> Value {
+    serde_json::json!({"body": body, "user": {"login": "o", "type": "User"},
+                       "author_association": "OWNER"})
 }
 
 /// Un commentaire dont la **première ligne** est exactement `<tag>: <sha>` (I3) : une ligne citée
@@ -642,6 +664,79 @@ mod tests {
             .count();
         assert_eq!(creates, 1, "{calls:?}");
         let _ = std::fs::remove_dir_all(&repo.cache); // temporary issue body of this test only
+    }
+
+    /// AS-45 P3: the same approval text counts only from the owner; another account, a bot, or
+    /// another author association is ignored, in `comments` and in the anomaly issue lookup.
+    #[test]
+    fn keeps_only_the_owner_items() {
+        let text = format!("review-ok: {SHA}");
+        let owner = owner_item(&text);
+        assert!(by_owner(&owner, "o/r"));
+        let mut upper = owner.clone();
+        upper["user"]["login"] = json!("O");
+        assert!(by_owner(&upper, "o/r"));
+        let mut others = Vec::new();
+        for (path, value) in [
+            ("/user/login", json!("someone")),
+            ("/user/login", json!("o-bot")),
+            ("/user/login", Value::Null),
+            ("/user/type", json!("Bot")),
+            ("/user/type", json!("Organization")),
+            ("/user/type", Value::Null),
+            ("/author_association", json!("MEMBER")),
+            ("/author_association", json!("COLLABORATOR")),
+            ("/author_association", json!("CONTRIBUTOR")),
+            ("/author_association", json!("NONE")),
+            ("/author_association", json!("owner")),
+            ("/author_association", Value::Null),
+        ] {
+            let mut c = owner.clone();
+            *c.pointer_mut(path).unwrap() = value.clone();
+            assert!(!by_owner(&c, "o/r"), "{path} = {value}");
+            others.push(c);
+        }
+        let mut no_user = owner.clone();
+        no_user.as_object_mut().unwrap().remove("user");
+        assert!(!by_owner(&no_user, "o/r"));
+        assert!(!by_owner(&owner, "r") && !by_owner(&owner, "/r") && !by_owner(&owner, "x/r"));
+        // Through Repo::comments: only the owner's comment is returned, before any other check.
+        let (repo, log) = scripted(vec![ok(&json!(others).to_string())]);
+        assert!(repo.comments(7).unwrap().is_empty());
+        assert_eq!(
+            log.borrow().0,
+            ["gh api --paginate repos/o/r/issues/7/comments?per_page=100"]
+        );
+        let mut all = others.clone();
+        all.push(owner.clone());
+        let (repo, _) = scripted(vec![ok(&json!(all).to_string())]);
+        assert_eq!(repo.comments(7).unwrap(), std::slice::from_ref(&text));
+        assert!(approved(&repo.comments(7).unwrap(), "review-ok", SHA));
+        // An issue carrying the anomaly key counts only from the owner, and never a PR.
+        let issue = |mut v: Value| {
+            v["title"] = json!("anomaly k");
+            v["number"] = json!(3);
+            v
+        };
+        let mut pr = issue(owner.clone());
+        pr["pull_request"] = json!({});
+        let mut listed: Vec<Value> = others.iter().cloned().map(issue).collect();
+        listed.push(pr);
+        // The strangers' issues and the PR do not count: the issue is opened.
+        let (mut repo, log) = scripted(vec![ok(&json!(listed).to_string()), ok("u")]);
+        repo.cache = std::env::temp_dir().join(format!("xtask-owner-{}", std::process::id()));
+        repo.open_issue("k", "t", "b").unwrap();
+        let calls = log.borrow().0.clone();
+        assert_eq!(
+            calls[0],
+            format!("gh api --paginate {}", issues_path("o/r"))
+        );
+        assert!(calls[1].starts_with("gh issue create"), "{calls:?}");
+        let _ = std::fs::remove_dir_all(&repo.cache); // temporary issue body of this test only
+        // The owner's issue is reused: nothing is created.
+        let (repo, log) = scripted(vec![ok(&json!([issue(owner)]).to_string())]);
+        repo.open_issue("k", "t", "b").unwrap();
+        assert_eq!(log.borrow().0.len(), 1);
     }
 
     #[test]

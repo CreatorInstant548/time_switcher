@@ -1,27 +1,27 @@
-//! Identifiants stables : `StableId` et son allocateur.
+//! Stable identifiers: `StableId` and its allocator.
 
 use core::fmt;
 
-/// Bit de tête : marque l'espace de noms réservé à la carte (P28, K9).
+/// Leading bit: marks the namespace reserved for the map (P28, K9).
 const MAP_BIT: u64 = 1 << 63;
 
 // spec: revues/architecture.md §6.1 ; revues/generation.md §7.3, P28 ; carnet architecture-securite.md §9.9 K9
-/// Identité durable d'une entité référençable, jamais réutilisée.
+/// Durable identity of a referenceable entity, never reused.
 ///
-/// Deux espaces de noms, séparés par le **bit 63** (décidé, K9) :
-/// - bit 63 à 0 : entités créées en jeu, indices `0..=2^63 − 1`, données par
-///   [`StableIdAllocator`] ;
-/// - bit 63 à 1 : lieux de la carte générée (parcelles, bâtiments, rues…), seulement par
+/// Two namespaces, separated by **bit 63** (decided, K9):
+/// - bit 63 at 0: entities created in play, indices `0..=2^63 − 1`, handed out by
+///   [`StableIdAllocator`];
+/// - bit 63 at 1: places of the generated map (parcels, buildings, streets...), only through
 ///   [`StableId::map`].
 ///
-/// Aucune conversion publique depuis un entier : l'allocateur, [`StableId::map`] et
-/// [`StableId::from_snapshot_raw`] sont les seuls constructeurs.
+/// No public conversion from an integer: the allocator, [`StableId::map`] and
+/// [`StableId::from_snapshot_raw`] are the only constructors.
 ///
-/// **Jamais envoyé au client** (architecture §6.1) : il reçoit des poignées éphémères.
+/// **Never sent to the client** (architecture §6.1): it receives ephemeral handles.
 ///
-/// Les extraits `compile_fail` ci-dessous ont chacun un **témoin** qui compile, pour qu'ils ne
-/// puissent pas échouer pour une autre raison : rustdoc stable ne vérifie pas leur code
-/// d'erreur, qui reste écrit pour la relecture et pour nightly.
+/// Each `compile_fail` snippet below has a **witness** that compiles, so that it cannot fail
+/// for another reason: stable rustdoc does not check their error code, which stays written for
+/// review and for nightly.
 ///
 /// ```
 /// let _: ts_kernel::StableId = ts_kernel::StableId::from_snapshot_raw(5);
@@ -40,11 +40,11 @@ pub struct StableId(u64);
 crate::assert_size!(StableId, 8);
 
 impl StableId {
-    /// Plus grand indice d'un espace de noms : `2^63 − 1`.
+    /// Largest index of a namespace: `2^63 − 1`.
     pub const MAX_INDEX: u64 = MAP_BIT - 1;
 
-    /// Identifiant de lieu de la carte d'indice `index`, ou `None` si `index` dépasse
-    /// [`StableId::MAX_INDEX`]. Seul accès à l'espace de la carte (P28).
+    /// Identifier of the map place with index `index`, or `None` if `index` exceeds
+    /// [`StableId::MAX_INDEX`]. The only access to the map namespace (P28).
     pub const fn map(index: u64) -> Option<Self> {
         if index <= Self::MAX_INDEX {
             Some(Self(MAP_BIT | index))
@@ -53,23 +53,23 @@ impl StableId {
         }
     }
 
-    /// Vrai pour un identifiant de l'espace de la carte.
+    /// True for an identifier of the map namespace.
     pub const fn is_map(self) -> bool {
         self.0 & MAP_BIT != 0
     }
 
-    /// Indice dans son espace de noms, sans le bit 63.
+    /// Index within its namespace, without bit 63.
     pub const fn index(self) -> u64 {
         self.0 & Self::MAX_INDEX
     }
 
-    /// Décodage d'un instantané. **Réservé à `ts_persist`** : aucune autre crate ne fabrique
-    /// un identifiant depuis un entier.
+    /// Decoding of a snapshot. **Reserved to `ts_persist`**: no other crate builds an
+    /// identifier from an integer.
     pub const fn from_snapshot_raw(raw: u64) -> Self {
         Self(raw)
     }
 
-    /// Valeur brute, pour l'encodage d'un instantané. **Réservé à `ts_persist`.**
+    /// Raw value, for the encoding of a snapshot. **Reserved to `ts_persist`.**
     pub const fn to_snapshot_raw(self) -> u64 {
         self.0
     }
@@ -83,16 +83,16 @@ impl fmt::Debug for StableId {
 }
 
 // spec: revues/architecture.md §6.1 ; carnet architecture-securite.md §9.9 K9
-/// Compteur du monde qui alloue les [`StableId`] des entités créées en jeu.
+/// Counter of the world that allocates the [`StableId`]s of entities created in play.
 ///
-/// Il n'est ni `Clone` ni `Default` : une copie, ou une remise à zéro implicite
-/// (`std::mem::take`, `unwrap_or_default`, `..Default::default()`, `#[derive(Default)]` sur un
-/// état qui le contient), allouerait de nouveau des identifiants déjà rendus. Un monde neuf
-/// l'obtient par [`StableIdAllocator::for_new_world`] seulement. Il s'arrête après `2^63 − 1`
-/// (K9) : au-delà, [`StableIdAllocator::allocate`] rend `None`, sans jamais déborder dans
-/// l'espace de la carte.
+/// It is neither `Clone` nor `Default`: a copy, or an implicit reset
+/// (`std::mem::take`, `unwrap_or_default`, `..Default::default()`, `#[derive(Default)]` on a
+/// state that contains it), would allocate identifiers that were already handed out again. A
+/// new world obtains it only through [`StableIdAllocator::for_new_world`]. It stops after
+/// `2^63 − 1` (K9): beyond that, [`StableIdAllocator::allocate`] returns `None`, and never
+/// overflows into the map namespace.
 ///
-/// Témoin, puis les deux refus :
+/// Witness, then the two refusals:
 ///
 /// ```
 /// let mut alloc = ts_kernel::StableIdAllocator::for_new_world();
@@ -109,18 +109,18 @@ impl fmt::Debug for StableId {
 /// ```
 #[derive(Debug, PartialEq, Eq)]
 pub struct StableIdAllocator {
-    /// Prochain indice ; `MAP_BIT` signifie « épuisé ».
+    /// Next index; `MAP_BIT` means "exhausted".
     next: u64,
 }
 
 impl StableIdAllocator {
-    /// Allocateur d'un **monde neuf** : le premier identifiant est d'indice 0. Un monde chargé
-    /// reprend son compteur par [`StableIdAllocator::from_snapshot_raw`].
+    /// Allocator of a **new world**: the first identifier has index 0. A loaded world
+    /// resumes its counter through [`StableIdAllocator::from_snapshot_raw`].
     pub const fn for_new_world() -> Self {
         Self { next: 0 }
     }
 
-    /// Nouvel identifiant, jamais rendu auparavant, ou `None` si l'espace est épuisé.
+    /// New identifier, never handed out before, or `None` if the namespace is exhausted.
     pub const fn allocate(&mut self) -> Option<StableId> {
         if self.next <= StableId::MAX_INDEX {
             let id = StableId(self.next);
@@ -131,7 +131,7 @@ impl StableIdAllocator {
         }
     }
 
-    /// Décodage d'un instantané : `None` si `next` dépasse `2^63`. **Réservé à `ts_persist`.**
+    /// Decoding of a snapshot: `None` if `next` exceeds `2^63`. **Reserved to `ts_persist`.**
     pub const fn from_snapshot_raw(next: u64) -> Option<Self> {
         if next <= MAP_BIT {
             Some(Self { next })
@@ -140,7 +140,7 @@ impl StableIdAllocator {
         }
     }
 
-    /// Prochain indice, pour l'encodage d'un instantané. **Réservé à `ts_persist`.**
+    /// Next index, for the encoding of a snapshot. **Reserved to `ts_persist`.**
     pub const fn to_snapshot_raw(&self) -> u64 {
         self.next
     }
