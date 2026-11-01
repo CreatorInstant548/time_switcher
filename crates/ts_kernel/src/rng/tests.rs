@@ -1,5 +1,5 @@
 // spec: carnet architecture-securite.md §3.4 SEC0-22 ; §9.9 K2 à K6
-//! Tests de l'aléa à clé : contextes, disposition, uniformité, indépendance et M27.
+//! Tests of the keyed randomness: contexts, layout, uniformity, independence and M27.
 
 use std::collections::BTreeSet;
 
@@ -27,7 +27,7 @@ fn words(bytes: &[u8]) -> impl Iterator<Item = u64> + '_ {
 #[test]
 fn contexts_are_built_from_names() {
     for (rank, s) in Stream::ALL.into_iter().enumerate() {
-        assert_eq!(s as usize, rank, "rang de {s:?}");
+        assert_eq!(s as usize, rank, "rank of {s:?}");
         assert_eq!(s.name(), format!("{s:?}"));
         assert_eq!(
             s.context(),
@@ -39,8 +39,8 @@ fn contexts_are_built_from_names() {
     assert!(!contexts.contains(COSMETIC_CONTEXT));
 }
 
-/// Rang attendu de chaque flux, par un `match` exhaustif sans joker : un flux ajouté oblige à
-/// écrire son rang ici, et un rang changé fait échouer le test.
+/// Expected rank of each stream, by an exhaustive `match` with no wildcard: an added stream
+/// forces its rank to be written here, and a changed rank fails the test.
 const fn expected_rank(s: Stream) -> usize {
     match s {
         Stream::Ai => 0,
@@ -145,8 +145,8 @@ fn draw_is_pure() {
     }
 }
 
-/// Chi-deux sur 1 024 bacs : 1 023 degrés de liberté, moyenne 1 023, écart type ≈ 45,2. Les
-/// bornes à ± 4 écarts types refusent aussi une sortie trop régulière.
+/// Chi-squared over 1,024 bins: 1,023 degrees of freedom, mean 1,023, standard deviation ≈
+/// 45.2. The bounds at ± 4 standard deviations also reject an output that is too regular.
 fn assert_uniform(values: impl Iterator<Item = u64>, bin: impl Fn(u64) -> usize, what: &str) {
     let mut counts = [0u64; 1024];
     let mut n = 0u64;
@@ -159,7 +159,10 @@ fn assert_uniform(values: impl Iterator<Item = u64>, bin: impl Fn(u64) -> usize,
         .iter()
         .map(|&c| (c as f64 - expected).powi(2) / expected)
         .sum();
-    assert!((842.0..1204.0).contains(&chi2), "{what} : chi-deux {chi2}");
+    assert!(
+        (842.0..1204.0).contains(&chi2),
+        "{what}: chi-squared {chi2}"
+    );
 }
 
 #[test]
@@ -170,23 +173,23 @@ fn chi_square_over_a_million_draws() {
     assert_uniform(
         by_subject(),
         |v| (v >> 54) as usize,
-        "bits forts, par sujet",
+        "high bits, by subject",
     );
     assert_uniform(
         by_subject(),
         |v| (v & 1023) as usize,
-        "bits faibles, par sujet",
+        "low bits, by subject",
     );
     let by_slot = (0..125_000u64).flat_map(|i| draw_block(key, sid(5), i, 1));
     assert_uniform(
         by_slot,
         |v| (v >> 27 & 1023) as usize,
-        "bits du milieu, par créneau",
+        "middle bits, by slot",
     );
 }
 
-/// Chi-deux conjoint : les 5 bits forts de deux tirages voisins forment un bac sur 1 024. Une
-/// dépendance entre voisins déséquilibre les bacs.
+/// Joint chi-squared: the 5 high bits of two neighbouring draws form one bin out of 1,024. A
+/// dependence between neighbours unbalances the bins.
 #[test]
 fn joint_chi_square_of_neighbouring_draws() {
     let keys = keys();
@@ -194,19 +197,23 @@ fn joint_chi_square_of_neighbouring_draws() {
     let joint = |a: u64, b: u64| (a >> 59) << 5 | b >> 59;
     let slots =
         (0..1_000_000u64).map(|i| joint(draw(key, sid(7), i, 0), draw(key, sid(7), i + 1, 0)));
-    assert_uniform(slots, |v| v as usize, "créneaux voisins, 5 × 5 bits");
+    assert_uniform(slots, |v| v as usize, "neighbouring slots, 5 × 5 bits");
     let subjects =
         (0..1_000_000u64).map(|i| joint(draw(key, sid(i), 3, 0), draw(key, sid(i + 1), 3, 0)));
-    assert_uniform(subjects, |v| v as usize, "sujets voisins, 5 × 5 bits");
+    assert_uniform(
+        subjects,
+        |v| v as usize,
+        "neighbouring subjects, 5 × 5 bits",
+    );
 }
 
-/// Équilibre des bits de `a ^ b` sur 10⁵ paires : chaque bit vaut 1 dans la moitié des cas, à
-/// ± 4 écarts types (σ ≈ 158), si les deux suites sont indépendantes.
+/// Balance of the bits of `a ^ b` over 10⁵ pairs: each bit is 1 in half of the cases, within
+/// ± 4 standard deviations (σ ≈ 158), if the two sequences are independent.
 fn assert_independent(pairs: impl Iterator<Item = (u64, u64)>, what: &str) {
     let mut ones = [0u32; 64];
     let mut n = 0u32;
     for (a, b) in pairs {
-        assert_ne!(a, b, "{what} : valeurs égales");
+        assert_ne!(a, b, "{what}: equal values");
         let x = a ^ b;
         for (bit, count) in ones.iter_mut().enumerate() {
             *count += (x >> bit & 1) as u32;
@@ -215,7 +222,10 @@ fn assert_independent(pairs: impl Iterator<Item = (u64, u64)>, what: &str) {
     }
     for (bit, &count) in ones.iter().enumerate() {
         let deviation = (f64::from(count) - f64::from(n) / 2.0).abs();
-        assert!(deviation < 633.0, "{what} : bit {bit}, écart {deviation}");
+        assert!(
+            deviation < 633.0,
+            "{what}: bit {bit}, deviation {deviation}"
+        );
     }
 }
 
@@ -226,23 +236,23 @@ fn streams_slots_purposes_and_blocks_are_independent() {
     let n = 100_000u64;
     assert_independent(
         (0..n).map(|i| (draw(ai, sid(i), 4, 0), draw(combat, sid(i), 4, 0))),
-        "flux",
+        "streams",
     );
     assert_independent(
         (0..n).map(|i| (draw(ai, sid(i), 4, 0), draw(ai, sid(i), 5, 0))),
-        "créneaux voisins",
+        "neighbouring slots",
     );
     assert_independent(
         (0..n).map(|i| (draw(ai, sid(3), i, 0), draw(ai, sid(3), i + 1, 0))),
-        "créneaux successifs",
+        "successive slots",
     );
     assert_independent(
         (0..n).map(|i| (draw(ai, sid(i), 0, 0), draw(ai, sid(i), 0, 1))),
-        "usages",
+        "purposes",
     );
     assert_independent(
         (0..n).map(|i| (draw(ai, sid(i), 0, 0), draw(ai, sid(i | 1 << 63), 0, 0))),
-        "espace du jeu et de la carte",
+        "game and map namespaces",
     );
     assert_independent(
         (0..n).map(|i| {
@@ -252,12 +262,12 @@ fn streams_slots_purposes_and_blocks_are_independent() {
             );
             (b0[7], b1[0])
         }),
-        "blocs successifs",
+        "successive blocks",
     );
 }
 
-/// M27 : sur 10⁵ graines cosmétiques, aucune n'est égale à un mot d'une clé (monde, flux,
-/// racine cosmétique, sous-clé HChaCha) ni à une sortie de l'aléa.
+/// M27: over 10⁵ cosmetic seeds, none equals a word of a key (world, stream, cosmetic root,
+/// HChaCha subkey) nor an output of the randomness.
 #[test]
 fn m27_cosmetic_values_are_never_key_or_rng_state() {
     let world = WorldKey::from_bytes(*b"time_switcher_t5");
@@ -282,20 +292,13 @@ fn m27_cosmetic_values_are_never_key_or_rng_state() {
             let seed = keys.cosmetic_seed(usage, sid(i), 0).value();
             assert!(
                 !secret.contains(&seed),
-                "graine cosmétique {i} ({usage}) = un secret"
+                "cosmetic seed {i} ({usage}) = a secret"
             );
             cosmetic.insert(seed);
         }
     }
-    assert_eq!(
-        cosmetic.len() as u64,
-        2 * n,
-        "graines cosmétiques en double"
-    );
-    assert!(
-        secret.len() > 1_000_000,
-        "échantillon de secrets trop petit"
-    );
+    assert_eq!(cosmetic.len() as u64, 2 * n, "duplicate cosmetic seeds");
+    assert!(secret.len() > 1_000_000, "secret sample too small");
 }
 
 #[test]
@@ -310,12 +313,13 @@ fn cosmetic_seed_depends_on_every_input() {
     assert_ne!(base, other.cosmetic_seed("hair", sid(1), 2));
 }
 
-/// R5 : coût d'un bloc, HChaCha compris (chaque appel a son propre *nonce*). Le cœur interdit de
-/// lire l'horloge (`clippy.toml`), tests compris : la durée se mesure de l'extérieur, en lançant
-/// le binaire de test avec et sans ce test (`--ignored --exact rng::tests::block_cost_r5`),
-/// puis en divisant l'écart par le nombre de blocs.
+/// R5: cost of one block, HChaCha included (each call has its own *nonce*). The core forbids
+/// reading the clock (`clippy.toml`), tests included: the duration is measured from outside,
+/// by running the test binary with and without this test
+/// (`--ignored --exact rng::tests::block_cost_r5`), then dividing the difference by the
+/// number of blocks.
 #[test]
-#[ignore = "mesure R5, chronométrée de l'extérieur"]
+#[ignore = "R5 measurement, timed from outside"]
 fn block_cost_r5() {
     let keys = keys();
     let key = keys.get(Stream::Ai);
@@ -326,5 +330,5 @@ fn block_cost_r5() {
     assert_ne!(std::hint::black_box(acc), 0);
 }
 
-/// Nombre de blocs de la mesure R5.
+/// Number of blocks of the R5 measurement.
 const BLOCK_COST_ITERATIONS: u64 = 10_000_000;
