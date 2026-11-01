@@ -14,8 +14,8 @@
 
 use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 use ts_kernel::{
-    LodComplete, MemorySnapshot, RunReport, Sim, SimConfig, SimTime, SnapshotScope, StableIndex,
-    StateLayout, StopCondition, Threads, state_hash_digest,
+    LodComplete, MemorySnapshot, ParallelPhases, RunReport, Sim, SimConfig, SimTime, SnapshotScope,
+    StableIndex, StateLayout, StopCondition, Threads, state_hash_digest,
 };
 use ts_persist::{Codec, Limits, decode_snapshot, encode_snapshot};
 use ts_toy::town::{Execution, TownSpec, generate};
@@ -63,9 +63,13 @@ pub fn pool(threads: Threads) {
     assert_eq!(pool.thread_num(), n);
 }
 
+/// With [`ParallelPhases::Always`]: on 4 threads, every phase runs on the parallel executor,
+/// as before issue #67, the most demanding case for the proof. The default policy reaches
+/// the same values (`cargo bench -p ts_toy --bench time_skip`).
 fn config(threads: Threads) -> SimConfig {
     SimConfig {
         threads,
+        parallel_phases: ParallelPhases::Always,
         ..SimConfig::default()
     }
 }
