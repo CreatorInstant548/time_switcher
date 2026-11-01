@@ -76,7 +76,7 @@ fn sum(q: Query<&Pos>, mut total: ResMut<Total>) {
     total.0 += q.iter().map(|p| p.0).sum::<i64>();
 }
 
-/// Greffon de test : 50 entités qui bougent au hasard, un total, un événement périodique.
+/// Test plugin: 50 entities that move at random, a total, a periodic event.
 struct Life {
     version: u32,
     migrates_from: Option<u32>,
@@ -149,7 +149,7 @@ pub(super) fn restore(
     Sim::restore(snap, SimConfig::default(), rules, &key())
 }
 
-/// Un monde restauré reprend exactement là où l'instantané l'a pris.
+/// A restored world resumes exactly where the snapshot took it.
 #[test]
 fn restore_continues_identically() {
     let rules = life(1);
@@ -166,14 +166,14 @@ fn restore_continues_identically() {
     assert_eq!(b.now(), a.now());
     assert_eq!(b.state_hash(), a.state_hash());
     assert_ne!(b.state_hash(), at_snapshot);
-    // Les compteurs continuent : le prochain identifiant n'est pas réutilisé.
+    // The counters continue: the next identifier is not reused.
     let next_a = a.world.resource_mut::<StableIds>().allocate();
     let next_b = b.world.resource_mut::<StableIds>().allocate();
     assert_eq!(next_a, next_b);
     assert_eq!(next_a.unwrap().index(), 50);
 }
 
-/// L5 : une autre empreinte de règles est refusée, sauf migration déclarée.
+/// L5: another rules fingerprint is refused, unless a migration is declared.
 #[test]
 fn restore_checks_rules_fingerprint() {
     let mut a = build(&life(1));
@@ -214,7 +214,7 @@ fn restore_checks_state_layout() {
     );
 }
 
-/// L4 (P25) : ni la clé du monde ni l'une de ses moitiés ne figurent dans l'instantané.
+/// L4 (P25): neither the world key nor either of its halves appears in the snapshot.
 #[test]
 fn snapshot_never_contains_world_key() {
     let bytes: [u8; 16] = core::array::from_fn(|i| 0xa0 ^ (i as u8 * 17));
@@ -229,8 +229,8 @@ fn snapshot_never_contains_world_key() {
     }
 }
 
-/// La clé du monde n'agit sur l'empreinte que par les tirages : deux mondes de clés
-/// différentes ont la même empreinte tant qu'aucun tirage n'a eu lieu.
+/// The world key acts on the fingerprint only through draws: two worlds with different keys
+/// have the same fingerprint as long as no draw has taken place.
 #[test]
 fn state_hash_does_not_read_keys() {
     let a = Sim::build(SimConfig::default(), &life(1), &key()).unwrap();
@@ -284,20 +284,20 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// L3 : vecteurs figés de l'empreinte d'état. Changer l'encodage change toutes les empreintes
-/// dorées, et se signale dans la PR.
+/// L3: frozen vectors of the state fingerprint. Changing the encoding changes all the
+/// golden fingerprints, and is flagged in the PR.
 #[test]
 fn state_hash_reference_vectors() {
     let empty = build(&[]);
-    // Famille du noyau d'un monde neuf, écrite à la main.
+    // Kernel family of a new world, written by hand.
     let mut kernel = Vec::new();
     kernel.extend_from_slice(&6_u64.to_le_bytes());
     kernel.extend_from_slice(b"kernel");
     kernel.extend_from_slice(&0_i64.to_le_bytes()); // date
-    kernel.extend_from_slice(&0_i64.to_le_bytes()); // origine des jours
-    kernel.extend_from_slice(&0_u64.to_le_bytes()); // prochain StableId
-    kernel.extend_from_slice(&0_u64.to_le_bytes()); // prochain seq
-    kernel.extend_from_slice(&0_u64.to_le_bytes()); // événements en attente
+    kernel.extend_from_slice(&0_i64.to_le_bytes()); // day origin
+    kernel.extend_from_slice(&0_u64.to_le_bytes()); // next StableId
+    kernel.extend_from_slice(&0_u64.to_le_bytes()); // next seq
+    kernel.extend_from_slice(&0_u64.to_le_bytes()); // pending events
     kernel.extend_from_slice(&0_u64.to_le_bytes()); // stable entities (M1)
     kernel.extend_from_slice(&0_u64.to_le_bytes()); // entities carrying LodComplete (I1)
     let digest = blake3::derive_key(FAMILY_CONTEXT, &kernel);

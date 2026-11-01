@@ -1,4 +1,4 @@
-//! Construction de la simulation et boucle : `SimConfig`, `Sim::build`, `step`, `run_until`.
+//! Simulation construction and loop: `SimConfig`, `Sim::build`, `step`, `run_until`.
 
 use core::fmt;
 use core::num::NonZeroU16;
@@ -27,8 +27,8 @@ mod snapshot;
 pub use snapshot::{MemorySnapshot, RestoreError, Snapshot, SnapshotScope, StateLayout};
 
 // spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §9.10 L4, L5
-/// Encode l'état du noyau : date, origine des jours, compteur de [`StableId`], compteur `seq`
-/// et événements en attente. Jamais les clés de flux.
+/// Encodes the kernel state: date, day origin, [`StableId`] counter, `seq` counter and
+/// pending events. Never the stream keys.
 fn write_kernel(world: &World, w: &mut StateWriter<'_>) {
     let clock = world.resource::<SimClock>();
     clock.now.hash_state(w);
@@ -75,21 +75,21 @@ impl StateHash for TimedEvent {
 }
 
 // spec: revues/architecture.md §7.1, §9.2 ; carnet architecture-securite.md §9.10 L6
-/// Nombre de fils de calcul. **Sans effet sur le résultat** (R1).
+/// Number of compute threads. **No effect on the result** (R1).
 ///
-/// Le groupe de fils de `bevy_tasks` est global au processus et ne se règle qu'une fois : la
-/// première construction le fixe, et une construction qui en demande un autre nombre échoue
+/// The `bevy_tasks` thread pool is global to the process and can only be set once: the
+/// first build fixes it, and a build that asks for another number fails
 /// ([`BuildError::ThreadPoolMismatch`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Threads {
-    /// Un fil : exécuteur séquentiel, groupe de fils d'un fil pour `par_iter`.
+    /// One thread: sequential executor, one-thread pool for `par_iter`.
     Single,
-    /// `n` fils : exécuteur parallèle de `bevy_ecs`.
+    /// `n` threads: parallel `bevy_ecs` executor.
     Fixed(NonZeroU16),
 }
 
 impl Threads {
-    /// Nombre de fils du groupe de calcul.
+    /// Number of threads of the compute pool.
     pub const fn count(self) -> usize {
         match self {
             Self::Single => 1,
@@ -99,14 +99,14 @@ impl Threads {
 }
 
 // spec: revues/architecture.md §7.1, §8.2
-/// Configuration d'une simulation. Elle ne contient aucun état du monde et aucun secret.
+/// Configuration of a simulation. It holds no world state and no secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SimConfig {
-    /// Fréquence du tick, en hertz : 20 par défaut (50 ms). Elle doit diviser 1 000.
+    /// Tick frequency, in hertz: 20 by default (50 ms). It must divide 1,000.
     pub tick_hz: u32,
-    /// Nombre de fils de calcul.
+    /// Number of compute threads.
     pub threads: Threads,
-    /// Greffons coupés, par nom ; chacun doit être [`Plugin::disableable`].
+    /// Disabled plugins, by name; each must be [`Plugin::disableable`].
     pub disabled_plugins: Vec<&'static str>,
 }
 
@@ -121,14 +121,14 @@ impl Default for SimConfig {
 }
 
 // spec: revues/architecture.md §6.5, §8.1 ; carnet architecture-securite.md §9.10 L2
-/// Marqueur « simulation complète » d'une entité. Défini ici seulement, il sert au saut de
-/// temps ; `ts_model` le réexporte avec `LodSimplified` et `LodStatistical`.
+/// "Full simulation" marker of an entity. Defined here only, it serves the time skip;
+/// `ts_model` re-exports it with `LodSimplified` and `LodStatistical`.
 #[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LodComplete;
 
 // spec: revues/architecture.md §8.1, §6.2 ; README.md
-/// Horloge du monde, lue par les systèmes : début du tick en cours et origine des jours
-/// compacts (AS-22).
+/// Clock of the world, read by the systems: start of the current tick and origin of the
+/// compact days (AS-22).
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SimClock {
     now: SimTime,
@@ -137,37 +137,37 @@ pub struct SimClock {
 }
 
 impl SimClock {
-    /// Début du tick en cours.
+    /// Start of the current tick.
     pub const fn now(&self) -> SimTime {
         self.now
     }
 
-    /// Durée d'un tick, en millisecondes.
+    /// Duration of a tick, in milliseconds.
     pub const fn tick_millis(&self) -> i64 {
         self.tick_ms
     }
 
-    /// Origine des jours compacts.
+    /// Origin of the compact days.
     pub const fn day_origin(&self) -> DayOrigin {
         self.day_origin
     }
 }
 
 // spec: revues/architecture.md §8.1
-/// Événement daté du noyau. Sa forme est provisoire : `ts_model` fixera les genres
-/// d'événements (fins de blocs d'agenda, échéancier, jalons, minuteurs).
+/// Dated event of the kernel. Its shape is provisional: `ts_model` will fix the event kinds
+/// (end of schedule blocks, timetable, milestones, timers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimedEvent {
-    /// Genre de l'événement, attribué par le greffon qui le traite.
+    /// Kind of the event, assigned by the plugin that handles it.
     pub kind: u32,
-    /// Entité concernée.
+    /// Entity concerned.
     pub subject: StableId,
-    /// Argument libre.
+    /// Free argument.
     pub arg: u64,
 }
 
 // spec: revues/architecture.md §8.1, §6.5
-/// Ressource : l'ordonnanceur du monde.
+/// Resource: the scheduler of the world.
 #[derive(Resource, Debug)]
 pub struct EventQueue(Scheduler<TimedEvent>);
 
@@ -185,8 +185,8 @@ impl DerefMut for EventQueue {
 }
 
 // spec: revues/architecture.md §8.1, §9.1
-/// Ressource : événements dus pendant le tick en cours, dans l'ordre `(at, seq)`. Remplie
-/// avant la phase [`Phase::Scheduled`], vidée à la fin du tick.
+/// Resource: events due during the current tick, in `(at, seq)` order. Filled before the
+/// [`Phase::Scheduled`] phase, emptied at the end of the tick.
 #[derive(Resource, Debug, Default)]
 pub struct DueEvents(Vec<Scheduled<TimedEvent>>);
 
@@ -198,20 +198,20 @@ impl Deref for DueEvents {
 }
 
 // spec: revues/architecture.md §6.1 ; carnet architecture-securite.md §9.10 L5
-/// Ressource : l'allocateur des [`StableId`] du monde.
+/// Resource: the allocator of the world's [`StableId`]s.
 #[derive(Resource, Debug)]
 pub struct StableIds(StableIdAllocator);
 
 impl StableIds {
-    /// Nouvel identifiant, ou `None` si l'espace est épuisé.
+    /// New identifier, or `None` if the namespace is exhausted.
     pub const fn allocate(&mut self) -> Option<StableId> {
         self.0.allocate()
     }
 }
 
 // spec: revues/architecture.md §6.4 ; carnet architecture-securite.md §9.10 L4
-/// Ressource : les clés de flux, dérivées de la clé du monde à la construction. Elles ne sont
-/// jamais enregistrées ni hachées ; la clé du monde n'est pas gardée.
+/// Resource: the stream keys, derived from the world key at build time. They are never
+/// recorded or hashed; the world key is not kept.
 #[derive(Resource, Debug)]
 pub struct WorldStreams(StreamKeys);
 
@@ -223,43 +223,43 @@ impl Deref for WorldStreams {
 }
 
 // spec: revues/architecture.md §5.3, §7.1, §9.2
-/// Échec de la construction d'une [`Sim`].
+/// Failure to build a [`Sim`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildError {
-    /// `tick_hz` nul ou qui ne divise pas 1 000.
+    /// `tick_hz` is zero or does not divide 1,000.
     InvalidTickHz(u32),
-    /// Deux greffons portent ce nom.
+    /// Two plugins carry this name.
     DuplicatePlugin(&'static str),
-    /// Un greffon coupé n'est pas dans les règles.
+    /// A disabled plugin is not in the rules.
     UnknownDisabledPlugin(&'static str),
-    /// Un greffon obligatoire est coupé.
+    /// A mandatory plugin is disabled.
     NotDisableable(&'static str),
-    /// Un greffon dépend d'un greffon absent des règles.
+    /// A plugin depends on a plugin absent from the rules.
     MissingDependency {
-        /// Greffon qui déclare la dépendance.
+        /// Plugin that declares the dependency.
         plugin: &'static str,
-        /// Greffon requis.
+        /// Required plugin.
         dependency: &'static str,
     },
-    /// Un greffon actif dépend d'un greffon coupé.
+    /// An active plugin depends on a disabled plugin.
     DisabledDependency {
-        /// Greffon qui déclare la dépendance.
+        /// Plugin that declares the dependency.
         plugin: &'static str,
-        /// Greffon requis, coupé.
+        /// Required plugin, disabled.
         dependency: &'static str,
     },
-    /// Le groupe de fils du processus a déjà un autre nombre de fils.
+    /// The process's thread pool already has another number of threads.
     ThreadPoolMismatch {
-        /// Fils demandés.
+        /// Threads requested.
         wanted: usize,
-        /// Fils du groupe existant.
+        /// Threads of the existing pool.
         actual: usize,
     },
-    /// Le `Schedule` d'une phase ne se construit pas (ambiguïté d'ordre, cycle…).
+    /// The `Schedule` of a phase cannot be built (ordering ambiguity, cycle...).
     Schedule {
-        /// Phase concernée.
+        /// Phase concerned.
         phase: Phase,
-        /// Message de `bevy_ecs`.
+        /// Message from `bevy_ecs`.
         message: String,
     },
     /// A plugin depends on a plugin that comes later in the rules.
@@ -281,20 +281,29 @@ pub enum BuildError {
 impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidTickHz(hz) => write!(f, "tick_hz invalide : {hz} ne divise pas 1000"),
-            Self::DuplicatePlugin(n) => write!(f, "greffon en double : {n}"),
-            Self::UnknownDisabledPlugin(n) => write!(f, "greffon coupé inconnu : {n}"),
-            Self::NotDisableable(n) => write!(f, "le greffon {n} ne peut pas être coupé"),
+            Self::InvalidTickHz(hz) => write!(f, "invalid tick_hz: {hz} does not divide 1000"),
+            Self::DuplicatePlugin(n) => write!(f, "duplicate plugin: {n}"),
+            Self::UnknownDisabledPlugin(n) => write!(f, "unknown disabled plugin: {n}"),
+            Self::NotDisableable(n) => write!(f, "plugin {n} cannot be disabled"),
             Self::MissingDependency { plugin, dependency } => {
-                write!(f, "le greffon {plugin} dépend de {dependency}, absent")
+                write!(
+                    f,
+                    "plugin {plugin} depends on {dependency}, which is absent"
+                )
             }
             Self::DisabledDependency { plugin, dependency } => {
-                write!(f, "le greffon {plugin} dépend de {dependency}, coupé")
+                write!(
+                    f,
+                    "plugin {plugin} depends on {dependency}, which is disabled"
+                )
             }
             Self::ThreadPoolMismatch { wanted, actual } => {
-                write!(f, "{wanted} fils demandés, le processus en a déjà {actual}")
+                write!(
+                    f,
+                    "{wanted} threads requested, the process already has {actual}"
+                )
             }
-            Self::Schedule { phase, message } => write!(f, "phase {phase:?} : {message}"),
+            Self::Schedule { phase, message } => write!(f, "phase {phase:?}: {message}"),
             Self::DependencyOrder { plugin, dependency } => {
                 write!(
                     f,
@@ -317,33 +326,33 @@ impl fmt::Display for BuildError {
 impl std::error::Error for BuildError {}
 
 // spec: revues/architecture.md §7.1, §8.1
-/// Condition d'arrêt de [`Sim::run_until`].
+/// Stop condition of [`Sim::run_until`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopCondition {
-    /// S'arrêter au premier début de tick à cette date ou après.
+    /// Stop at the first tick start at or after this date.
     At(SimTime),
 }
 
-/// Bilan d'un tick.
+/// Outcome of a tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StepReport {
-    /// Début du tick exécuté.
+    /// Start of the executed tick.
     pub tick_start: SimTime,
-    /// Événements dus traités par le tick.
+    /// Due events handled by the tick.
     pub due_events: usize,
 }
 
-/// Bilan de [`Sim::run_until`].
+/// Outcome of [`Sim::run_until`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunReport {
-    /// Ticks exécutés.
+    /// Ticks executed.
     pub ticks: u64,
-    /// Ticks sautés sans exécution (saut de temps).
+    /// Ticks skipped without execution (time skip).
     pub skipped_ticks: u64,
 }
 
 // spec: revues/architecture.md §7.1, §8.1, §8.2, §9.1
-/// La simulation : un monde `bevy_ecs`, un `Schedule` par phase et l'horloge.
+/// The simulation: a `bevy_ecs` world, one `Schedule` per phase and the clock.
 pub struct Sim {
     world: World,
     phases: Vec<Schedule>,
@@ -368,7 +377,7 @@ impl fmt::Debug for Sim {
     }
 }
 
-/// Règle le groupe de fils global, ou vérifie qu'il a déjà le bon nombre de fils.
+/// Sets the global thread pool, or checks that it already has the right number of threads.
 fn ensure_thread_pool(threads: Threads) -> Result<(), BuildError> {
     let wanted = threads.count();
     let pool = ComputeTaskPool::get_or_init(|| {
@@ -385,7 +394,7 @@ fn ensure_thread_pool(threads: Threads) -> Result<(), BuildError> {
     }
 }
 
-/// Vérifie les noms et les coupures, et rend les greffons actifs, dans l'ordre des règles.
+/// Checks the names and the disablings, and returns the active plugins, in rules order.
 fn active_plugins<'a>(
     cfg: &SimConfig,
     rules: &'a [Box<dyn Plugin>],
@@ -429,13 +438,13 @@ fn active_plugins<'a>(
 }
 
 impl Sim {
-    /// Construit un monde neuf à l'époque, avec les greffons `rules` moins ceux que coupe
-    /// `cfg`. Les clés de flux sont dérivées de `world_key`, qui n'est pas gardée.
+    /// Builds a new world at the epoch, with the `rules` plugins minus those that `cfg`
+    /// disables. The stream keys are derived from `world_key`, which is not kept.
     ///
     /// # Errors
     ///
-    /// Voir [`BuildError`] : configuration invalide, dépendance coupée ou absente, groupe de
-    /// fils incompatible, ambiguïté d'ordre dans une phase.
+    /// See [`BuildError`]: invalid configuration, disabled or absent dependency, incompatible
+    /// thread pool, ordering ambiguity within a phase.
     pub fn build(
         cfg: SimConfig,
         rules: &[Box<dyn Plugin>],
@@ -530,41 +539,41 @@ impl Sim {
     }
 
     // spec: revues/architecture.md §7.1, §11.3 ; carnet architecture-securite.md §9.10 L3, L4
-    /// Empreintes d'état, par famille et globale. La famille `kernel` couvre l'horloge,
-    /// l'origine des jours, l'allocateur de [`StableId`] et les événements en attente ; les
-    /// autres, les types d'état déclarés par les greffons. Les clés de flux n'y entrent pas.
+    /// State fingerprints, per family and global. The `kernel` family covers the clock, the
+    /// day origin, the [`StableId`] allocator and the pending events; the others, the state
+    /// types declared by plugins. The stream keys do not enter it.
     pub fn state_hash(&self) -> StateHashes {
         hash_world(&self.world, &self.state, &|w| write_kernel(&self.world, w))
     }
 
-    /// Début du tick suivant : la date courante du monde.
+    /// Start of the next tick: the current date of the world.
     pub fn now(&self) -> SimTime {
         self.world.resource::<SimClock>().now
     }
 
-    /// Durée d'un tick, en millisecondes.
+    /// Duration of a tick, in milliseconds.
     pub const fn tick_millis(&self) -> i64 {
         self.tick_ms
     }
 
-    /// Empreinte des règles actives.
+    /// Fingerprint of the active rules.
     pub const fn rules_fingerprint(&self) -> RulesFingerprint {
         self.rules
     }
 
-    /// Greffons actifs `(nom, version)`, dans l'ordre des règles.
+    /// Active plugins `(name, version)`, in rules order.
     pub fn active_plugins(&self) -> &[(&'static str, u32)] {
         &self.active
     }
 
-    /// Le monde, en lecture seule (architecture §7.3 : visualiseur et tests).
+    /// The world, read-only (architecture §7.3: viewer and tests).
     pub const fn world(&self) -> &World {
         &self.world
     }
 
     // spec: revues/architecture.md §8.1, §8.2, §9.1
-    /// Exécute un tick : `Input`, puis les événements dus dans `[now, now + tick[` passent
-    /// dans [`DueEvents`], puis les neuf autres phases ; enfin l'horloge avance d'un tick.
+    /// Runs a tick: `Input`, then the events due in `[now, now + tick[` move into
+    /// [`DueEvents`], then the nine other phases; finally the clock advances by one tick.
     pub fn step(&mut self) -> StepReport {
         let tick_start = self.now();
         let last = tick_start.add_millis(self.tick_ms - 1);
@@ -584,12 +593,12 @@ impl Sim {
         }
     }
 
-    /// Vrai si une entité porte [`LodComplete`].
+    /// True if an entity carries [`LodComplete`].
     fn has_complete_entities(&mut self) -> bool {
         self.complete.iter(&self.world).next().is_some()
     }
 
-    /// Premier début de tick à `t` ou avant. Only called with `t > now()`, so the result is
+    /// First tick start at or before `t`. Only called with `t > now()`, so the result is
     /// at least `now()` and cannot underflow.
     fn tick_floor(&self, t: SimTime) -> SimTime {
         let ms = t.as_millis();
@@ -597,11 +606,11 @@ impl Sim {
     }
 
     // spec: revues/architecture.md §8.1, §8.5
-    /// Avance jusqu'au premier début de tick à la date d'arrêt ou après.
+    /// Advances to the first tick start at or after the stop date.
     ///
-    /// **Saut de temps** : tant qu'aucune entité ne porte [`LodComplete`], la boucle ne tique
-    /// plus et saute directement au tick qui contient l'événement suivant. Les ticks sautés
-    /// sont vides : un événement est donc traité dans le même tick, qu'il y ait saut ou non.
+    /// **Time skip**: while no entity carries [`LodComplete`], the loop stops ticking and
+    /// jumps straight to the tick that contains the next event. The skipped ticks are empty:
+    /// an event is therefore handled in the same tick, with or without a skip.
     /// This relies on the time-skip contract stated on [`Plugin`].
     ///
     /// Never panics on extreme dates: a stop date at or before `now()` does nothing, and a
