@@ -117,6 +117,13 @@ pub fn check_lints_section(manifest: &str) -> Result<(), String> {
 fn lint_tables(manifest: &str, prefix: &str) -> Result<BTreeMap<String, Lints>, String> {
     let bare = prefix.trim_end_matches('.');
     let unquote = |s: &str| -> String { s.chars().filter(|c| !matches!(c, '"' | '\'')).collect() };
+    // A line-based reading cannot follow multi-line strings or escapes: refused, so that no
+    // real table hides behind a fake one (no member manifest uses them).
+    if ["\"\"\"", "'''", "\\"].iter().any(|s| manifest.contains(s)) {
+        return Err(
+            "multi-line string or escape refused in a manifest with lint tables".to_owned(),
+        );
+    }
     let mut tables: BTreeMap<String, Lints> = BTreeMap::new();
     let mut section = String::new();
     for line in manifest
@@ -412,6 +419,9 @@ mod tests {
             format!("\"lints\".rustdoc.x = \"allow\"\n{LOCAL}"),
             format!("{LOCAL}\n['lints'.\"rust\"]\nunsafe_code = \"allow\"\n"),
             format!("{LOCAL}\n[[\"lints\".rust]]\n"),
+            // Escapes and multi-line strings, which a line reading cannot follow.
+            format!("{LOCAL}\n[\"\\u006cints\".rustdoc]\nx = \"allow\"\n"),
+            format!("description = \"\"\"\n{LOCAL}\"\"\"\n[lints.rust]\nunsafe_code = \"allow\"\n"),
         ];
         for manifest in &bad {
             assert!(check_local_lints(manifest, ROOT).is_err(), "{manifest}");
