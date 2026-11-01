@@ -388,7 +388,7 @@ fn restore_keeps_its_checks() {
     let stale = decode(&small_header(), &seq).unwrap();
     assert_eq!(
         restore(&stale, &small()).unwrap_err(),
-        RestoreError::Corrupt("rangs des événements")
+        RestoreError::Corrupt("event ranks")
     );
     let mut off_grid = small_state();
     put(&mut off_grid, 14, &7_i64.to_le_bytes());
@@ -396,7 +396,7 @@ fn restore_keeps_its_checks() {
     let late = decode(&h, &off_grid).unwrap();
     assert_eq!(
         restore(&late, &small()).unwrap_err(),
-        RestoreError::Corrupt("date hors de la grille des ticks")
+        RestoreError::Corrupt("date off the tick grid")
     );
 }
 

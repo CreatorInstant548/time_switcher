@@ -1,10 +1,10 @@
 // spec: revues/architecture.md §9.2, §11.2 ; carnet architecture-securite.md §9.10 L6
-//! Monde de test de la reproductibilité sur plusieurs fils (L6), partagé par
-//! `parallel_single.rs` et `parallel_four.rs`.
+//! Test world for reproducibility across several threads (L6), shared by
+//! `parallel_single.rs` and `parallel_four.rs`.
 //!
-//! Le groupe de fils de `bevy_tasks` ne se règle qu'une fois par processus : chaque fichier
-//! de test est un exécutable distinct, donc un processus distinct, et les deux comparent leur
-//! empreinte à la même valeur figée.
+//! The `bevy_tasks` thread pool can only be set once per process: each test file is a
+//! separate executable, hence a separate process, and the two compare their fingerprint
+//! with the same frozen value.
 
 use std::sync::{Mutex, PoisonError};
 use std::thread::ThreadId;
@@ -17,11 +17,11 @@ use ts_kernel::{
     StateDecode, StateHash, StateReader, StateWriter, Threads, WorldStreams,
 };
 
-/// Empreinte globale attendue après [`TICKS`] ticks, quel que soit le nombre de fils.
+/// Expected global fingerprint after [`TICKS`] ticks, whatever the number of threads.
 pub const EXPECTED: &str = "bbe5dc0e03104235bfeb179e14678e8179c46a6780558e31c733e727af58214e";
-/// Nombre de ticks.
+/// Number of ticks.
 pub const TICKS: usize = 1000;
-/// Nombre d'entités.
+/// Number of entities.
 const ENTITIES: usize = 2000;
 
 #[derive(Component, Clone)]
@@ -54,7 +54,7 @@ impl StateDecode for Heat {
     }
 }
 
-/// Message croisé : `source` agit sur `target`.
+/// Cross message: `source` acts on `target`.
 struct Msg {
     source: StableId,
     local_seq: u32,
@@ -62,11 +62,11 @@ struct Msg {
     amount: i64,
 }
 
-/// Tampon des messages, rempli dans un ordre quelconque par les fils.
+/// Buffer of messages, filled in any order by the threads.
 #[derive(Resource, Default)]
 struct Outbox(Mutex<Vec<Msg>>);
 
-/// Fils qui ont exécuté une part de `par_iter` (diagnostic, hors état).
+/// Threads that ran a share of `par_iter` (diagnostic, outside the state).
 #[derive(Resource, Default)]
 pub struct Workers(pub Mutex<Vec<ThreadId>>);
 
@@ -74,8 +74,8 @@ pub struct Workers(pub Mutex<Vec<ThreadId>>);
 #[derive(Resource)]
 struct Roster(Vec<StableId>);
 
-/// Phase `Act` : chaque entité n'écrit que ses composants (§9.2, règle 2) et poste deux
-/// messages croisés.
+/// `Act` phase: each entity writes only its own components (§9.2, rule 2) and posts two
+/// cross messages.
 fn act(
     clock: Res<SimClock>,
     streams: Res<WorldStreams>,
@@ -107,9 +107,9 @@ fn act(
     });
 }
 
-/// Phase `Consequences` : messages triés par (`StableId` source, `seq` local), puis appliqués
-/// dans cet ordre (§9.2, règle 3). L'opération flottante n'est pas associative : sans le tri,
-/// l'empreinte dépendrait de l'ordre de fin des fils.
+/// `Consequences` phase: messages sorted by (source `StableId`, local `seq`), then applied
+/// in that order (§9.2, rule 3). Floating-point operations are not associative: without the
+/// sort, the fingerprint would depend on the order in which the threads finish.
 fn deliver(
     mut outbox: ResMut<Outbox>,
     index: Res<StableIndex>,
@@ -156,8 +156,8 @@ impl Plugin for ParallelWorld {
     }
 }
 
-/// Exécute [`TICKS`] ticks avec `threads` et rend l'empreinte globale en hexadécimal, et le
-/// nombre de fils distincts vus dans `par_iter`.
+/// Runs [`TICKS`] ticks with `threads` and returns the global fingerprint in hexadecimal, and
+/// the number of distinct threads seen in `par_iter`.
 pub fn run(threads: Threads) -> Result<(String, usize), BuildError> {
     let rules = rules();
     let mut sim = Sim::build(config(threads), &rules, &key())?;
