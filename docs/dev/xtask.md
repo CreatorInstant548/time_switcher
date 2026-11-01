@@ -124,7 +124,7 @@ Pour les étapes 5 et 6, une erreur de mesure (sous-dossier illisible) ou un arb
 
 ## 6. Approbations de `cargo xtask merge` et `cargo xtask verify-main`
 
-Une PR qui touche un chemin sensible (`tools/ci/sensitive-paths.txt` d'`origin/main`) doit porter deux avis : `review-ok: <sha>` (relecteur neuf) et `archsec-ok: <sha>` (archi-sécu). Chacun compte seulement s'il occupe **la première ligne** d'un commentaire de la PR, exactement sous cette forme, avec un SHA complet (I3). Une ligne citée plus bas ne compte pas.
+Une PR qui touche un chemin sensible (`tools/ci/sensitive-paths.txt` d'`origin/main`) doit porter deux avis : `review-ok: <sha>` (relecteur neuf) et `archsec-ok: <sha>` (archi-sécu). Chacun compte seulement s'il occupe **la première ligne** d'un commentaire de la PR, exactement sous cette forme, avec un SHA complet (I3). Une ligne citée plus bas ne compte pas. Le commentaire doit venir du **propriétaire du dépôt** (AS-45 P3) : `user.login` égal au propriétaire du *slug*, `author_association: OWNER` et `user.type: User` ; tout autre auteur est ignoré, puisque sur un dépôt public n'importe qui peut écrire `review-ok: <sha>`.
 
 `merge` (étape 10) et `verify-main` (chaque commit sensible de `main`) appliquent **la même fonction**, `carry::Carry::resolve` (W6). Un avis compte s'il est posé :
 - sur le SHA de tête ;
@@ -163,7 +163,9 @@ Si une seule condition échoue, l'approbation doit être **reposée sur `H`**. C
 - Tout est relu sur GitHub à chaque exécution (V5). `verify-main` n'a plus de cache local depuis T3e-2.
 - Une lecture qui échoue fait échouer le candidat, jamais l'inverse.
 
-**Portée de `verify-main` depuis T3e-2** (AS-31 E3). Chaque commit de `main` postérieur à la base doit avoir un seul parent, pour que sa sensibilité se calcule. Un commit **non sensible** ne demande rien d'autre et ne lit rien sur GitHub : le *ruleset* `main` impose la PR, `ci-ok` et l'historique linéaire, et `repo-settings.ps1 -Check` surveille ce *ruleset* à chaque `cargo xtask merge` (il est sauté en CI). Un commit **sensible** garde tout : squash d'une PR fusionnée (J3), `ci-ok` sur sa tête (G3), `review-ok` et `archsec-ok` sur la tête ou reportés (§6.1), puis J4. `--no-cache` reste accepté, sans effet, pour la tâche de nuit, jusqu'à la PR `.github/` qui le retirera.
+**Portée de `verify-main` depuis T3e-2** (AS-31 E3). Chaque commit de `main` postérieur à la base doit avoir un seul parent, pour que sa sensibilité se calcule. Un commit **non sensible** ne demande rien d'autre et ne lit rien sur GitHub : le *ruleset* `main` impose la PR, `ci-ok` et l'historique linéaire, et `repo-settings.ps1 -Check` surveille ce *ruleset* à chaque `cargo xtask merge` (il est sauté en CI). Un commit **sensible** garde tout : squash d'une PR fusionnée (J3), `ci-ok` sur sa tête (G3), `review-ok` et `archsec-ok` sur la tête ou reportés (§6.1), puis J4.
+
+**`--origin <n>d|all`** (AS-42, T3j ; tâche de nuit, `docs/dev/ci.md` §4). Chaque commit non sensible de la fenêtre doit en plus être le squash d'une PR fusionnée dans `main`, dont la tête est un autre commit (J3, AS-44 AA1), lu par **une seule** requête, `commits/<sha>/pulls`. Sur `<n>d`, il faut aussi `ci-ok` vert sur cette tête (G3, même fonction que pour un commit sensible, AS-44 AA2) ; `all` reste en J3 seul (quota, #55). La fenêtre `<n>d` (1 à 366 jours) va du sommet de `main` jusqu'au premier commit daté d'avant la limite qui passe J3 et G3, inclus (AA3) : des commits antidatés sans PR ou sans `ci-ok` échouent, et la lecture continue à travers eux ; `all` couvre tout l'historique postérieur à la base. Sans `--origin` (`cargo xtask merge` compris), rien ne change. `--no-cache`, sans effet depuis T3e-2, est retiré.
 
 ## 7. `cargo xtask determinism [--full] [--bless]`
 

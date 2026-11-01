@@ -10,7 +10,7 @@
 # d'origin/main, et le script lancé doit être celui de cette copie (S4). Les invariants sont codés ici
 # (S2) : affaiblir les règles demande de modifier aussi ce script.
 # Codes de sortie : 0 conforme ; 1 écart, fichier refusé ou écriture refusée ; 2 usage, préalable ou erreur.
-# Conditions suivies : AS-30 R1 à R5, AS-31 E4 et E5 (et l'attestation qui remplace R6.4), AS-38, AS-41,
+# Conditions suivies : AS-30 R1 à R5, AS-31 E4 et E5 (et l'attestation qui remplace R6.4), AS-38, AS-41, AS-43, AS-45,
 # §9.12 S1 à S5.
 # spec: carnet architecture-securite.md SEC0-30 ; §9.12 S1, S2, S3, S4, S5
 $ErrorActionPreference = 'Stop'
@@ -21,7 +21,11 @@ $ActionsAppId = 15368   # application GitHub Actions : app.id des contrôles ci-
 $Patterns = 'actions/checkout@*', 'actions/cache@*', 'actions/cache/restore@*', 'actions/cache/save@*',
             'Swatinem/rust-cache@*', 'actions/upload-artifact@*'   # liste fermée de SEC0-30
 $ActionsApi = [ordered]@{ permissions = '/actions/permissions'; selected_actions = '/actions/permissions/selected-actions'
-  workflow = '/actions/permissions/workflow'; fork_pr_workflows_private_repos = '/actions/permissions/fork-pr-workflows-private-repos' }
+  workflow = '/actions/permissions/workflow'; fork_pr_contributor_approval = '/actions/permissions/fork-pr-contributor-approval' }
+# Public repository (AS-45 P2): fork-pr-workflows-private-repos answers 422 there and is no longer followed;
+# workflows from outside contributors need an approval instead. A private repository is refused as
+# non-public: repo.visibility drift, code 1.
+$ReportingApi = '/private-vulnerability-reporting'   # GET { enabled } ; PUT enables it, DELETE disables it
 # Champs des réponses ignorés à la comparaison : identifiants, liens, dates, champs calculés ; tout le
 # reste de l'objet du dépôt (seuls les champs du fichier y sont comparés).
 $Ignored = '^ruleset_\w+\.(id|node_id|source|source_type|_links|created_at|updated_at|current_user_can_bypass)$',
@@ -55,13 +59,23 @@ $StatusCheckParameters = [ordered]@{
 $RepoValues = [ordered]@{   # R2 : squash seulement, sans fusion automatique ; un PATCH ne change rien d'autre
   allow_auto_merge = $false; allow_merge_commit = $false; allow_rebase_merge = $false; allow_squash_merge = $true
   delete_branch_on_merge = $true; squash_merge_commit_title = 'PR_TITLE'
+  # AS-45 P2: public repository, with secret scanning, push protection and Dependabot security
+  # updates (enabled, as read on 01/11).
+  visibility = 'public'
+  security_and_analysis = [ordered]@{ dependabot_security_updates = [ordered]@{ status = 'enabled' }
+    secret_scanning = [ordered]@{ status = 'enabled' }; secret_scanning_push_protection = [ordered]@{ status = 'enabled' } }
 }
+$ReportingValues = [ordered]@{ enabled = $true }   # AS-45 P2: private vulnerability reporting enabled
+# AS-45 P2: interaction limit, collaborators only, with the longest expiry the API allows. -Check
+# counts a drift when it is absent, different, or expires in less than $InteractionMinDays days.
+$InteractionApi = '/interaction-limits'
+$InteractionValues = [ordered]@{ expiry = 'six_months'; limit = 'collaborators_only' }
+$InteractionMinDays = 14
 $ActionsValues = [ordered]@{   # R4, S5 ; patterns_allowed : liste fermée $Patterns, vérifiée à part
   permissions = [ordered]@{ allowed_actions = 'selected'; enabled = $true; sha_pinning_required = $true }
   selected_actions = [ordered]@{ github_owned_allowed = $false; verified_allowed = $false }
   workflow = [ordered]@{ can_approve_pull_request_reviews = $false; default_workflow_permissions = 'read' }
-  fork_pr_workflows_private_repos = [ordered]@{ require_approval_for_fork_pr_workflows = $false; run_workflows_from_fork_pull_requests = $false
-                                                send_secrets_and_variables = $false; send_write_tokens_to_workflows = $false }
+  fork_pr_contributor_approval = [ordered]@{ approval_policy = 'all_external_contributors' }   # AS-45 P2: strictest policy
 }
 
 function Stop-With([int]$Code, [string]$Message) { [Console]::Error.WriteLine("repo-settings : $Message"); exit $Code }
@@ -175,8 +189,8 @@ function Add-Pinned($Obj, $Want, [string]$Path, [string[]]$Free, $Neutral, $Bad)
 # S2 : invariants du fichier ; motifs de refus (liste vide si le fichier est valide).
 function Get-Invalid($C) {
   $bad = [Collections.Generic.List[string]]::new()
-  if ($C -isnot [Collections.IDictionary] -or (J @($C.Keys)) -cne (J @('actions', 'repo', 'ruleset_main', 'ruleset_pilotage'))) {
-    $bad.Add('sections attendues : ruleset_main, ruleset_pilotage, repo, actions'); return , $bad
+  if ($C -isnot [Collections.IDictionary] -or (J @($C.Keys)) -cne (J @('actions', 'interaction_limits', 'private_vulnerability_reporting', 'repo', 'ruleset_main', 'ruleset_pilotage'))) {
+    $bad.Add('expected sections: ruleset_main, ruleset_pilotage, repo, actions, private_vulnerability_reporting, interaction_limits'); return , $bad
   }
   foreach ($branch in 'main', 'pilotage') {
     $key = "ruleset_$branch"; $r = $C[$key]
@@ -201,6 +215,8 @@ function Get-Invalid($C) {
     Add-Pinned $params $want "ruleset_main.$type" @() $neutral $bad
   }
   if ($C.repo -isnot [Collections.IDictionary]) { $bad.Add('repo : objet attendu') } else { Add-Pinned $C.repo $RepoValues 'repo' @() @{} $bad }
+  Add-Pinned $C.private_vulnerability_reporting $ReportingValues 'private_vulnerability_reporting' @() @{} $bad
+  Add-Pinned $C.interaction_limits $InteractionValues 'interaction_limits' @() @{} $bad
   $act = $C.actions
   if ($act -isnot [Collections.IDictionary] -or (J @($act.Keys)) -cne (J @($ActionsApi.Keys)) -or
       @($act.Values | Where-Object { $_ -isnot [Collections.IDictionary] }).Count) {
@@ -221,6 +237,33 @@ function Get-Invalid($C) {
     }
   }
   return , $bad
+}
+
+# Instant of a GitHub date (ConvertFrom-Json may already have turned it into a DateTime); $null if unreadable.
+function ConvertTo-Instant($V) {
+  if ($V -is [DateTimeOffset]) { return $V }
+  if ($V -is [datetime]) {
+    $d = if ($V.Kind -eq [DateTimeKind]::Unspecified) { [datetime]::SpecifyKind($V, [DateTimeKind]::Utc) } else { $V }
+    return [DateTimeOffset]$d.ToUniversalTime()
+  }
+  $o = [DateTimeOffset]::MinValue
+  $styles = [Globalization.DateTimeStyles]::AssumeUniversal
+  if ($V -is [string] -and [DateTimeOffset]::TryParse($V, [Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$o)) { return $o }
+  return $null
+}
+
+# AS-45 P2: interaction limit read on GitHub ({} when there is none): same limit as the file, and an
+# expiry at least $InteractionMinDays days after $Now; anything else is a drift.
+function Add-InteractionDrift($Want, $Got, [DateTimeOffset]$Now, $Out) {
+  $limit = if ($Got -is [Collections.IDictionary]) { $Got['limit'] } else { $null }
+  if ($limit -isnot [string] -or $limit -cne $Want['limit']) {
+    $Out.Add("interaction_limits.limit: expected $(J $Want['limit']), read $(J $limit) (absent or expired limit included)"); return
+  }
+  $exp = ConvertTo-Instant $Got['expires_at']
+  if ($null -eq $exp) { $Out.Add("interaction_limits.expires_at: unreadable ($(J "$($Got['expires_at'])"))"); return }
+  if ($exp -lt $Now.AddDays($InteractionMinDays)) {
+    $Out.Add("interaction_limits.expires_at: $($exp.UtcDateTime.ToString('u')), less than $InteractionMinDays days away: renew it with -Apply")
+  }
 }
 
 # Écarts entre GitHub et le fichier (S3 compris).
@@ -258,10 +301,16 @@ function Get-Drift($C) {
     elseif (-not (Test-NotProtected $r)) { Stop-With 2 "GET repos/$Slug$path : 404 inattendu ($(J $r.Json))" }
   }
   foreach ($k in $ActionsApi.Keys) {
-    $r = Get-Api $ActionsApi[$k] -Allow 404, 409
-    if ($r.Status -ne 200) { $out.Add("actions.$k : illisible ou sans objet sur GitHub (HTTP $($r.Status))"); continue }
+    $r = Get-Api $ActionsApi[$k] -Allow 404, 409, 422   # 422: setting not applicable to this visibility
+    if ($r.Status -ne 200) { $out.Add("actions.$k : unreadable or not applicable on GitHub (HTTP $($r.Status))"); continue }
     Add-Diff $C.actions[$k] $r.Json "actions.$k" $out
   }
+  $r = Get-Api $ReportingApi -Allow 404, 422
+  if ($r.Status -ne 200) { $out.Add("private_vulnerability_reporting: unreadable or not applicable on GitHub (HTTP $($r.Status))") }
+  else { Add-Diff $C.private_vulnerability_reporting $r.Json 'private_vulnerability_reporting' $out }
+  $r = Get-Api $InteractionApi -Allow 404, 422
+  if ($r.Status -ne 200) { $out.Add("interaction_limits: unreadable on GitHub (HTTP $($r.Status))") }
+  else { Add-InteractionDrift $C.interaction_limits $r.Json ([DateTimeOffset]::UtcNow) $out }
   return , $out
 }
 
@@ -276,6 +325,26 @@ function Invoke-Write([string]$Method, [string]$Path, $Body) {
 function Read-Config([string]$Rev) {
   try { $c = ConvertFrom-Json (@(Invoke-Git show "${Rev}:$File") -join "`n") -AsHashtable -Depth 50 -NoEnumerate } catch { return $null }
   return , $c   # une liste JSON reste une liste, refusée par Get-Invalid
+}
+
+# Final -Check verdict: lines to print and exit code (0 conform, 1 drift, 2 internal error).
+# Get-Drift returns its list with "return ,": assign it as is. @(Get-Drift ...) would wrap it in a
+# one-element array, counted as one drift even when empty (false drift, AS-43). Guard (Z3): anything
+# other than a list, or an empty or null drift line, is an internal error (code 2), never a drift nor a
+# pass. Tested by tools/dev/test-repo-settings.ps1.
+# $RepoName is only printed: Get-Drift reads the script's $Slug (a $Slug parameter would shadow it).
+function Get-CheckResult($C, [string]$Mode, [string]$From, [string]$RepoName) {
+  $drift = Get-Drift $C
+  if ($drift -isnot [Collections.Generic.List[string]]) { return @{ Code = 2; Error = 'internal error (Get-Drift: list expected)' } }
+  if (@($drift | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count) { return @{ Code = 2; Error = 'internal error (empty or null drift line)' } }
+  $lines = [Collections.Generic.List[string]]::new()
+  foreach ($d in $drift) { $lines.Add("  ÉCART : $d") }
+  if ($drift.Count) {
+    $lines.Add("repo-settings $Mode : $($drift.Count) écart(s) avec $File $From")
+    return @{ Code = 1; Lines = $lines }
+  }
+  $lines.Add("repo-settings $Mode : conforme à $File $From ($RepoName)")
+  return @{ Code = 0; Lines = $lines }
 }
 
 if ($MyInvocation.InvocationName -eq '.') { return }   # chargé par tools/dev/test-repo-settings.ps1
@@ -332,13 +401,22 @@ if ($Apply) {
     if ($hits.Count -gt 1) { Stop-With 1 "$($hits.Count) rulesets nommés « $($want['name']) » : à dédoublonner avant -Apply" }
     if ($hits.Count -eq 1) { Invoke-Write 'PUT' "/rulesets/$($hits[0]['id'])" $want } else { Invoke-Write 'POST' '/rulesets' $want }
   }
-  Invoke-Write 'PATCH' '' $cfg.repo
+  # AS-45: visibility first, alone with the merge settings; secret scanning in a second PATCH (it may
+  # depend on the visibility); Dependabot security updates are not a PATCH field: they have their own
+  # endpoint, which needs vulnerability alerts. Every value is pinned by S2, so these only enable.
+  $plain = [ordered]@{}; foreach ($k in $cfg.repo.Keys) { if ($k -cne 'security_and_analysis') { $plain[$k] = $cfg.repo[$k] } }
+  Invoke-Write 'PATCH' '' $plain
+  $sa = $cfg.repo['security_and_analysis']
+  Invoke-Write 'PATCH' '' @{ security_and_analysis = [ordered]@{ secret_scanning = $sa['secret_scanning']; secret_scanning_push_protection = $sa['secret_scanning_push_protection'] } }
+  Invoke-Write 'PUT' '/vulnerability-alerts' @{}
+  Invoke-Write 'PUT' '/automated-security-fixes' @{}
   foreach ($k in $ActionsApi.Keys) { Invoke-Write 'PUT' $ActionsApi[$k] $cfg.actions[$k] }
+  Invoke-Write 'PUT' $ReportingApi @{}   # enabled: true is pinned by S2, so -Apply only ever enables it
+  Invoke-Write 'PUT' $InteractionApi $cfg.interaction_limits   # renews the limit for six_months
 }
 
-$drift = @(Get-Drift $cfg)
-foreach ($d in $drift) { Write-Host "  ÉCART : $d" }
 $mode = if ($Apply) { '-Apply puis -Check' } else { '-Check' }
-if (@($drift).Count) { Write-Host "repo-settings $mode : $(@($drift).Count) écart(s) avec $File $From"; exit 1 }
-Write-Host "repo-settings $mode : conforme à $File $From ($Slug)"
-exit 0
+$result = Get-CheckResult $cfg $mode $From $Slug
+if ($result.Code -eq 2) { Stop-With 2 $result.Error }
+foreach ($l in $result.Lines) { Write-Host $l }
+exit $result.Code

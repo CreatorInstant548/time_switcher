@@ -1,4 +1,4 @@
-//! Greffons : le trait `Plugin`, le constructeur `SimBuilder` et l'empreinte de règles.
+//! Plugins: the `Plugin` trait, the `SimBuilder` builder and the rules fingerprint.
 
 use core::fmt;
 
@@ -12,12 +12,12 @@ use crate::state::StateEntry;
 use crate::{Phase, StateDecode, StateHash};
 
 // spec: revues/architecture.md §5.3
-/// Greffon de règles. `standard_rules()` (`ts_game`) en donne la liste unique.
+/// Rules plugin. `standard_rules()` (`ts_game`) gives the single list.
 ///
-/// Un greffon déclare dans [`Plugin::build`] ses composants, ses ressources et ses systèmes par
-/// phase, et dans [`Plugin::dependencies`] les greffons dont il dépend. Désactiver un greffon
-/// ne change pas les règles des autres ; la construction échoue si un greffon actif dépend d'un
-/// greffon coupé.
+/// In [`Plugin::build`] a plugin declares its components, its resources and its systems per
+/// phase, and in [`Plugin::dependencies`] the plugins it depends on. Disabling a plugin does
+/// not change the rules of the others; the build fails if an active plugin depends on a
+/// disabled one.
 ///
 /// **Time-skip contract** (architecture §8.1): while no entity carries
 /// [`crate::LodComplete`], [`crate::Sim::run_until`] skips the ticks that have no due event.
@@ -46,14 +46,14 @@ use crate::{Phase, StateDecode, StateHash};
 // TODO(#31): enforce this contract automatically.
 // spec: revues/architecture.md §11.1, §12.4
 pub trait Plugin {
-    /// Nom stable et unique du greffon (par exemple `"economy"`).
+    /// Stable, unique name of the plugin (for example `"economy"`).
     fn name(&self) -> &'static str;
 
-    /// Version des règles du greffon : elle entre dans l'[`RulesFingerprint`] et change dès
-    /// qu'une règle du greffon change.
+    /// Version of the plugin's rules: it enters the [`RulesFingerprint`] and changes whenever
+    /// a rule of the plugin changes.
     fn version(&self) -> u32;
 
-    /// Vrai si le greffon peut être coupé par [`crate::SimConfig::disabled_plugins`].
+    /// True if the plugin can be disabled by [`crate::SimConfig::disabled_plugins`].
     fn disableable(&self) -> bool {
         false
     }
@@ -65,38 +65,38 @@ pub trait Plugin {
         &[]
     }
 
-    /// Déclare le contenu du greffon.
+    /// Declares the content of the plugin.
     fn build(&self, b: &mut SimBuilder);
 }
 
 // spec: revues/architecture.md §5.3, §9.1
-/// Ce qu'un greffon déclare pendant la construction d'une [`crate::Sim`].
+/// What a plugin declares while a [`crate::Sim`] is being built.
 pub struct SimBuilder {
     pub(crate) world: World,
     pub(crate) phases: Vec<Schedule>,
     pub(crate) current: &'static str,
-    /// Types d'état, dans l'ordre de déclaration.
+    /// State types, in declaration order.
     pub(crate) state: Vec<StateEntry>,
-    /// Migrations déclarées, `(greffon, version d'origine)`.
+    /// Declared migrations, `(plugin, original version)`.
     pub(crate) migrations: Vec<(&'static str, u32)>,
     /// Components allowed on stable entities: declared state and transient components.
     pub(crate) known_components: Vec<ComponentId>,
 }
 
 impl SimBuilder {
-    /// Enregistre un type de composant.
+    /// Registers a component type.
     pub fn register_component<C: Component>(&mut self) -> &mut Self {
         self.world.register_component::<C>();
         self
     }
 
-    /// Ajoute ou remplace une ressource.
+    /// Adds or replaces a resource.
     pub fn insert_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
         self.world.insert_resource(resource);
         self
     }
 
-    /// Ajoute des systèmes à une phase.
+    /// Adds systems to a phase.
     pub fn add_systems<M>(
         &mut self,
         phase: Phase,
@@ -107,9 +107,9 @@ impl SimBuilder {
     }
 
     // spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §9.10 L3
-    /// Déclare un composant d'état de la famille `family` : il entre dans l'empreinte et dans
-    /// l'instantané, pour les entités qui portent [`crate::StableEntity`]. L'ordre de
-    /// déclaration fixe l'ordre d'encodage. [`StateDecode`] must read back exactly what
+    /// Declares a state component of family `family`: it enters the fingerprint and the
+    /// snapshot, for the entities that carry [`crate::StableEntity`]. Declaration order fixes
+    /// the encoding order. [`StateDecode`] must read back exactly what
     /// [`StateHash`] writes: a restore refuses a value that does not re-encode the same.
     pub fn state_component<C: Component + Clone + StateHash + StateDecode>(
         &mut self,
@@ -131,7 +131,7 @@ impl SimBuilder {
         self
     }
 
-    /// Déclare une ressource d'état de la famille `family`, comme [`Self::state_component`].
+    /// Declares a state resource of family `family`, like [`Self::state_component`].
     pub fn state_resource<R: Resource + Clone + StateHash + StateDecode>(
         &mut self,
         family: &'static str,
@@ -141,14 +141,14 @@ impl SimBuilder {
     }
 
     // spec: revues/architecture.md §12.5 ; carnet architecture-securite.md §9.10 L5
-    /// Déclare que le greffon en construction sait reprendre un instantané de sa version
-    /// `version`. Sans cette déclaration, une autre version fait refuser la restauration.
+    /// Declares that the plugin being built can resume a snapshot of its version
+    /// `version`. Without this declaration, another version makes the restore refuse.
     pub fn migrates_from(&mut self, version: u32) -> &mut Self {
         self.migrations.push((self.current, version));
         self
     }
 
-    /// Monde en construction, pour placer un état initial.
+    /// World under construction, to place an initial state.
     pub fn world_mut(&mut self) -> &mut World {
         &mut self.world
     }
@@ -162,24 +162,24 @@ impl fmt::Debug for SimBuilder {
     }
 }
 
-/// Contexte de dérivation de l'empreinte de règles (BLAKE3 `derive_key`), écrit en dur.
+/// Derivation context of the rules fingerprint (BLAKE3 `derive_key`), hard-coded.
 const RULES_CONTEXT: &str = "time_switcher 2026-10-30 rules fingerprint v1";
 
 // spec: revues/architecture.md §5.3, §12.1
-/// Empreinte de règles : BLAKE3 des noms et des versions des greffons actifs, **triés par
-/// nom**. Elle est enregistrée dans chaque instantané et chaque manifeste de simulation.
+/// Rules fingerprint: BLAKE3 of the names and versions of the active plugins, **sorted by
+/// name**. It is recorded in every snapshot and every simulation manifest.
 ///
-/// Encodage : nombre de greffons (`u32` LE), puis pour chacun la longueur du nom (`u32` LE),
-/// le nom en UTF-8 et la version (`u32` LE).
+/// Encoding: the number of plugins (`u32` LE), then for each the length of the name (`u32` LE),
+/// the name in UTF-8 and the version (`u32` LE).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RulesFingerprint([u8; 32]);
 
 impl RulesFingerprint {
-    /// Empreinte d'une liste `(nom, version)`, dans n'importe quel ordre.
+    /// Fingerprint of a `(name, version)` list, in any order.
     ///
     /// # Panics
     ///
-    /// Si la liste ou un nom dépasse `u32::MAX` éléments ou octets.
+    /// If the list or a name exceeds `u32::MAX` elements or bytes.
     pub fn of(plugins: &[(&str, u32)]) -> Self {
         let mut sorted = plugins.to_vec();
         sorted.sort_unstable();
@@ -193,12 +193,12 @@ impl RulesFingerprint {
         Self(*h.finalize().as_bytes())
     }
 
-    /// Octets de l'empreinte.
+    /// Bytes of the fingerprint.
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
-    /// Empreinte lue dans un instantané. **Réservé à `ts_persist`.**
+    /// Fingerprint read from a snapshot. **Reserved to `ts_persist`.**
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -206,7 +206,7 @@ impl RulesFingerprint {
 
 fn len_u32(n: usize) -> u32 {
     let Ok(n) = u32::try_from(n) else {
-        panic!("longueur hors de u32 dans l'empreinte de règles");
+        panic!("length out of u32 range in the rules fingerprint");
     };
     n
 }
@@ -236,14 +236,14 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, RulesFingerprint::of(&[("combat", 3), ("economy", 2)]));
         assert_ne!(a, RulesFingerprint::of(&[("combat", 3)]));
-        // Noms collés : l'encodage par longueur les sépare.
+        // Names stuck together: the length-prefixed encoding separates them.
         assert_ne!(
             RulesFingerprint::of(&[("ab", 1), ("c", 1)]),
             RulesFingerprint::of(&[("a", 1), ("bc", 1)])
         );
     }
 
-    /// Vecteurs figés : changer l'encodage change toutes les empreintes enregistrées.
+    /// Frozen vectors: changing the encoding changes every recorded fingerprint.
     #[test]
     fn fingerprint_reference_vectors() {
         assert_eq!(
@@ -254,7 +254,7 @@ mod tests {
             hex(RulesFingerprint::of(&[("combat", 3), ("economy", 1)]).as_bytes()),
             "a6eff6530d607d78fc72d4d0933a629b46ac98faa4b30973eb6440cd2c2ab373"
         );
-        // L'encodage documenté, écrit à la main.
+        // The documented encoding, written by hand.
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&2_u32.to_le_bytes());
         for (name, version) in [("combat", 3_u32), ("economy", 1)] {

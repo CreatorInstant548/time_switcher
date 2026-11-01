@@ -1,6 +1,6 @@
 // spec: revues/architecture.md §9.2 ; carnet architecture-securite.md §9.10 L6
-//! Reproductibilité : 1 fil. Exécutable distinct de `parallel_four.rs`, donc processus
-//! distinct, avec son propre groupe de fils.
+//! Reproducibility: 1 thread. Executable separate from `parallel_four.rs`, hence a
+//! separate process, with its own thread pool.
 
 mod common;
 
