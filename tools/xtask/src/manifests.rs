@@ -200,8 +200,11 @@ fn lint_tables(manifest: &str, prefix: &str) -> Result<BTreeMap<String, Lints>, 
         }
         // `["lints.rust"]` is one key named `lints.rust` for Cargo, not the table [lints.rust], and
         // `["lints'".rust]` is a key `lints'`: in a table name or a key, a quoted segment holds no
-        // dot, quote or blank (#91), since quotes and blanks are dropped below.
-        if odd_quoted_key(line) {
+        // dot, quote or blank (#91), since quotes and blanks are dropped below. Only where the
+        // lints are named, so that `[target.'cfg(unix)'.dependencies]` stays allowed.
+        let header = line.trim_start().starts_with('[');
+        let lints = unquote(line).contains("lints") || (!header && section.starts_with(bare));
+        if lints && odd_quoted_key(line) {
             return Err(format!(
                 "line {}: quoted table name or key holding a dot, a quote or a blank refused: {}",
                 n + 1,
@@ -416,24 +419,24 @@ fn dependency_turns_on_dev(meta: &Metadata, d: &crate::metadata::Dependency) -> 
     named || reaches_dev(meta, &d.name, &on, &mut BTreeSet::new())
 }
 
-/// Fonctionnalités dans les manifestes (F4) et règle D-DEV-02. Rend la liste des écarts.
+/// Features in the manifests (F4) and rule D-DEV-02. Returns the list of deviations.
 pub fn check_features(meta: &Metadata) -> Vec<String> {
     let mut errors = Vec::new();
     let Some(kernel) = meta.package("ts_kernel") else {
-        return vec!["ts_kernel absent de l'espace de travail".to_owned()];
+        return vec!["ts_kernel missing from the workspace".to_owned()];
     };
     if kernel
         .features
         .get("default")
         .is_some_and(|d| !d.is_empty())
     {
-        errors.push("ts_kernel : la fonctionnalité default doit être vide".to_owned());
+        errors.push("ts_kernel: the default feature must be empty".to_owned());
     }
     for p in &meta.packages {
         let is_kernel = p.name == "ts_kernel";
         if !is_kernel && p.features.contains_key("public") {
             errors.push(format!(
-                "{} : une fonctionnalité public est réservée à ts_kernel",
+                "{}: a public feature is reserved to ts_kernel",
                 p.name
             ));
         }
@@ -447,10 +450,7 @@ pub fn check_features(meta: &Metadata) -> Vec<String> {
             }
             for item in items {
                 if item.ends_with("/public") || (is_kernel && item == "public") {
-                    errors.push(format!(
-                        "{} : la fonctionnalité {feature} active {item}",
-                        p.name
-                    ));
+                    errors.push(format!("{}: feature {feature} turns on {item}", p.name));
                 }
                 // #36: also through a relay of another name (`extra = ["ts_runner/sim"]`).
                 let dev = DEV_FEATURES
@@ -463,7 +463,10 @@ pub fn check_features(meta: &Metadata) -> Vec<String> {
                         &mut BTreeSet::new(),
                     );
                 if HOSTS.contains(&p.name.as_str()) && dev {
-                    errors.push(format!("hôte {} : {feature} active {item}", p.name));
+                    errors.push(format!(
+                        "host {}: feature {feature} turns on {item}",
+                        p.name
+                    ));
                 }
             }
         }
@@ -478,10 +481,19 @@ pub fn check_features(meta: &Metadata) -> Vec<String> {
         // #36: a normal dependency on any crate of the workspace, not only ts_kernel, since a
         // crate may relay the development features (`ts_model = { features = ["dev-commands"] }`),
         // declared by the host or by any crate of its normal closure, optional ones included
-        // (Cargo unifies the features of the build).
+        // (Cargo unifies the features of the build). A path dependency outside the workspace is
+        // refused there: `cargo metadata --no-deps` does not show what it turns on.
         if HOSTS.contains(&p.name.as_str()) {
             for c in meta.normal_closure(&p.name) {
                 let Some(c) = meta.package(&c) else { continue };
+                for d in c.dependencies.iter().filter(|d| {
+                    d.kind.is_none() && d.path.is_some() && meta.package(&d.name).is_none()
+                }) {
+                    errors.push(format!(
+                        "host {}: normal dependency of {} on {} by a path outside the workspace",
+                        p.name, c.name, d.name
+                    ));
+                }
                 for d in c.dependencies.iter().filter(|d| {
                     d.kind.is_none()
                         && meta.package(&d.name).is_some()
@@ -504,7 +516,7 @@ pub fn check_features(meta: &Metadata) -> Vec<String> {
         let tool = TOOLS.contains(&p.name.as_str()) || p.name == "ts_toy";
         if !tool && meta.normal_closure(&p.name).contains("ts_toy") {
             errors.push(format!(
-                "{} dépend de ts_toy en dépendance normale (D-DEV-02)",
+                "{} depends on ts_toy as a normal dependency (D-DEV-02)",
                 p.name
             ));
         }
@@ -741,6 +753,10 @@ mod tests {
             "[profile.dev.package.\"*\"]\n[profile.dev]",
         );
         assert_eq!(check_local_lints(LOCAL, &star), Ok(()));
+        // Quoted segments are only read where the lints are named.
+        let target =
+            format!("{LOCAL}[target.'cfg(target_os = \"linux\")'.dependencies]\n\"a.b\" = \"1\"\n");
+        assert_eq!(check_local_lints(&target, ROOT), Ok(()));
         let valued = LOCAL.replace(
             "name = \"ts_py\"",
             "name = \"ts#py\"\nversion = \"0.1.0\"\ninclude = [\n  \"src/*.rs\",\n  \"a.b\", { x = 1 },\n]",
@@ -846,7 +862,7 @@ mod tests {
         };
         let runner = r#"{"name":"ts_runner","kind":null,"optional":true}"#;
         let e = run(r#""extra":["ts_runner/sim"]"#, runner);
-        assert_eq!(e, ["hôte ts_server : extra active ts_runner/sim"]);
+        assert_eq!(e, ["host ts_server: feature extra turns on ts_runner/sim"]);
         assert!(run(r#""extra":["ts_runner/plain"]"#, runner).is_empty());
         let e = run(
             r#""extra":["dep:ts_glue"]"#,
@@ -855,6 +871,14 @@ mod tests {
         assert_eq!(
             e,
             ["host ts_server: normal dependency of ts_glue on ts_model with a development feature"]
+        );
+        // A path crate outside the workspace hides what it turns on.
+        let e = run("", r#"{"name":"relay","kind":null,"path":"/w/fuzz/relay"}"#);
+        assert_eq!(
+            e,
+            [
+                "host ts_server: normal dependency of ts_server on relay by a path outside the workspace"
+            ]
         );
     }
 
@@ -890,7 +914,7 @@ mod tests {
             assert_eq!(
                 e,
                 [format!(
-                    "{name} dépend de ts_toy en dépendance normale (D-DEV-02)"
+                    "{name} depends on ts_toy as a normal dependency (D-DEV-02)"
                 )]
             );
         }
@@ -906,7 +930,7 @@ mod tests {
         ];
         assert_eq!(
             errors(&tool.join(",")),
-            ["ts_server dépend de ts_toy en dépendance normale (D-DEV-02)"]
+            ["ts_server depends on ts_toy as a normal dependency (D-DEV-02)"]
         );
         // Accepted: as a dev-dependency, or in a tool.
         assert!(errors(&pkg("ts_game", "ts_toy", r#""dev""#)).is_empty());

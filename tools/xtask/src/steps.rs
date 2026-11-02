@@ -192,7 +192,7 @@ pub fn clippy(cx: &Ctx) -> Outcome {
         "warnings",
     ];
     if !tri!(run_live(&cx.root, &cargo(), &args)) {
-        return Outcome::Fail("cargo clippy a échoué".to_owned());
+        return Outcome::Fail("cargo clippy failed".to_owned());
     }
     let meta = tri!(cx.meta());
     let mut shipped = BTreeSet::new();
@@ -865,7 +865,8 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
             errors.push(format!("{name} ({}): {e}", sys::shown(Path::new(src))));
         }
     }
-    // ts_py: every attribute naming unsafe_code, in any file, follows a // SAFETY: line (#91).
+    // ts_py: every attribute naming unsafe_code, in any .rs file, follows a // SAFETY: line, and
+    // no file brings in another one (`include!`, `#[path]`) that this scan would not read (#91).
     if let Some(py) = meta.package(manifests::LOCAL_LINTS_CRATE) {
         let dir = format!("{}/", meta.rel_dir(py));
         for rel in tri!(cx.files())
@@ -877,6 +878,13 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
                 errors.push(format!(
                     "{rel}:{line}: unsafe_code named outside the crate attribute without a \
                      // SAFETY: line just before"
+                ));
+            }
+            for line in exemptions::file_inclusions(&text) {
+                errors.push(format!(
+                    "{rel}:{line}: include!, include_str!, include_bytes! or #[path] refused in \
+                     {}: the unsafe_code scan reads only its .rs files",
+                    manifests::LOCAL_LINTS_CRATE
                 ));
             }
         }

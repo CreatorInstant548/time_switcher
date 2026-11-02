@@ -27,7 +27,7 @@ pub struct Package {
 #[derive(Debug, Deserialize)]
 pub struct Dependency {
     pub name: String,
-    /// `None` pour une dépendance normale, sinon `dev` ou `build`.
+    /// `None` for a normal dependency, else `dev` or `build`.
     pub kind: Option<String>,
     #[serde(default)]
     pub features: Vec<String>,
@@ -37,6 +37,9 @@ pub struct Dependency {
     /// The name the dependency is known by in its dependent (`k = { package = "ts_kernel" }`).
     #[serde(default)]
     pub rename: Option<String>,
+    /// The directory of a path dependency.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 fn default_on() -> bool {
