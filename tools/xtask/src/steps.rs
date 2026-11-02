@@ -122,6 +122,12 @@ impl Ctx {
             .map_err(Clone::clone)
     }
 
+    /// Tracked files modified since `HEAD` and not committed (m11). The steps read the disk, not
+    /// `HEAD`: with such files, the result may differ from what will be merged.
+    pub(crate) fn uncommitted(&self) -> Result<Vec<String>, String> {
+        self.git_paths(&["diff", "--name-only", "-z", "--no-renames", "HEAD"])
+    }
+
     pub(crate) fn read(&self, rel: &str) -> Result<Vec<u8>, String> {
         sys::read(&self.root.join(rel))
     }
@@ -614,6 +620,25 @@ pub fn profiles(cx: &Ctx) -> Outcome {
     Outcome::Ok("4 combinaisons refusées".to_owned())
 }
 
+/// `cargo tree` of a host: normal edges and their features, for every target, so that a
+/// dependency or a feature that only a non-host platform activates is seen too (m1).
+fn tree_args(host: &str) -> Vec<String> {
+    [
+        "tree",
+        "-p",
+        host,
+        "--edges",
+        "normal,features",
+        "--target",
+        "all",
+        "--locked",
+        "-f",
+        "{p} {f}",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
 pub fn features(cx: &Ctx) -> Outcome {
     let meta = tri!(cx.meta());
     let mut errors = manifests::check_features(meta);
@@ -633,16 +658,8 @@ pub fn features(cx: &Ctx) -> Outcome {
         );
     }
     for host in HOSTS.iter().filter(|h| meta.package(h).is_some()) {
-        let args = [
-            "tree",
-            "-p",
-            host,
-            "--edges",
-            "normal,features",
-            "--locked",
-            "-f",
-            "{p} {f}",
-        ];
+        let args = tree_args(host);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let tree = tri!(stdout_of(&cx.root, &cargo(), &args));
         errors.extend(
             manifests::tree_dev_features(&tree)
@@ -661,12 +678,19 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
         errors.push("CLIPPY_CONF_DIR remplace clippy.toml : refusé".to_owned());
     }
     let files = tri!(cx.files());
+    let mut read = 0;
     for p in meta.packages.iter().filter(|p| is_core(&p.name)) {
         let dir = format!("{}/", meta.rel_dir(p));
-        for rel in files
+        let sources: Vec<&String> = files
             .iter()
             .filter(|f| f.starts_with(&dir) && f.ends_with(".rs"))
-        {
+            .collect();
+        // m7: a core crate none of whose files is read would pass without being looked at.
+        if sources.is_empty() {
+            errors.push(format!("{}: no .rs file read under {dir}", p.name));
+        }
+        read += sources.len();
+        for rel in sources {
             let text = String::from_utf8_lossy(&tri!(cx.read(rel))).into_owned();
             errors.extend(
                 exemptions::clippy_exemptions(&text)
@@ -706,7 +730,7 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
     if cx.root.join(".clippy.toml").exists() {
         errors.push(".clippy.toml à la racine : seul clippy.toml est permis".to_owned());
     }
-    from_errors(errors, String::new())
+    from_errors(errors, format!("{read} core source file(s) read"))
 }
 
 pub fn local_paths(cx: &Ctx) -> Outcome {
@@ -819,6 +843,15 @@ mod tests {
         }
         assert!(super::is_core("ts_kernel") && super::is_core("ts_rules_x"));
         assert!(!super::is_core("xtask") && !super::is_core("ts_host"));
+    }
+
+    /// m1: the host graph is read for every target.
+    #[test]
+    fn host_tree_covers_every_target() {
+        let args = super::tree_args("ts_host");
+        assert!(args.windows(2).any(|w| w[0] == "--target" && w[1] == "all"));
+        assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "ts_host"));
+        assert!(args.iter().any(|a| a == "--locked"));
     }
 
     #[test]

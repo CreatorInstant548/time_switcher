@@ -53,7 +53,11 @@ pub fn check_unsafe_root(crate_name: &str, source: &str) -> Result<(), String> {
     } else {
         "#![forbid(unsafe_code)]"
     };
-    match source.lines().any(|l| l.trim() == expected) {
+    // Code lines only: the attribute inside a comment or a literal does not count (m2).
+    match crate::exemptions::code_lines(source)
+        .iter()
+        .any(|l| l == expected)
+    {
         true => Ok(()),
         false => Err(format!("{expected} absent")),
     }
@@ -228,6 +232,27 @@ pub fn patch_sections(manifest: &str) -> Vec<String> {
     out
 }
 
+/// Crate de cœur ou de règles : ni hôte, ni outil (comme `steps::is_core`).
+fn is_core_crate(name: &str) -> bool {
+    !TOOLS.contains(&name) && !HOSTS.contains(&name)
+}
+
+/// Fonctionnalités d'une crate de cœur que les passes de clippy et de test voient (m13) : liste
+/// fermée. Une autre fonctionnalité cacherait du code (`#[cfg(feature = "extra")]`) à clippy, qui
+/// ne la lit pas. Sont permises : `default` vide ; pour `ts_kernel`, `public` et les
+/// fonctionnalités de développement ; pour toute crate de cœur, une fonctionnalité de développement
+/// qui ne fait que relayer celle de `ts_kernel` (`dev-commands = ["ts_kernel/dev-commands"]`).
+fn feature_covered(crate_name: &str, feature: &str, items: &[String]) -> bool {
+    let dev = DEV_FEATURES.contains(&feature);
+    let relay = items.len() == 1 && items[0] == format!("ts_kernel/{feature}");
+    match (feature, crate_name == "ts_kernel") {
+        ("default", _) => true,
+        ("public", kernel) => kernel,
+        (_, true) => dev,
+        (_, false) => dev && relay,
+    }
+}
+
 /// Fonctionnalités dans les manifestes (F4) et règle D-DEV-02. Rend la liste des écarts.
 pub fn check_features(meta: &Metadata) -> Vec<String> {
     let mut errors = Vec::new();
@@ -250,6 +275,13 @@ pub fn check_features(meta: &Metadata) -> Vec<String> {
             ));
         }
         for (feature, items) in &p.features {
+            if is_core_crate(&p.name) && !feature_covered(&p.name, feature, items) {
+                errors.push(format!(
+                    "{} : la fonctionnalité {feature} n'est pas dans la liste fermée \
+                     vue par les passes de clippy (m13) : ajouter une passe dans steps::clippy",
+                    p.name
+                ));
+            }
             for item in items {
                 if item.ends_with("/public") || (is_kernel && item == "public") {
                     errors.push(format!(
@@ -330,6 +362,16 @@ mod tests {
         assert!(check_unsafe_root("ts_kernel", "//! x\n#![forbid(unsafe_code)]\n").is_ok());
         assert!(check_unsafe_root("ts_kernel", "#![deny(unsafe_code)]\n").is_err());
         assert!(check_unsafe_root("ts_kernel", "// #![forbid(unsafe_code)] plus tard\n").is_err());
+        // m2: in a block comment, a doc comment or a string, the attribute does not count.
+        for hidden in [
+            "/*\n#![forbid(unsafe_code)]\n*/\n",
+            "/* a /* b */\n#![forbid(unsafe_code)] */\n",
+            "/** doc\n#![forbid(unsafe_code)]\n*/ fn a() {}\n",
+            "const S: &str = \"\n#![forbid(unsafe_code)]\n\";\n",
+        ] {
+            assert!(check_unsafe_root("ts_kernel", hidden).is_err(), "{hidden}");
+        }
+        assert!(check_unsafe_root("ts_kernel", "/* ok */ #![forbid(unsafe_code)] // x\n").is_ok());
         let py = "#![deny(unsafe_code)]\n// SAFETY: macro pyo3\n#[allow(unsafe_code)]\nfn a() {}\n";
         assert!(check_unsafe_root("ts_py", py).is_ok());
         assert!(check_unsafe_root("ts_py", "#![forbid(unsafe_code)]\n").is_err());
@@ -456,7 +498,8 @@ mod tests {
         )
         .unwrap();
         let errors = check_features(&m);
-        assert_eq!(errors.len(), 7, "{errors:#?}");
+        // Seven earlier violations, and two features outside the closed list (m13).
+        assert_eq!(errors.len(), 9, "{errors:#?}");
     }
 
     /// Y6, D-DEV-02: `ts_toy` is refused in a normal dependency of a host or a rule crate,
@@ -520,5 +563,51 @@ mod tests {
     fn tree_lines() {
         let tree = "ts_host v0.0.0\n└── ts_kernel v0.0.0 (/w/k) default\n    ts_kernel feature \"dev-bench\"\n";
         assert_eq!(tree_dev_features(tree), ["ts_kernel feature \"dev-bench\""]);
+    }
+
+    /// m13: a feature of a core crate outside the closed list is refused, since no clippy pass
+    /// turns it on.
+    #[test]
+    fn core_features_are_a_closed_list() {
+        let run = |name: &str, features: &str| {
+            let json = format!(
+                r#"{{"workspace_root":"/w","packages":[
+                {{"name":"ts_kernel","manifest_path":"/w/k/Cargo.toml","features":{{"default":[]}}}},
+                {{"name":"{name}","manifest_path":"/w/x/Cargo.toml","features":{features}}}]}}"#
+            );
+            check_features(&parse(&json).unwrap())
+        };
+        // The kernel's own and the relayed development features, and `default`.
+        assert!(
+            run(
+                "ts_model",
+                r#"{"default":[],"dev-commands":["ts_kernel/dev-commands"]}"#
+            )
+            .is_empty()
+        );
+        // Another feature, or a relay that turns something else on.
+        for (name, bad) in [
+            ("ts_model", r#"{"extra":[]}"#),
+            ("ts_model", r#"{"dev-commands":[]}"#),
+            ("ts_model", r#"{"dev-commands":["ts_kernel/dev-bench"]}"#),
+            ("ts_model", r#"{"public":[]}"#),
+            ("ts_game", r#"{"dep:serde":["dep:serde"]}"#),
+        ] {
+            assert!(!run(name, bad).is_empty(), "{name} {bad}");
+        }
+        // Hosts and tools are not core crates.
+        assert!(run("ts_host", r#"{"extra":[]}"#).is_empty());
+        assert!(run("xtask", r#"{"extra":[]}"#).is_empty());
+        // The kernel itself.
+        let kernel = |features: &str| {
+            let json = format!(
+                r#"{{"workspace_root":"/w","packages":[{{"name":"ts_kernel","manifest_path":"/w/k/Cargo.toml","features":{features}}}]}}"#
+            );
+            check_features(&parse(&json).unwrap())
+        };
+        assert!(
+            kernel(r#"{"default":[],"public":[],"dev-bench":[],"external-pilot":[]}"#).is_empty()
+        );
+        assert!(!kernel(r#"{"default":[],"extra":[]}"#).is_empty());
     }
 }

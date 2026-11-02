@@ -129,6 +129,23 @@ fn parse(args: &[String]) -> Result<Options, String> {
     Ok(opts)
 }
 
+/// Warning for tracked files modified and not committed (m11): every step reads the disk, so the
+/// result is not that of the commit that will be merged. Commit, then run the check again.
+fn dirty_warning(files: &[String]) -> String {
+    let shown: Vec<&str> = files.iter().take(5).map(String::as_str).collect();
+    let more = files.len().saturating_sub(shown.len());
+    let tail = if more > 0 {
+        format!(", … (+{more})")
+    } else {
+        String::new()
+    };
+    format!(
+        "ATTENTION : {} fichier(s) suivi(s) modifié(s) et non commité(s) ({}{tail}). Les étapes          lisent le disque, pas HEAD : committer, puis relancer pour un résultat qui vaut celui de la PR.",
+        files.len(),
+        shown.join(", ")
+    )
+}
+
 fn main() -> ExitCode {
     let args = sys::args();
     match args.first().map(String::as_str) {
@@ -183,6 +200,14 @@ fn main() -> ExitCode {
         "cargo xtask check : {} étape(s), tests sur {scope}",
         selected.len()
     );
+    let dirty = if steps::ci_mode() {
+        Vec::new() // CI reads the extracted tree: nothing to warn about.
+    } else {
+        cx.uncommitted().unwrap_or_default()
+    };
+    if !dirty.is_empty() {
+        println!("{}", dirty_warning(&dirty));
+    }
 
     let mut results: Vec<(&str, String)> = Vec::new();
     let mut failed = false;
@@ -211,6 +236,12 @@ fn main() -> ExitCode {
             .map_or("non lancée", |r| r.1.as_str());
         println!("  {name:<18} {line}");
     }
+    if !dirty.is_empty() {
+        println!(
+            "Rappel : {} fichier(s) suivi(s) modifié(s) et non commité(s).",
+            dirty.len()
+        );
+    }
     if failed {
         println!("Résultat : ÉCHEC");
         return ExitCode::FAILURE;
@@ -237,6 +268,15 @@ mod tests {
         assert!(parse(&args("check --only")).is_err());
         assert!(parse(&args("check --force")).is_err());
         assert!(parse(&args("slots")).is_err());
+    }
+
+    /// m11: the warning names the files and says what to do.
+    #[test]
+    fn warns_about_uncommitted_files() {
+        let files: Vec<String> = (1..=7).map(|n| format!("f{n}.rs")).collect();
+        let text = dirty_warning(&files);
+        assert!(text.contains("7 fichier(s)") && text.contains("f5.rs") && !text.contains("f6.rs"));
+        assert!(text.contains("(+2)") && text.contains("committer"));
     }
 
     #[test]

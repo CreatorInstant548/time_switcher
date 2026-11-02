@@ -6,13 +6,23 @@
 //! mais marqués. Seuls les motifs hors chaîne comptent. Les règles portent ensuite sur des
 //! identifiants entiers, ce qui ferme les formes par commentaire, par macro et par accolades.
 
-/// Identifiants refusés partout : les lints d'interdiction de clippy, anciens noms compris
-/// (`disallowed_method`, `disallowed_type`, `blacklisted_name`), et l'inclusion de code.
-fn forbidden_ident(token: &str) -> bool {
-    token.contains("disallowed_")
-        || token == "blacklisted_name"
-        || matches!(token, "include" | "include_str" | "include_bytes")
-}
+/// Names of the clippy lints that apply the `clippy.toml` bans, old names included
+/// (`disallowed_method`, `disallowed_type`, `blacklisted_name`): refused wherever they appear.
+/// Any other `disallowed_*` identifier is refused only when written as a clippy lint path
+/// (`clippy::disallowed_…`), so that `fn disallowed_moves()` stays legitimate (m14).
+const DISALLOWED_LINTS: [&str; 8] = [
+    "disallowed_methods",
+    "disallowed_method",
+    "disallowed_types",
+    "disallowed_type",
+    "disallowed_macros",
+    "disallowed_names",
+    "disallowed_script_idents",
+    "blacklisted_name",
+];
+/// Code inclusion macros, refused when called, named in a path, imported by `use` or handed to
+/// another macro as an argument (which could call them), but not as a plain name (m14).
+const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes"];
 
 /// Groupes ou lints dont un `allow` ou un `expect` couvrirait les interdictions.
 const FORBIDDEN_GROUPS: [&str; 3] = ["clippy::all", "clippy::style", "warnings"];
@@ -103,6 +113,76 @@ impl Src {
     fn slice(&self, start: usize, end: usize) -> String {
         self.text[start..end].iter().collect()
     }
+
+    /// The text is `s` just before `at`, outside any literal.
+    fn follows(&self, at: usize, s: &str) -> bool {
+        let n = s.chars().count();
+        at >= n && self.text[at - n..at].iter().copied().eq(s.chars()) && !self.string[at - 1]
+    }
+
+    /// For each character: inside the delimiters of a macro call `name!( … )`, `![ … ]` or `!{ … }`.
+    fn in_macro_args(&self) -> Vec<bool> {
+        let (mut stack, mut inside) = (Vec::new(), 0_usize);
+        let mut out = vec![false; self.text.len()];
+        for (k, slot) in out.iter_mut().enumerate() {
+            if !self.string[k] {
+                match self.text[k] {
+                    '(' | '[' | '{' => {
+                        let call = self.follows(k, "!");
+                        stack.push(call);
+                        inside += usize::from(call);
+                    }
+                    ')' | ']' | '}' => {
+                        *slot = inside > 0;
+                        if stack.pop() == Some(true) {
+                            inside -= 1;
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            *slot = inside > 0;
+        }
+        out
+    }
+
+    /// For each character: inside a `use` declaration, up to its closing `;`.
+    fn in_use(&self) -> Vec<bool> {
+        let mut out = vec![false; self.text.len()];
+        let mut end = 0;
+        for tok in self.tokens() {
+            if tok.0 < end || self.word(tok) != "use" {
+                continue;
+            }
+            let (mut depth, mut k) = (0_i32, tok.1);
+            while k < self.text.len() && !(self.text[k] == ';' && depth <= 0 && !self.string[k]) {
+                if !self.string[k] {
+                    depth += i32::from(self.text[k] == '{') - i32::from(self.text[k] == '}');
+                }
+                k += 1;
+            }
+            let stop = k.min(out.len());
+            out[tok.0..stop].fill(true);
+            end = k;
+        }
+        out
+    }
+}
+
+/// The lines of code of a Rust source as rustc reads it: comments removed (block comments and
+/// doc comments included), blanks removed, string and character literals left out. One entry per
+/// source line that holds code. An attribute inside a comment or a literal is not in it (m2).
+pub fn code_lines(source: &str) -> Vec<String> {
+    let src = normalize(source);
+    let mut lines: Vec<(usize, String)> = Vec::new();
+    for k in (0..src.text.len()).filter(|&k| !src.string[k]) {
+        match lines.last_mut() {
+            Some((line, text)) if *line == src.line[k] => text.push(src.text[k]),
+            _ => lines.push((src.line[k], src.text[k].to_string())),
+        }
+    }
+    lines.into_iter().map(|(_, text)| text).collect()
 }
 
 /// Retire commentaires et blancs, retire `r#` devant un identifiant, marque les littéraux.
@@ -206,14 +286,15 @@ fn normalize(source: &str) -> Src {
 }
 
 /// Numéros de ligne des formes refusées dans une crate de cœur :
-/// - tout identifiant `disallowed_*` (lints d'interdiction, anciens noms compris), quel que soit
-///   le contexte : attribut, argument de macro, accolades ;
-/// - l'identifiant `include`, `include_str` ou `include_bytes`, partout, `use` compris ;
-/// - `path = …` dans un attribut (`#[path]`, `cfg_attr(…, path = …)`) ;
+/// - le nom d'un lint d'interdiction (`DISALLOWED_LINTS`, anciens noms compris), quel que soit le
+///   contexte, et tout `clippy::disallowed_*` ;
+/// - `include`, `include_str` ou `include_bytes` appelé (`!`), dans un chemin, dans un `use` ou
+///   dans les arguments d'une macro ;
+/// - `path = …` dans un attribut (`#[path]`, `cfg_attr(…, path = …)`, argument de macro) ;
 /// - `allow(…)` ou `expect(…)` de `clippy::all`, `clippy::style` ou `warnings`, et tout `$` dans
 ///   les arguments d'un `allow`, `expect`, `warn` ou `deny` ;
-/// - un prédicat de `cfg(…)`, `cfg!(…)` ou `cfg_attr(…)` hors de `test`, `feature = "…"`, `all`,
-///   `any` et `not`.
+/// - un prédicat de `cfg(…)` (après `[`, `,` ou `(`, ou `!{`), `cfg!(…)` ou `cfg_attr(…)` hors de
+///   `test`, `feature = "…"`, `all`, `any` et `not`.
 pub fn clippy_exemptions(source: &str) -> Vec<usize> {
     let src = normalize(source);
     let mut found = Vec::new();
@@ -225,11 +306,15 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
             .eq(w.chars())
             && !src.string.get(end).copied().unwrap_or(false)
     };
+    let (in_macro, in_use) = (src.in_macro_args(), src.in_use());
     for tok in src.tokens() {
         let (start, end) = tok;
         let word = src.word(tok);
         let prev = start.checked_sub(1).map(|p| src.text[p]);
-        let path = word == "path" && next(end, "=") && matches!(prev, Some('[' | ',' | '('));
+        // A macro argument opens with `!{`: the position `{` after a call is as good as `(` or `[`.
+        let opens = matches!(prev, Some('[' | ',' | '('))
+            || (prev == Some('{') && src.follows(start - 1, "!"));
+        let path = word == "path" && next(end, "=") && opens;
         let lint = matches!(word.as_str(), "allow" | "expect" | "warn" | "deny")
             && prev != Some('.')
             && next(end, "(")
@@ -241,7 +326,7 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
                 args.contains('$') || group
             };
         let cfg = match word.as_str() {
-            "cfg" if next(end, "(") => Some((end + 1, src.close(end + 1))),
+            "cfg" if next(end, "(") && opens => Some((end + 1, src.close(end + 1))),
             "cfg" if next(end, "!(") => Some((end + 2, src.close(end + 2))),
             "cfg_attr" if next(end, "(") => {
                 let close = src.close(end + 1);
@@ -255,7 +340,11 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
                 .filter(|&(s, _)| s >= open && s < close)
                 .any(|t| !CFG_IDENTS.contains(&src.word(t).as_str()))
         });
-        if forbidden_ident(&word) || path || lint || cfg {
+        let disallowed = DISALLOWED_LINTS.contains(&word.as_str())
+            || (word.starts_with("disallowed_") && src.follows(start, "clippy::"));
+        let include = INCLUDES.contains(&word.as_str())
+            && (next(end, "!") || prev == Some(':') || in_use[start] || in_macro[start]);
+        if disallowed || include || path || lint || cfg {
             found.push(src.line[start]);
         }
     }
@@ -371,5 +460,68 @@ mod tests {
         for form in ok {
             assert!(clippy_exemptions(form).is_empty(), "{form}");
         }
+    }
+
+    /// m12: a macro that puts an attribute received as an argument, called with braces.
+    #[test]
+    fn multi_step_macro_forms() {
+        let m = "macro_rules! m { ($a:meta) => { #[$a] pub mod c; } }\n";
+        assert!(flagged(&format!("{m}m!{{path = \"../clock.inc\"}}")));
+        assert!(flagged(&format!("{m}m!{{ path = \"x.rs\" }}")));
+        assert!(flagged(&format!("{m}m!(path = \"x.rs\")")));
+        assert!(flagged(&format!("{m}m!{{cfg(clippy)}}")));
+        // A plain assignment to a variable named `path`, at the start of a block, is not one.
+        assert!(!flagged(
+            "fn f() { let mut path = 1; if true { path = 2; } let _ = path; }"
+        ));
+    }
+
+    /// m14: names that merely look like a ban are no longer refused.
+    #[test]
+    fn no_false_refusals() {
+        for ok in [
+            "fn disallowed_moves() {}",
+            "fn f(include: bool) -> bool { include }",
+            "fn f() { let include = true; if include { g(include); } }",
+            "struct S { include: Vec<u8> }\nfn f(include: Vec<u8>) -> S { S { include } }",
+            "fn f(x: &Set) -> bool { x.include(1) }",
+            "fn cfg(level: u8) -> u8 { level }\nfn g() -> u8 { let x = cfg(5); x }",
+            "fn f() { let path = 1; let _ = path; }",
+            "fn includes() {}\nfn include_all() {}",
+        ] {
+            assert!(!flagged(ok), "{ok}");
+        }
+        // The exact lint names, and any `clippy::disallowed_*`, stay refused.
+        for bad in [
+            "fn disallowed_methods() {}",
+            "#[allow(clippy::disallowed_whatever)] fn a() {}",
+            "#[allow(clippy::r#disallowed_whatever)] fn a() {}",
+            "use std::{vec, include};",
+            "use std::{include, vec};",
+            "pub use core::include_str;",
+            "m!(include)",
+            "m!{ include_bytes }",
+            "let _ = include!(\"x.rs\");",
+            "let _ = std::include_str!(\"x\");",
+            "fn f() { g(cfg(x)); }",
+        ] {
+            assert!(flagged(bad), "{bad}");
+        }
+    }
+
+    /// m2: only real code lines count; comments and literals do not.
+    #[test]
+    fn code_lines_skip_comments_and_literals() {
+        let src = "/* a\n#![forbid(unsafe_code)]\n*/\n/// #![forbid(unsafe_code)]\n\
+                   //! #![forbid(unsafe_code)]\nconst S: &str = \"#![forbid(unsafe_code)]\";\n\
+                   #![forbid( unsafe_code )] /* x */\nfn f() {}\n";
+        let lines = code_lines(src);
+        let hits = lines
+            .iter()
+            .filter(|l| *l == "#![forbid(unsafe_code)]")
+            .count();
+        assert_eq!(hits, 1, "{lines:?}");
+        assert!(lines.contains(&"constS:&str=;".to_owned()), "{lines:?}");
+        assert!(code_lines("/* /* #![forbid(unsafe_code)] */ */").is_empty());
     }
 }
