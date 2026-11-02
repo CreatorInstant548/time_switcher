@@ -73,8 +73,19 @@ pub fn cargo() -> String {
     env("CARGO").unwrap_or_else(|| "cargo".to_owned())
 }
 
-fn command(root: &Path, prog: &str, args: &[&str]) -> Command {
+/// The one place that creates a child process of xtask (apart from tests and the system probes
+/// of `slots`): every Git run by the child, or by a tool it starts (gitleaks, cargo, uv), ignores
+/// the replacement objects (`refs/replace/`). A ref planted there could otherwise show xtask
+/// another commit, tree or blob than the one named by its SHA (#63). `GIT_NO_REPLACE_OBJECTS` is
+/// the environment form of `git --no-replace-objects`.
+pub fn base_command(prog: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut cmd = Command::new(prog);
+    cmd.env("GIT_NO_REPLACE_OBJECTS", "1");
+    cmd
+}
+
+fn command(root: &Path, prog: &str, args: &[&str]) -> Command {
+    let mut cmd = base_command(prog);
     cmd.args(args).current_dir(root);
     for var in SCRUBBED_ENV {
         cmd.env_remove(var);
@@ -174,5 +185,130 @@ pub fn sha256(root: &Path, file: &Path) -> Result<String, String> {
             "empreinte SHA-256 illisible pour {}",
             file.display()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::carry::lab::Lab;
+    use crate::github::{Repo, System};
+
+    /// A repository with a replace ref on each kind of object, so that a read which honours them
+    /// is told apart from one which does not (#63).
+    struct Replaced {
+        lab: Lab,
+        /// The commit with `a` only.
+        only_a: String,
+        /// Commit with `a` and `b`, replaced by `only_a`.
+        commit: String,
+        /// Commit with `a` and `b`, whose tree is replaced by the tree with `a` only.
+        tree_commit: String,
+        /// Commit with `a` and `b` whose blob `a` is replaced by another blob.
+        blob_commit: String,
+    }
+
+    fn replaced(name: &str) -> Replaced {
+        let lab = Lab::new(name);
+        let only_a = lab.commit(&[("a", Some("real a\n"))]);
+        let commit = lab.commit(&[("b", Some("real b\n"))]);
+        lab.git(&["replace", &commit, &only_a]);
+        // Another history, so that these commits are not themselves replaced.
+        lab.git(&["checkout", "-q", "--orphan", "second"]);
+        let tree_one = lab.commit(&[("a", Some("tree a\n")), ("b", None)]);
+        let tree_commit = lab.commit(&[("b", Some("tree b\n"))]);
+        let (tree_old, tree_new) = (
+            lab.git(&["rev-parse", &format!("{tree_commit}^{{tree}}")]),
+            lab.git(&["rev-parse", &format!("{tree_one}^{{tree}}")]),
+        );
+        lab.git(&["replace", &tree_old, &tree_new]);
+        lab.git(&["checkout", "-q", "--orphan", "third"]);
+        let blob_commit = lab.commit(&[("a", Some("blob a\n")), ("b", Some("blob b\n"))]);
+        write(&lab.dir.join("fake.txt"), b"fake a\n").unwrap();
+        let fake_blob = lab.git(&["hash-object", "-w", "fake.txt"]);
+        let real_blob = lab.git(&["rev-parse", &format!("{blob_commit}:a")]);
+        lab.git(&["replace", &real_blob, &fake_blob]);
+        Replaced {
+            lab,
+            only_a,
+            commit,
+            tree_commit,
+            blob_commit,
+        }
+    }
+
+    /// Files of `rev` as read by xtask's own launcher.
+    fn names(lab: &Lab, rev: &str) -> String {
+        let out = stdout_of(&lab.dir, "git", &["ls-tree", "-r", "--name-only", rev]).unwrap();
+        out.split_whitespace().collect::<Vec<_>>().join(",")
+    }
+
+    /// The control: plain Git does honour the replace refs, so the tests below mean something.
+    #[test]
+    fn control_plain_git_honours_replace_refs() {
+        let r = replaced("sys-control");
+        assert_eq!(r.lab.git(&["ls-tree", "-r", "--name-only", &r.commit]), "a");
+        assert_eq!(
+            r.lab.git(&["ls-tree", "-r", "--name-only", &r.tree_commit]),
+            "a"
+        );
+        let spec = format!("{}:a", r.blob_commit);
+        assert_eq!(r.lab.git(&["cat-file", "blob", &spec]), "fake a");
+    }
+
+    /// Every launcher of `sys` reads the real objects: files of a commit, files of a tree, blob.
+    #[test]
+    fn launchers_ignore_replace_refs() {
+        let r = replaced("sys-launchers");
+        assert_eq!(names(&r.lab, &r.commit), "a,b");
+        assert_eq!(names(&r.lab, &r.tree_commit), "a,b");
+        let blob_spec = format!("{}:a", r.blob_commit);
+        let args = ["cat-file", "blob", &blob_spec];
+        let (code, out, _) = outputs(&r.lab.dir, "git", &args).unwrap();
+        assert_eq!((code, out.as_slice()), (Some(0), &b"blob a\n"[..]));
+        let (ok, text) = run_captured(&r.lab.dir, "git", &args).unwrap();
+        assert!(ok);
+        assert_eq!(text, "blob a\n");
+        assert_eq!(stdout_of(&r.lab.dir, "git", &args).unwrap(), "blob a\n");
+        // `run_live` only shows its output, so the exit code tells: the commit differs from
+        // `only_a` unless the replace ref is honoured.
+        let diff = ["diff", "--quiet", &r.commit, &r.only_a];
+        assert_eq!(run_live(&r.lab.dir, "git", &diff), Ok(false));
+    }
+
+    /// The `Repo` reads of `merge` and `verify-main` (`git`, `blob`) go through the same launcher.
+    #[test]
+    fn repo_reads_ignore_replace_refs() {
+        let r = replaced("sys-repo");
+        let repo = Repo {
+            main: r.lab.dir.clone(),
+            here: r.lab.dir.clone(),
+            slug: "o/r".to_owned(),
+            dry_run: true,
+            ci: false,
+            cache: r.lab.dir.join(".cache"),
+            runner: Box::new(System),
+        };
+        let ls = repo
+            .git(&["ls-tree", "-r", "--name-only", &r.commit])
+            .unwrap();
+        assert_eq!(ls.split_whitespace().collect::<Vec<_>>(), ["a", "b"]);
+        let blob = repo.blob(&r.lab.dir, &r.blob_commit, "a").unwrap();
+        assert_eq!(blob.as_deref(), Some(&b"blob a\n"[..]));
+    }
+
+    /// The setting is made by the functions that prepare every child, whatever the program.
+    #[test]
+    fn every_command_sets_the_variable() {
+        let value = |cmd: &Command| {
+            cmd.get_envs()
+                .find(|(k, _)| *k == "GIT_NO_REPLACE_OBJECTS")
+                .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+        };
+        for prog in ["git", "cargo", "gitleaks", "gh"] {
+            let cmd = command(Path::new("."), prog, &["x"]);
+            assert_eq!(value(&cmd), Some(Some("1".to_owned())), "{prog}");
+        }
+        assert_eq!(value(&base_command("uv")), Some(Some("1".to_owned())));
     }
 }
