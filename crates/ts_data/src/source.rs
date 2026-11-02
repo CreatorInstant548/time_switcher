@@ -37,6 +37,7 @@ impl Default for Limits {
             // spec: attendus-mesurables.md §10.1 (M39d)
             max_cards: 65_536,
             // spec: attendus-mesurables.md §10.1 (M39e)
+            // PROVISIONAL(design #142): 16 RON recursion levels, about two per visible level.
             max_depth: 16,
             // spec: attendus-mesurables.md §10.1 (M39f)
             max_dir_depth: 8,
