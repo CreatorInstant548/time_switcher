@@ -3,22 +3,21 @@
 //! them, and the profile constant.
 //!
 //! Sensitive path (`tools/ci/sensitive-paths.txt`). The `compile_error!` messages are searched
-//! for word for word by the `profiles` step of `cargo xtask check`: do not change them. They
-//! therefore stay in French on purpose, until that step is updated.
+//! for word for word by the `profiles` step of `cargo xtask check`, and a test of `xtask` checks
+//! that they are still written here: change them together with `profile_error` in
+//! `tools/xtask/src/steps.rs`.
 
 #[cfg(all(feature = "public", feature = "dev-commands"))]
-compile_error!("profil public : la fonctionnalité `dev-commands` est interdite (SEC0-20, M28)");
+compile_error!("public profile: feature `dev-commands` is forbidden (SEC0-20, M28)");
 
 #[cfg(all(feature = "public", feature = "dev-introspection"))]
-compile_error!(
-    "profil public : la fonctionnalité `dev-introspection` est interdite (SEC0-20, M28)"
-);
+compile_error!("public profile: feature `dev-introspection` is forbidden (SEC0-20, M28)");
 
 #[cfg(all(feature = "public", feature = "external-pilot"))]
-compile_error!("profil public : la fonctionnalité `external-pilot` est interdite (SEC0-20, M28)");
+compile_error!("public profile: feature `external-pilot` is forbidden (SEC0-20, M28)");
 
 #[cfg(all(feature = "public", feature = "dev-bench"))]
-compile_error!("profil public : la fonctionnalité `dev-bench` est interdite (SEC0-20, M28)");
+compile_error!("public profile: feature `dev-bench` is forbidden (SEC0-20, M28)");
 
 /// Build profile: `"public"` if and only if the `public` feature is active, otherwise `"dev"`
 /// (E9). The refusal to start online compares against `"public"`: it stays closed by

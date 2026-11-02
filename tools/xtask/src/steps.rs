@@ -599,7 +599,14 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
     from_errors(errors, format!("{} crate(s)", meta.packages.len()))
 }
 
-/// `public` avec chaque fonctionnalité de développement doit échouer sur notre message (SEC0-20, E8).
+/// Message of the `compile_error!` raised by `ts_kernel` for `public` together with the
+/// development feature `f` (`crates/ts_kernel/src/build_profile.rs`), searched for word for word
+/// by [`profiles`]. A test checks that the kernel still carries it.
+fn profile_error(f: &str) -> String {
+    format!("public profile: feature `{f}` is forbidden (SEC0-20, M28)")
+}
+
+/// `public` with each development feature must fail on our own message (SEC0-20, E8).
 pub fn profiles(cx: &Ctx) -> Outcome {
     for f in DEV_FEATURES {
         let features = format!("public,{f}");
@@ -613,15 +620,19 @@ pub fn profiles(cx: &Ctx) -> Outcome {
         ];
         println!("  $ cargo {}", args.join(" "));
         let (ok, out) = tri!(run_captured(&cx.root, &cargo(), &args));
-        let message = format!("profil public : la fonctionnalité `{f}` est interdite");
+        let message = profile_error(f);
         if ok || !out.contains(&message) {
+            // Error lines without a path separator only (SEC0-26: no local path in the output).
+            out.lines()
+                .filter(|l| l.starts_with("error") && !l.contains(['/', '\\']))
+                .for_each(|l| println!("  {l}"));
             return Outcome::Fail(format!(
-                "public,{f} n'échoue pas sur le compile_error! attendu"
+                "public,{f} does not fail on the expected compile_error!"
             ));
         }
-        println!("  échec attendu : « {message} »");
+        println!("  expected failure: \"{message}\"");
     }
-    Outcome::Ok("4 combinaisons refusées".to_owned())
+    Outcome::Ok(format!("{} combinations refused", DEV_FEATURES.len()))
 }
 
 /// `cargo tree` of a host: normal edges and their features, for every target, so that a
@@ -872,6 +883,35 @@ mod tests {
         assert!(args.windows(2).any(|w| w[0] == "--target" && w[1] == "all"));
         assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "ts_host"));
         assert!(args.iter().any(|a| a == "--locked"));
+    }
+
+    /// The `profiles` step searches the output for these messages: the kernel must carry exactly
+    /// one `compile_error!` per development feature, under the `cfg` of that very feature, with
+    /// the text the step expects.
+    #[test]
+    fn kernel_carries_the_profile_errors() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/ts_kernel/src/build_profile.rs");
+        let source = crate::sys::read_text(&path)
+            .expect("build_profile.rs moved: update this test and the `profiles` step");
+        for f in crate::manifests::DEV_FEATURES {
+            let literal = format!("\"{}\"", super::profile_error(f));
+            assert_eq!(source.matches(&literal).count(), 1, "{f}: message");
+            let head = &source[..source.find(&literal).unwrap_or_default()];
+            let cfg = head.rfind("#[cfg(all(").unwrap_or_default();
+            let expected = format!("#[cfg(all(feature = \"public\", feature = \"{f}\"))]");
+            let gate = head[cfg..].split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(gate.starts_with(&expected), "{f}: gate {gate}");
+        }
+        let count = source
+            .lines()
+            .filter(|l| l.trim_start().starts_with("compile_error!("))
+            .count();
+        assert_eq!(
+            count,
+            crate::manifests::DEV_FEATURES.len(),
+            "compile_error! count"
+        );
     }
 
     #[test]
