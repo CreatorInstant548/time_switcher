@@ -447,10 +447,9 @@ impl fmt::Display for BuildError {
                     "a system of phase {phase:?} opts out of ambiguity detection"
                 )
             }
-            Self::DeferredCondition { phase } => write!(
-                f,
-                "a run condition of phase {phase:?} has deferred buffers"
-            ),
+            Self::DeferredCondition { phase } => {
+                write!(f, "a run condition of phase {phase:?} has deferred buffers")
+            }
             Self::DeferredExclusive { phase } => write!(
                 f,
                 "a system of phase {phase:?} has exclusive world access and deferred buffers"
