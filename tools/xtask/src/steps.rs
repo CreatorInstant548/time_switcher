@@ -612,6 +612,10 @@ pub fn profiles(cx: &Ctx) -> Outcome {
         let (ok, out) = tri!(run_captured(&cx.root, &cargo(), &args));
         let message = profile_error(f);
         if ok || !out.contains(&message) {
+            // Error lines without a path separator only (SEC0-26: no local path in the output).
+            out.lines()
+                .filter(|l| l.starts_with("error") && !l.contains(['/', '\\']))
+                .for_each(|l| println!("  {l}"));
             return Outcome::Fail(format!(
                 "public,{f} does not fail on the expected compile_error!"
             ));
@@ -829,18 +833,32 @@ mod tests {
     }
 
     /// The `profiles` step searches the output for these messages: the kernel must carry exactly
-    /// one `compile_error!` per development feature, with the very text the step expects.
+    /// one `compile_error!` per development feature, under the `cfg` of that very feature, with
+    /// the text the step expects.
     #[test]
     fn kernel_carries_the_profile_errors() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../crates/ts_kernel/src/build_profile.rs");
-        let source = crate::sys::read_text(&path).unwrap();
+        let source = crate::sys::read_text(&path)
+            .expect("build_profile.rs moved: update this test and the `profiles` step");
         for f in crate::manifests::DEV_FEATURES {
             let literal = format!("\"{}\"", super::profile_error(f));
-            assert_eq!(source.matches(&literal).count(), 1, "{f}");
+            assert_eq!(source.matches(&literal).count(), 1, "{f}: message");
+            let head = &source[..source.find(&literal).unwrap_or_default()];
+            let cfg = head.rfind("#[cfg(all(").unwrap_or_default();
+            let expected = format!("#[cfg(all(feature = \"public\", feature = \"{f}\"))]");
+            let gate = head[cfg..].split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(gate.starts_with(&expected), "{f}: gate {gate}");
         }
-        let count = source.matches("compile_error!(").count();
-        assert_eq!(count, crate::manifests::DEV_FEATURES.len());
+        let count = source
+            .lines()
+            .filter(|l| l.trim_start().starts_with("compile_error!("))
+            .count();
+        assert_eq!(
+            count,
+            crate::manifests::DEV_FEATURES.len(),
+            "compile_error! count"
+        );
     }
 
     #[test]
