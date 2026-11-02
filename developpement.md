@@ -431,5 +431,12 @@ erun\datanalytics\` ; l'utilisateur en est informé.
   - #102 (AU8, `ffd15dd`), qui ferme #98 ;
   - #103 (#48, `c9266c6`) ; #48 close, son dernier point part au reliquat avec `ts_host`.
 - #6 close avec sa justification point par point.
-- En cours : #101 (#77 + liste fermée de déclencheurs AS-53 + sauts de ligne ``/U+2028) et #63 (`--no-replace-objects`).
+- En cours : #101 (#77 + liste fermée de déclencheurs AS-53 + sauts de ligne `
+`/U+2028) et #63 (`--no-replace-objects`).
 - Leçon : après chaque fusion qui touche `.github/` ou `docs/dev/`, les PR qui partagent ces fichiers perdent le report AS-40. Il faut alors relire le commit de fusion, ce qui reste rapide avec Sonnet.
+- 02/11 : lot de sécurité terminé.
+  - #104 (#63, `3b5a0e2`).
+  - #101 (#77, `434151b`) : il a fallu cinq relecteurs neufs. Quatre contournements de SEC0-31 ont été trouvés puis corrigés : CR seul, espaces Unicode, caractères bidi, guillemet ouvert. Leur cause commune a été corrigée par une grammaire fermée « une ligne par nœud » (AS-54), plus une liste fermée de déclencheurs (AS-53). Le cinquième relecteur n'a rien trouvé.
+  - Issues closes : #6, #48, #50, #63, #77, #98.
+  - Mineurs reportés dans #85, #91 et #95.
+- Prochain lot : les issues de dette qui se ferment vite.
