@@ -1681,6 +1681,15 @@ mod tests {
         }
     }
 
+    /// The repository's workflows pass the `workflows` step of `cargo xtask check`, among them the
+    /// `report` job of nightly.yml that opens the nightly anomaly issue (AS-52).
+    #[test]
+    fn accepts_the_repository_workflows() {
+        for (name, text) in repo_workflows() {
+            assert_eq!(check_workflow(&text), Vec::<String>::new(), "{name}");
+        }
+    }
+
     /// #75: nightly.yml called `install-tools.sh cargo-fuzz` while tools.lock had no
     /// `cargo-fuzz.version`; the weekly fuzzing failed at run time instead of in the PR.
     #[test]
