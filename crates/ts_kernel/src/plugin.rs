@@ -56,8 +56,9 @@ use crate::{Phase, StateDecode, StateHash};
 /// buffers when it evaluates it, the parallel one never, and [`crate::Sim::build`] refuses
 /// it ([`crate::BuildError::DeferredCondition`]).
 ///
-/// **Ticks** (AS-27, AS-57 K-d): a rule never reads a change tick; `clippy.toml` bans every
-/// method that yields one. Known limit, accepted (AS-57): `Tick` values can still be
+/// **Ticks** (AS-27, AS-57 K-d): a rule never reads a change tick; `clippy.toml` bans the
+/// safe methods that yield one and the ready-made run conditions that keep one or a `Local`
+/// inside bevy (`run_once`, `resource_changed`, ...). Known limit, accepted (AS-57): `Tick` values can still be
 /// compared, hashed or printed through its `Eq`, `Hash` and `Debug`, which clippy cannot
 /// ban; the safety net is the generic resume test (#110), since ticks restart on restore.
 ///

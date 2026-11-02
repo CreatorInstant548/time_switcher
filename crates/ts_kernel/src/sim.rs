@@ -721,7 +721,8 @@ impl Sim {
             }
             // AS-57 (#93 review): the exact criterion of the parallel executor, which runs an
             // exclusive system with `System::run` and so applies its buffers at once.
-            let deferred_exclusive = schedule.systems_with_access().is_ok_and(|mut systems| {
+            // Fails closed: a schedule that cannot list its systems is refused too.
+            let deferred_exclusive = schedule.systems_with_access().map_or(true, |mut systems| {
                 systems.any(|(_, s)| s.access().is_exclusive() && s.system().has_deferred())
             });
             if deferred_exclusive {

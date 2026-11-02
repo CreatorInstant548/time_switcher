@@ -74,13 +74,15 @@ impl Phase {
 /// system, unordered with both, could have its commands applied at that point or at the end
 /// of the phase depending on timing: a result that differs between two parallel runs. With
 /// none, the commands of a phase are applied once, at the end of the phase, in the order of
-/// the schedule's systems, which depends on the build only. Two things would apply buffers
-/// earlier: an `ApplyDeferred` system (banned, K-b) and an exclusive system with deferred
-/// buffers, which the parallel executor runs with `System::run` (refused by `Sim::build`,
-/// `BuildError::DeferredExclusive`); and a run condition with deferred buffers is applied
-/// by the single-threaded executor when evaluated and never by the parallel one (refused,
-/// `BuildError::DeferredCondition`). (The `Entity` that
-/// `Commands::spawn` reserves may still differ between parallel runs: it is not state, and
+/// the schedule's systems, which depends on the build only. Three things would break this:
+/// - an `ApplyDeferred` system, which applies them in the middle of the phase (banned, K-b);
+/// - an exclusive system with deferred buffers, which the parallel executor runs with
+///   `System::run`, so they apply as soon as it ends (refused by `Sim::build`,
+///   `BuildError::DeferredExclusive`);
+/// - a run condition with deferred buffers, which the single-threaded executor applies when
+///   it evaluates it and the parallel one never (refused, `BuildError::DeferredCondition`).
+///
+/// (The `Entity` that `Commands::spawn` reserves may still differ between parallel runs: it is not state, and
 /// durable references use `StableId`.) Manual points (`ApplyDeferred`) are banned by
 /// `clippy.toml` and by `cargo xtask check` (K-b).
 pub(crate) fn phase_schedule(phase: Phase, threads: Threads) -> (Schedule, Option<ExecutorSwitch>) {
