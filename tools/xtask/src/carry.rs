@@ -640,8 +640,10 @@ pub mod lab {
             "GIT_WORK_TREE",
             "GIT_INDEX_FILE",
             "GIT_COMMON_DIR",
-            // Set by `cargo xtask check` for its children (#63); the lab must not depend on it.
+            // Set by `cargo xtask check` for its children (#63, #85); the lab must not depend on
+            // them.
             "GIT_NO_REPLACE_OBJECTS",
+            "GIT_GRAFT_FILE",
         ] {
             cmd.env_remove(v);
         }

@@ -3,8 +3,8 @@
 
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Variables qui changeraient la configuration de Git ou de gitleaks, vidées comme dans les crochets.
@@ -153,11 +153,28 @@ pub fn cargo() -> String {
 /// the replacement objects (`refs/replace/`). A ref planted there could otherwise show xtask
 /// another commit, tree or blob than the one named by its SHA (#63). `GIT_NO_REPLACE_OBJECTS` is
 /// the environment form of `git --no-replace-objects`.
+///
+/// It does not cover the obsolete graft file (`.git/info/grafts`), which Git still follows and
+/// which rewrites the parents of a commit, hence `git merge-base` and `rev-list` (#85, test
+/// `launchers_ignore_grafts`). `GIT_GRAFT_FILE` therefore names [`NO_GRAFT_FILE`], a path that
+/// cannot exist: Git then reads no graft at all.
 pub fn base_command(prog: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut cmd = Command::new(prog);
     cmd.env("GIT_NO_REPLACE_OBJECTS", "1");
+    cmd.env("GIT_GRAFT_FILE", &*NO_GRAFT_FILE);
     cmd
 }
+
+/// A graft file that can never exist: a name below the running executable, which is a file, not
+/// a folder (Git treats the failed open as no graft, silently). If the executable path cannot be
+/// read, a path of the system that no account can create either: below the null device on Unix;
+/// the null device itself on Windows, an empty file for Git, which then only adds its deprecation
+/// hint on the error output. Never a path in a shared folder.
+static NO_GRAFT_FILE: LazyLock<PathBuf> = LazyLock::new(|| match std::env::current_exe() {
+    Ok(exe) => exe.join("no-grafts"),
+    Err(_) if cfg!(windows) => PathBuf::from("NUL"),
+    Err(_) => PathBuf::from("/dev/null/no-grafts"),
+});
 
 fn command(root: &Path, prog: &str, args: &[&str]) -> Command {
     let mut cmd = base_command(prog);
@@ -462,6 +479,68 @@ mod tests {
         assert_eq!(blob.as_deref(), Some(&b"blob a\n"[..]));
     }
 
+    /// #85: a graft in `.git/info/grafts` (`c a`) makes `a` the parent of `c` for plain Git,
+    /// which moves the merge base of `c` and `d` (a branch from `b`) from `b` to `a`. The
+    /// launchers of `sys`, and the `Repo` reads of `merge`, read the real parents.
+    #[test]
+    fn launchers_ignore_grafts() {
+        let lab = Lab::new("sys-grafts");
+        let a = lab.commit(&[("f", Some("a\n"))]);
+        let b = lab.commit(&[("f", Some("b\n"))]);
+        let c = lab.commit(&[("f", Some("c\n"))]);
+        lab.git(&["checkout", "-q", "-b", "side", &b]);
+        let d = lab.commit(&[("g", Some("d\n"))]);
+        // The lab repository has no template, hence no `.git/info/` yet.
+        std::fs::create_dir_all(lab.dir.join(".git/info")).unwrap();
+        write(
+            &lab.dir.join(".git/info/grafts"),
+            format!("{c} {a}\n").as_bytes(),
+        )
+        .unwrap();
+        // The control: plain Git follows the graft, despite GIT_NO_REPLACE_OBJECTS. Git plans to
+        // drop grafts: once it does, the control has nothing left to show, the rest still holds.
+        let mut plain = Command::new("git");
+        plain.args([
+            "-c",
+            "advice.graftFileDeprecated=false",
+            "merge-base",
+            &c,
+            &d,
+        ]);
+        plain
+            .current_dir(&lab.dir)
+            .env("GIT_NO_REPLACE_OBJECTS", "1");
+        for var in [
+            "GIT_GRAFT_FILE",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+        ] {
+            plain.env_remove(var);
+        }
+        let out = plain.output().unwrap();
+        let followed = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        assert!(followed == a || followed == b, "{followed}");
+        if followed == b {
+            println!("this Git no longer follows grafts: the control shows nothing");
+        }
+        // xtask's launchers read the real history, and Git says nothing about the graft file: no
+        // warning on the impossible path, which holds the user's folder (SEC0-26).
+        let args = ["merge-base", &c, &d];
+        let (code, out, err) = outputs(&lab.dir, "git", &args).unwrap();
+        assert_eq!(code, Some(0));
+        assert_eq!(String::from_utf8_lossy(&out).trim(), b);
+        assert_eq!(err, "");
+        let base = stdout_of(&lab.dir, "git", &args).unwrap();
+        assert_eq!(base.trim(), b);
+        let parents = stdout_of(&lab.dir, "git", &["rev-list", "--parents", "-n", "1", &c]);
+        assert_eq!(parents.unwrap().trim(), format!("{c} {b}"));
+        // The graft file named for the children cannot exist.
+        assert!(!NO_GRAFT_FILE.exists());
+        assert_eq!(NO_GRAFT_FILE.parent().map(Path::is_file), Some(true));
+    }
+
     /// A folder name no other test or session shares: process id, clock and counter.
     #[allow(clippy::disallowed_methods)] // test: a name unique to this run.
     fn unique_temp(label: &str) -> PathBuf {
@@ -561,15 +640,23 @@ mod tests {
     /// The setting is made by the functions that prepare every child, whatever the program.
     #[test]
     fn every_command_sets_the_variable() {
-        let value = |cmd: &Command| {
+        let value = |cmd: &Command, var: &str| {
             cmd.get_envs()
-                .find(|(k, _)| *k == "GIT_NO_REPLACE_OBJECTS")
+                .find(|(k, _)| *k == var)
                 .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
         };
+        let grafts = Some(Some(NO_GRAFT_FILE.to_string_lossy().into_owned()));
         for prog in ["git", "cargo", "gitleaks", "gh"] {
             let cmd = command(Path::new("."), prog, &["x"]);
-            assert_eq!(value(&cmd), Some(Some("1".to_owned())), "{prog}");
+            let replace = value(&cmd, "GIT_NO_REPLACE_OBJECTS");
+            assert_eq!(replace, Some(Some("1".to_owned())), "{prog}");
+            assert_eq!(value(&cmd, "GIT_GRAFT_FILE"), grafts, "{prog}");
         }
-        assert_eq!(value(&base_command("uv")), Some(Some("1".to_owned())));
+        let uv = base_command("uv");
+        assert_eq!(
+            value(&uv, "GIT_NO_REPLACE_OBJECTS"),
+            Some(Some("1".to_owned()))
+        );
+        assert_eq!(value(&uv, "GIT_GRAFT_FILE"), grafts);
     }
 }
