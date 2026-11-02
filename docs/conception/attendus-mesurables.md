@@ -102,7 +102,7 @@ Valeurs de départ pour les remontées [#43](https://github.com/CreatorInstant54
 | M39b | Taille totale d'un paquet | 64 Mio | Borne la mémoire d'un chargement |
 | M39c | Nombre de fichiers d'un paquet | 4 096 | Un fichier par nature, par rôle ou par famille de pièces |
 | M39d | Nombre de fiches d'un paquet | 65 536 | Catalogues prévus jusqu'en phase 3 : quelques centaines d'actes et de rôles, quelques milliers de pièces de garde-robe, de recettes et de lignes de tables |
-| M39e | Profondeur d'imbrication RON | 16 | Les fiches s'imbriquent sur 3 à 6 niveaux |
+| M39e | Profondeur d'imbrication RON, en **niveaux de récursion du lecteur RON** (`with_recursion_limit`) | 32 (relevé de 16 le 02/11, arbitrage A18 du README) | Les fiches s'imbriquent sur 3 à 6 niveaux visibles ; un niveau visible en coûte environ 2 au lecteur (une fiche à 3 niveaux en mesure 7, une à 6 en mesurerait 13, soit 41 %). Une seule unité, celle que le chargeur applique et que `ts-data check` rapporte |
 | M39f | Profondeur des sous-dossiers | 8 | `data/content/<domaine>/<famille>/…` en utilise 3 ou 4 |
 
 Mesure : `ts-data check` rapporte, pour chaque borne, la plus grande valeur du paquet. Dès la phase 0.
