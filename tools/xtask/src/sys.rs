@@ -185,7 +185,18 @@ pub fn run_live(root: &Path, prog: &str, args: &[&str]) -> Result<bool, String> 
 
 /// Lance une commande et rend (réussite, sortie standard et sortie d'erreur).
 pub fn run_captured(root: &Path, prog: &str, args: &[&str]) -> Result<(bool, String), String> {
+    run_captured_env(root, prog, args, &[])
+}
+
+/// [`run_captured`] with extra environment variables for the child only.
+pub fn run_captured_env(
+    root: &Path,
+    prog: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<(bool, String), String> {
     let out = command(root, prog, args)
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("cannot run {}: {e}", shown_arg(prog)))?;
@@ -204,7 +215,7 @@ pub fn stdout_of(root: &Path, prog: &str, args: &[&str]) -> Result<String, Strin
     if !out.status.success() {
         return Err(format!("{} {} failed", shown_arg(prog), args.join(" ")));
     }
-    String::from_utf8(out.stdout).map_err(|_| format!("sortie non UTF-8 de {prog}"))
+    String::from_utf8(out.stdout).map_err(|_| format!("output of {} is not UTF-8", shown_arg(prog)))
 }
 
 /// Code de sortie (`None` si tué), sortie standard brute et sortie d'erreur, séparées.
@@ -451,6 +462,17 @@ mod tests {
         assert_eq!(blob.as_deref(), Some(&b"blob a\n"[..]));
     }
 
+    /// A folder name no other test or session shares: process id, clock and counter.
+    #[allow(clippy::disallowed_methods)] // test: a name unique to this run.
+    fn unique_temp(label: &str) -> PathBuf {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("xtask-{label}-{}-{nanos}-{n}", std::process::id()))
+    }
+
     /// m6: messages show repository paths relative to the root, the cache as `$TS_CACHE`, and any
     /// other absolute path by its file name only.
     #[test]
@@ -481,7 +503,7 @@ mod tests {
     /// is not the owner's.
     #[test]
     fn scratch_removes_only_its_own_folder() {
-        let base = std::env::temp_dir().join("xtask-scratch-test");
+        let base = unique_temp("scratch-test");
         let (a, b) = (
             Scratch::new_in(&base, "t").unwrap(),
             Scratch::new_in(&base, "t").unwrap(),
@@ -510,7 +532,7 @@ mod tests {
     #[test]
     #[allow(clippy::disallowed_methods)] // test: ages a file by setting its modification time.
     fn scratch_sweeps_only_old_marked_folders() {
-        let base = std::env::temp_dir().join("xtask-sweep-test");
+        let base = unique_temp("sweep-test");
         let old = Scratch::new_in(&base, "s").unwrap();
         let (old_dir, young_dir, bare_dir) = (
             old.path("."),

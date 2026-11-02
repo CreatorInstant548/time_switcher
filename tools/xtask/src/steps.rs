@@ -123,6 +123,16 @@ impl Ctx {
             .map_err(Clone::clone)
     }
 
+    /// Files modified since `HEAD`, or new (not ignored), and not committed (m11). The steps read
+    /// the disk, not `HEAD`: with such files, the result may differ from what will be merged.
+    pub(crate) fn uncommitted(&self) -> Result<Vec<String>, String> {
+        let mut all = self.git_paths(&["diff", "--name-only", "-z", "--no-renames", "HEAD"])?;
+        all.extend(self.git_paths(&["ls-files", "-z", "-o", "--exclude-standard"])?);
+        all.sort();
+        all.dedup();
+        Ok(all)
+    }
+
     pub(crate) fn read(&self, rel: &str) -> Result<Vec<u8>, String> {
         sys::read(&self.root.join(rel))
     }
@@ -214,10 +224,174 @@ pub fn clippy(cx: &Ctx) -> Outcome {
             return Outcome::Fail(format!("cargo clippy (fonctionnalité {f}) a échoué"));
         }
     }
+    let live = tri!(live_bans(cx));
     Outcome::Ok(format!(
-        "espace de travail, public, et {} fonctionnalités de développement",
+        "espace de travail, public, {} fonctionnalités de développement, {live} interdictions vivantes",
         DEV_FEATURES.len()
     ))
+}
+
+/// An entry of `clippy.toml` in the one layout the file uses, a whole entry on one line:
+/// `{ path = "P", reason = "R" },` with or without `, allow-invalid = true` after the reason.
+struct Entry<'a> {
+    path: &'a str,
+    reason: &'a str,
+    /// The entry has `allow-invalid = true`.
+    lenient: bool,
+    /// What follows the entry: `,` or nothing.
+    tail: &'a str,
+}
+
+/// Reads a line in that layout. `P` is plain (`[A-Za-z0-9_:]`) and `R` has no quote or escape.
+fn entry(line: &str) -> Option<Entry<'_>> {
+    let rest = line.trim().strip_prefix("{ path = \"")?;
+    let (path, rest) = rest.split_once('"')?;
+    let rest = rest.strip_prefix(", reason = \"")?;
+    let (reason, rest) = rest.split_once('"')?;
+    let (lenient, rest) = match rest.strip_prefix(", allow-invalid = true }") {
+        Some(tail) => (true, tail),
+        None => (false, rest.strip_prefix(" }")?),
+    };
+    let plain = !path.is_empty()
+        && path
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b':');
+    (plain && !reason.contains('\\') && matches!(rest, "" | ",")).then_some(Entry {
+        path,
+        reason,
+        lenient,
+        tail: rest,
+    })
+}
+
+/// Crates whose banned paths are internal locations that an upgrade moves (the hash collections of
+/// bevy): their entries must resolve. The others (`rand`, `getrandom`, `chrono`) ban the public API
+/// of several versions at once, so one of two alternative paths is always unresolved.
+const STRICT_CRATE_PREFIX: &str = "bevy_";
+
+/// `clippy.toml` with `allow-invalid = true` removed from every entry of a bevy crate that is in
+/// `closure` (m1 of the review of PR #33): such an entry must resolve, so one that became dead after
+/// a dependency upgrade is a warning. The other entries keep the flag. Fails closed: a line that
+/// carries `allow-invalid` in any other layout than [`entry`] (no blanks around `=`,
+/// several lines, single quotes, an escaped crate name, two entries on a line, a flag on a line
+/// of its own) is an error, never skipped. Returns the text and the number of entries made strict.
+fn strict_clippy_config(text: &str, closure: &BTreeSet<String>) -> Result<(String, usize), String> {
+    let (mut out, mut strict) = (String::new(), 0);
+    for line in text.lines() {
+        // A unicode escape can spell any key (`"allow\\u002dinvalid" = true`): none is read.
+        if !line.trim_start().starts_with('#') && (line.contains("\\u") || line.contains("\\U")) {
+            return Err(format!(
+                "clippy.toml: unicode escape refused: {}",
+                line.trim()
+            ));
+        }
+        // Only a line with the flag is rewritten, and it must be in the one layout; a line
+        // without it (an entry already strict, possibly spread over lines) is left as it is.
+        let line = if line.trim_start().starts_with('#') || !line.contains("allow-invalid") {
+            line.to_owned()
+        } else {
+            let Some(e) = entry(line) else {
+                return Err(format!(
+                    "clippy.toml: entry layout not understood: {}",
+                    line.trim()
+                ));
+            };
+            let krate = e.path.split("::").next().unwrap_or(e.path);
+            if e.lenient && krate.starts_with(STRICT_CRATE_PREFIX) && closure.contains(krate) {
+                strict += 1;
+                let indent = &line[..line.len() - line.trim_start().len()];
+                format!(
+                    "{indent}{{ path = \"{}\", reason = \"{}\" }}{}",
+                    e.path, e.reason, e.tail
+                )
+            } else {
+                line.to_owned()
+            }
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+    Ok((out, strict))
+}
+
+/// Normal dependencies of `ts_kernel`, whole graph, as library names (`bevy_ecs`).
+fn kernel_closure(cx: &Ctx) -> Result<BTreeSet<String>, String> {
+    let args = [
+        "tree",
+        "-p",
+        "ts_kernel",
+        "-e",
+        "normal",
+        "--prefix",
+        "none",
+        "--locked",
+    ];
+    let out = stdout_of(&cx.root, &cargo(), &args)?;
+    let names: BTreeSet<String> = out
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .map(|n| n.replace('-', "_"))
+        .collect();
+    // The root of the tree is the crate itself: an empty or unreadable listing is an error.
+    match names.contains("ts_kernel") {
+        true => Ok(names),
+        false => Err("cargo tree -p ts_kernel did not list ts_kernel".to_owned()),
+    }
+}
+
+/// The bans of `clippy.toml` on crates the kernel depends on still resolve (m1 of the review of
+/// PR #33): clippy runs on `ts_kernel` with `allow-invalid` removed from those entries, from a
+/// copy of the configuration under `TS_CACHE`, set for that run only (`CLIPPY_CONF_DIR`). Without
+/// it, a ban made dead by a dependency upgrade is silent. Returns the number of entries checked.
+fn live_bans(cx: &Ctx) -> Result<usize, String> {
+    let text = String::from_utf8(cx.read("clippy.toml")?)
+        .map_err(|_| "clippy.toml is not UTF-8".to_owned())?;
+    let (strict, count) = strict_clippy_config(&text, &kernel_closure(cx)?)?;
+    let scratch = sys::Scratch::new("clippy-config")?;
+    let dir = scratch.path("conf");
+    std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", sys::shown(&dir)))?;
+    sys::write(&dir.join("clippy.toml"), strict.as_bytes())?;
+    let conf = dir.to_string_lossy().into_owned();
+    // No colour: CI forces it, and the alarm lines are recognised by their first word.
+    let args = [
+        "clippy",
+        "--color",
+        "never",
+        "--locked",
+        "-p",
+        "ts_kernel",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ];
+    println!(
+        "  $ cargo {} (CLIPPY_CONF_DIR: strict copy of clippy.toml)",
+        args.join(" ")
+    );
+    let env = [
+        ("CLIPPY_CONF_DIR", conf.as_str()),
+        ("CARGO_TERM_COLOR", "never"),
+    ];
+    let (ok, out) = sys::run_captured_env(&cx.root, &cargo(), &args, &env)?;
+    // A ban that does not resolve is a plain warning, which `-D warnings` does not turn into a
+    // failure: any `warning` or `error` line is one (a clean run prints none).
+    let alarms: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with("warning") || l.starts_with("error"))
+        .collect();
+    alarms.iter().for_each(|l| println!("  {l}"));
+    match (ok, alarms.is_empty()) {
+        (true, true) => Ok(count),
+        (false, true) => {
+            Err("cargo clippy failed on ts_kernel with the strict copy of clippy.toml".to_owned())
+        }
+        _ => Err(
+            "a clippy.toml ban on a bevy crate no longer resolves (allow-invalid removed \
+                  for this run): update the path, or the ban is dead"
+                .to_owned(),
+        ),
+    }
 }
 
 /// Crate de cœur ou de règles : ni hôte, ni outil (refus par défaut).
@@ -694,6 +868,25 @@ pub fn profiles(cx: &Ctx) -> Outcome {
     Outcome::Ok(format!("{} combinations refused", DEV_FEATURES.len()))
 }
 
+/// `cargo tree` of a host: normal edges and their features, for every target, so that a
+/// dependency or a feature that only a non-host platform activates is seen too (m1).
+fn tree_args(host: &str) -> Vec<String> {
+    [
+        "tree",
+        "-p",
+        host,
+        "--edges",
+        "normal,features",
+        "--target",
+        "all",
+        "--locked",
+        "-f",
+        "{p} {f}",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
 pub fn features(cx: &Ctx) -> Outcome {
     let meta = tri!(cx.meta());
     let mut errors = manifests::check_features(meta);
@@ -713,16 +906,8 @@ pub fn features(cx: &Ctx) -> Outcome {
         );
     }
     for host in HOSTS.iter().filter(|h| meta.package(h).is_some()) {
-        let args = [
-            "tree",
-            "-p",
-            host,
-            "--edges",
-            "normal,features",
-            "--locked",
-            "-f",
-            "{p} {f}",
-        ];
+        let args = tree_args(host);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let tree = tri!(stdout_of(&cx.root, &cargo(), &args));
         errors.extend(
             manifests::tree_dev_features(&tree)
@@ -742,14 +927,21 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
         errors.push("CLIPPY_CONF_DIR remplace clippy.toml : refusé".to_owned());
     }
     let files = tri!(cx.files());
+    let mut read = 0;
     for p in meta.packages.iter().filter(|p| is_core(&p.name)) {
         let dir = format!("{}/", meta.rel_dir(p));
         // Every `macro_rules!` of the crate: file relative to the crate, line, name (AS-56).
         let mut macros = Vec::new();
-        for rel in files
+        let sources: Vec<&String> = files
             .iter()
             .filter(|f| f.starts_with(&dir) && f.ends_with(".rs"))
-        {
+            .collect();
+        // m7: a core crate none of whose files is read would pass without being looked at.
+        if sources.is_empty() {
+            errors.push(format!("{}: no .rs file read under {dir}", p.name));
+        }
+        read += sources.len();
+        for rel in sources {
             let text = String::from_utf8_lossy(&tri!(cx.read(rel))).into_owned();
             macros.extend(
                 macros::definitions(&text)
@@ -810,7 +1002,7 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
     if cx.root.join(".clippy.toml").exists() {
         errors.push(".clippy.toml à la racine : seul clippy.toml est permis".to_owned());
     }
-    from_errors(errors, String::new())
+    from_errors(errors, format!("{read} core source file(s) read"))
 }
 
 pub fn local_paths(cx: &Ctx) -> Outcome {
@@ -876,6 +1068,7 @@ pub fn spec_map(cx: &Ctx) -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::Path;
 
     #[test]
@@ -927,6 +1120,15 @@ mod tests {
         assert!(!super::is_core("xtask") && !super::is_core("ts_host"));
     }
 
+    /// m1: the host graph is read for every target.
+    #[test]
+    fn host_tree_covers_every_target() {
+        let args = super::tree_args("ts_host");
+        assert!(args.windows(2).any(|w| w[0] == "--target" && w[1] == "all"));
+        assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "ts_host"));
+        assert!(args.iter().any(|a| a == "--locked"));
+    }
+
     /// m5: a finding is listed by rule, file and line, with a short commit, and nothing else of
     /// the report (secret, author, e-mail, message) is shown.
     #[test]
@@ -953,6 +1155,83 @@ mod tests {
         );
         assert!(super::findings("[]", None).unwrap().is_empty());
         assert!(super::findings("not json", None).is_err());
+    }
+
+    /// m1 (PR #33): `allow-invalid` is removed only from the entries of crates in the closure.
+    #[test]
+    fn strict_clippy_config_follows_the_closure() {
+        let text = "allow-unwrap-in-tests = true\n\
+            disallowed-types = [\n\
+            \x20   { path = \"bevy_ecs::entity::EntityHashMap\", reason = \"r\", allow-invalid = true },\n\
+            \x20   { path = \"rand::rng\", reason = \"r\", allow-invalid = true },\n\
+            \x20   { path = \"std::collections::HashMap\", reason = \"r\" },\n\
+            ]\n";
+        let closure: BTreeSet<String> = ["bevy_ecs".to_owned()].into();
+        let (out, strict) = super::strict_clippy_config(text, &closure).unwrap();
+        assert_eq!(strict, 1);
+        assert!(out.contains("{ path = \"bevy_ecs::entity::EntityHashMap\", reason = \"r\" },"));
+        assert!(out.contains("{ path = \"rand::rng\", reason = \"r\", allow-invalid = true },"));
+        assert_eq!(out.lines().count(), text.lines().count());
+        // An entry of the closure that cannot be read is refused, never skipped (review of #114).
+        for odd in [
+            "{ allow-invalid = true, path = \"bevy_ecs::X\", reason = \"r\" },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", allow-invalid=true },",
+            "{path = \"bevy_ecs::X\", reason = \"r\", allow-invalid = true},",
+            "{ path=\"bevy_ecs::X\", reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = 'r', allow-invalid = true },",
+            "{ path = 'bevy_ecs::X', reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", allow-invalid = true }, # note",
+            "{ path = \"\\u0062evy_ecs::X\", reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\",\n  reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\",\n  allow-invalid = true },",
+            "    allow-invalid = true,",
+            "[[disallowed-types]]\npath = \"bevy_ecs::X\"\nallow-invalid = true",
+            "{ path = \"bevy_ecs::X\", reason = \"r \\\" q\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", \"allow\\u002dinvalid\" = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", \"\\U00000061llow-invalid\" = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"caf\\u00e9\" },",
+        ] {
+            assert!(super::strict_clippy_config(odd, &closure).is_err(), "{odd}");
+        }
+        // Whatever the crate: a flag in a layout that cannot be read is an error too.
+        assert!(
+            super::strict_clippy_config("{path=\"rand::rng\", allow-invalid=true},", &closure)
+                .is_err()
+        );
+        // A strict (flag-free) entry may span lines, and other keys are left alone.
+        let multi = "x = 1\n{ path = \"bevy_ecs::X\",\n  reason = \"r\" },\n";
+        assert_eq!(
+            super::strict_clippy_config(multi, &closure).unwrap().0,
+            multi
+        );
+        // The real file: its entries on bevy crates all become strict.
+        let real = include_str!("../../../clippy.toml");
+        let all: BTreeSet<String> = [
+            "bevy_ecs",
+            "bevy_utils",
+            "bevy_platform",
+            "rand",
+            "hashbrown",
+        ]
+        .map(str::to_owned)
+        .into();
+        let (out, count) = super::strict_clippy_config(real, &all).unwrap();
+        assert!(count > 0);
+        // Every bevy entry is strict; the others keep their flag.
+        assert!(
+            !out.lines()
+                .any(|l| l.contains("path = \"bevy_") && l.contains("allow-invalid"))
+        );
+        assert!(
+            out.lines()
+                .any(|l| l.contains("path = \"rand::") && l.contains("allow-invalid"))
+        );
+        // Comments and two entries on one line are not rewritten silently.
+        let commented = "# { path = \"bevy_ecs::X\", allow-invalid = true },\n";
+        assert_eq!(super::strict_clippy_config(commented, &all).unwrap().1, 0);
+        let two = "{ path = \"bevy_ecs::X\", reason = \"r\", allow-invalid = true }, { path = \"bevy_ecs::Y\", reason = \"r\" },\n";
+        assert!(super::strict_clippy_config(two, &all).is_err());
     }
 
     /// The `profiles` step searches the output for these messages: the kernel must carry exactly

@@ -179,4 +179,20 @@ mod tests {
         let e = errors("ts_kernel", &found(&ok[2..]));
         assert_eq!(e.len(), 1, "{e:?}");
     }
+
+    /// The files that define a listed macro are sensitive paths: a change to one of them needs the
+    /// review of the architecture and security lead, like the list itself.
+    #[test]
+    fn every_listed_file_is_a_sensitive_path() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ci/sensitive-paths.txt");
+        let rules = crate::sensitive::Rules::parse(&crate::sys::read_text(&path).unwrap()).unwrap();
+        for e in ALLOWED {
+            let file = format!("crates/{}/{}", e.krate, e.file);
+            assert!(
+                rules.path_hit(&file),
+                "{file} is not in tools/ci/sensitive-paths.txt"
+            );
+        }
+    }
 }
