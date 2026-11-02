@@ -63,12 +63,20 @@ function New-Junction([string]$Link, [string]$Slot) {
 $OwnerMarker = 'last-worktree.txt'   # in the slot itself, so that wiping the slot (xtask disk --clean) resets it
 
 # Package names of every Cargo.toml of the worktree (tracked or not yet added, never ignored: no target/).
+# $null when the list cannot be trusted (git failed, no package, a file unreadable or not parsed, a path git
+# quoted): the caller then removes nothing and does not mark the slot, so the next -Acquire retries.
 function Get-WorkspacePackages([string]$Top) {
+  $files = @(& git -C $Top ls-files --cached --others --exclude-standard -- '*Cargo.toml' 2>$null)
+  if ($LASTEXITCODE -ne 0 -or -not $files) { return $null }
   $names = @{}
-  foreach ($f in @(& git -C $Top ls-files --cached --others --exclude-standard -- '*Cargo.toml' 2>$null)) {
-    $text = Get-Content -LiteralPath (Join-Path $Top "$f") -Raw -ErrorAction SilentlyContinue
-    if ($text -match '(?ms)^\[package\][ \t]*\r?\n(.*?)(?=^\[|\z)' -and $Matches[1] -match '(?m)^name[ \t]*=[ \t]*"([^"]+)"') { $names[$Matches[1]] = $true }
+  foreach ($f in $files) {
+    $text = if ("$f".StartsWith('"')) { $null } else { Get-Content -LiteralPath (Join-Path $Top "$f") -Raw -ErrorAction SilentlyContinue }
+    if (-not $text) { return $null }
+    if ($text -notmatch '(?m)^\[package\]') { continue }   # a workspace root without a package of its own
+    if ($text -match '(?ms)^\[package\][ \t]*(?:#[^\r\n]*)?\r?\n(.*?)(?=^\[[\w\[]|\z)' -and $Matches[1] -match '(?m)^name[ \t]*=[ \t]*["'']([^"'']+)["'']') { $names[$Matches[1]] = $true }
+    else { return $null }
   }
+  if ($names.Count -eq 0) { return $null }
   return @($names.Keys)
 }
 
@@ -101,14 +109,16 @@ function Clear-WorkspaceFingerprints([string]$Slot, [string[]]$Packages) {
   return $count
 }
 
-# Called after -Acquire, once the slot is ours.
+# Called after -Acquire, once the slot is ours. The key is the worktree path: the same path bakes the same absolute
+# paths into the artefacts, and a worktree recreated there has newer sources, which Cargo sees.
 function Sync-SlotOwner([string]$Slot, [string]$Top) {
   $marker = Join-Path $Slot $OwnerMarker
   if (Test-SamePath (Get-LeaseOwner $marker) $Top) { return }
-  $n = Clear-WorkspaceFingerprints $Slot (Get-WorkspacePackages $Top)
-  if ($n -lt 0) { 'WARNING: stale workspace artefacts could not all be removed from the slot (file in use?). Retry -Acquire, or touch the source file of a failing test (#56).'; return }
+  $packages = Get-WorkspacePackages $Top
+  $n = if ($packages) { Clear-WorkspaceFingerprints $Slot $packages } else { -1 }
+  if ($n -lt 0) { 'WARNING: stale workspace artefacts of a previous worktree could not be cleared from the slot (workspace crates not listed, or a file in use). Retry -Acquire; until then, touch the source file of a failing test (#56).'; return }
   [IO.File]::WriteAllText($marker, $Top)
-  "Slot last used by another worktree (or unknown): $n workspace-crate fingerprint(s) removed, those crates will rebuild; dependencies stay cached."
+  if ($n -gt 0) { "Slot last used by another worktree (or unknown): $n workspace-crate fingerprint(s) removed, those crates will rebuild; dependencies stay cached." }
 }
 
 try {
@@ -158,7 +168,7 @@ try {
   # (LNK1104 constaté) ; la compilation passe alors par CARGO_TARGET_DIR vers l'emplacement.
   $target = Get-JunctionTarget $link
   if ($Acquire -and -not $isMain -and $target -and (Test-SamePath (Get-LeaseOwner (Join-Path $slots "$(Split-Path $target -Leaf).lease")) $top)) {
-    Sync-SlotOwner $target $top   # only a slot whose lease is in this worktree's name
+    try { Sync-SlotOwner $target $top } catch { "WARNING: slot check failed ($($_.Exception.Message)); the build setup below still runs. Touch the source file of a failing test (#56)." }   # only a slot whose lease is in this worktree's name
   }
   if ($target -and $top.Length -gt 100) {
     $quoted = "'" + ($target -replace "'", "'\''") + "'"

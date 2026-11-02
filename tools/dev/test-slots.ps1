@@ -1,7 +1,7 @@
 # tools/dev/test-slots.ps1 : essais de session-start.ps1 et vérifications bloquantes de dev-agents §6.3.
 # 1. Logique des baux, dans un TS_CACHE jetable : main automatique, -Acquire, -Release, idempotence,
-#    3 emplacements pris, bail orphelin, bail tenu sans jonction, repli CARGO_TARGET_DIR, et invalidation des
-#    empreintes des crates de l'espace de travail quand un emplacement change de worktree (#56).
+#    3 emplacements pris, bail orphelin, bail tenu sans jonction, repli CARGO_TARGET_DIR, and invalidation of the
+#    Cargo fingerprints of the workspace crates when a slot changes worktree (#56).
 # 2. Avec -Real : dans les vrais emplacements (TS_CACHE\target), un worktree jetable d'un dépôt jetable
 #    reçoit un emplacement, compile un projet Cargo jetable à travers la jonction (chemin long), puis
 #    git clean -xdf et git worktree remove ne doivent pas abîmer l'emplacement. Le bail est libéré à la fin.
@@ -92,6 +92,15 @@ try {
   $o = Start-Session $w6 $fc -Acquire
   Check '#56 other worktree: its crates are invalidated, dependencies stay' (
     (Count-Fingerprints @('essai_ws6-0123456789abcdef')) -eq 0 -and (Count-Fingerprints $kept) -eq $kept.Count * $fps.Count -and (Get-Content "$fc\target\w1\last-worktree.txt" -Raw) -eq $w6) $o
+  # Marker missing (every slot before this change) and a file in use: nothing is marked, the next -Acquire retries.
+  $o = Start-Session $w6 $fc -Release
+  Remove-Item "$fc\target\w1\last-worktree.txt"
+  Seed-Fingerprints @('essai_ws6-0123456789abcdef')
+  $lock = [IO.File]::Open("$($fps[0])\essai_ws6-0123456789abcdef\unit.json", 'Open', 'Read', 'None')
+  try { $o = Start-Session $w6 $fc -Acquire } finally { $lock.Dispose() }
+  Check '#56 file in use: warning, slot not marked' (($o -match 'WARNING') -and -not (Test-Path "$fc\target\w1\last-worktree.txt")) $o
+  $o = Start-Session $w6 $fc -Acquire
+  Check '#56 marker missing: retried, cleared and marked' ((Count-Fingerprints @('essai_ws6-0123456789abcdef')) -eq 0 -and (Get-Content "$fc\target\w1\last-worktree.txt" -Raw) -eq $w6 -and $o -match 'removed') $o
   $o = Start-Session $w6 $fc -Release
 
   # Repli CARGO_TARGET_DIR (racine > 100 car.) : guillemet simple échappé dans CLAUDE_ENV_FILE.
