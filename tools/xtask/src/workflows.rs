@@ -9,6 +9,11 @@ const ALLOWED_ACTIONS: [&str; 4] = [
     "swatinem/rust-cache",
     "actions/upload-artifact",
 ];
+/// GitHub-hosted images a job may run on (#77, public repository): the ones `ci.yml` and
+/// `nightly.yml` use, pinned to a version (no `-latest`, which moves under the workflow). Any other
+/// `runs-on` value is refused: `self-hosted`, any custom label, a list, a `group:` mapping, an
+/// expression. Adding an image is a change of this list, in a sensitive PR.
+const HOSTED_RUNNERS: [&str; 2] = ["ubuntu-24.04", "windows-2025"];
 /// Seul contexte sûr dans une interpolation `${{ }}`. Tout autre (`github`, `inputs`, `matrix`,
 /// `env`, `steps`, `needs`, les fonctions) n'est permis que sous `env:`, sous `with:` et dans
 /// `if:` ; un `run:` le reçoit par `env:` et une variable citée (SEC0-31).
@@ -99,6 +104,28 @@ fn parse(line: &str) -> Option<Line<'_>> {
 
 fn strip_comment(value: &str) -> &str {
     value.find(" #").map_or(value, |i| &value[..i]).trim()
+}
+
+/// The text of a scalar written bare, `"…"` or `'…'` with no quote inside; `None` for anything
+/// else (unbalanced or nested quotes, which the check cannot read as YAML does).
+fn literal_scalar(value: &str) -> Option<&str> {
+    let inner = match value.as_bytes() {
+        [q @ (b'"' | b'\''), .., last] if q == last => &value[1..value.len() - 1],
+        _ => value,
+    };
+    (!inner.contains(['"', '\''])).then_some(inner)
+}
+
+/// Why a `runs-on:` value is refused, `None` when it is exactly one of [`HOSTED_RUNNERS`] (#77).
+fn runner_refusal(value: &str) -> Option<String> {
+    let value = strip_comment(value);
+    let allowed = literal_scalar(value).is_some_and(|v| HOSTED_RUNNERS.contains(&v));
+    (!allowed).then(|| {
+        format!(
+            "runs-on `{value}` is not one of the GitHub-hosted images {HOSTED_RUNNERS:?} \
+             (self-hosted runners, labels, lists, groups and expressions are refused, #77)"
+        )
+    })
 }
 
 /// Niveau ouvert de la pile d'indentation : clé, ou élément de liste (`key` = `-`).
@@ -252,6 +279,8 @@ pub fn check_workflow(text: &str) -> Vec<String> {
     let mut stack: Vec<Level> = Vec::new();
     // Bloc `|` ou `>` ouvert : (colonne de sa clé, interpolations non sûres permises).
     let mut block: Option<(usize, bool)> = None;
+    // Jobs under the top-level `jobs:`, each with the line of its `runs-on:` (#77).
+    let mut jobs: Vec<(String, usize, Option<usize>)> = Vec::new();
     for (i, &raw) in lines.iter().enumerate() {
         let n = i + 1;
         let compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
@@ -300,6 +329,22 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             errors.push(format!("ligne {n} : indentation incohérente"));
         }
         let key = l.key.as_deref().unwrap_or_default();
+        if key == "runs-on" {
+            errors.extend(runner_refusal(l.value).map(|e| format!("ligne {n} : {e}")));
+        }
+        if !l.item && stack.first().is_some_and(|t| t.key == "jobs" && t.col == 0) {
+            match (stack.len(), jobs.last_mut()) {
+                (1, _) => jobs.push((key.to_owned(), n, None)),
+                (2, Some((_, _, runner))) if key == "runs-on" => {
+                    if let Some(first) = runner.replace(n) {
+                        errors.push(format!(
+                            "ligne {n} : runs-on defined twice (first on line {first})"
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
         // Les ancêtres sont en pile ; la ligne elle-même n'y est que si c'est une clé d'élément.
         let data = key == "if"
             || stack
@@ -349,6 +394,14 @@ pub fn check_workflow(text: &str) -> Vec<String> {
     if !top_permissions {
         errors.push("permissions: {} absent au niveau du workflow (SEC0-29)".to_owned());
     }
+    // A job without a readable `runs-on:` is refused rather than assumed to be hosted (#77).
+    errors.extend(
+        jobs.iter()
+            .filter(|(_, _, runner)| runner.is_none())
+            .map(|(job, n, _)| {
+                format!("ligne {n} : job `{job}` without a `runs-on:` key of its own (#77)")
+            }),
+    );
     errors
 }
 
@@ -809,7 +862,7 @@ mod tests {
 
     fn good() -> String {
         format!(
-            "on:\n  pull_request:\npermissions: {{}}\njobs:\n  a:\n    permissions:\n      contents: read\n    \
+            "on:\n  pull_request:\npermissions: {{}}\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    \
              steps:\n      - uses: actions/checkout@{SHA} # v4\n        with:\n          persist-credentials: false\n      \
              - name: t\n        env:\n          TITLE: ${{{{ github.event.pull_request.title }}}}\n        run: |\n          \
              echo \"$TITLE\"\n          cargo xtask check --only workflows\n"
@@ -919,7 +972,7 @@ mod tests {
         assert_eq!(
             pins[0],
             Pin {
-                line: 9,
+                line: 10,
                 repo: "actions/checkout".into(),
                 sha: SHA.into(),
                 tag: Some("v4".into())
@@ -970,6 +1023,175 @@ mod tests {
             "      run: |\n        echo \"$TITLE\"\n        cargo",
         );
         assert_eq!(check_workflow(&flush), Vec::<String>::new());
+    }
+
+    /// `good()` with its trigger block replaced by `on`.
+    fn with_on(on: &str) -> String {
+        good().replacen("on:\n  pull_request:\n", on, 1)
+    }
+
+    /// `good()` with the job's `runs-on: ubuntu-24.04` line replaced by `runs_on`.
+    fn with_runs_on(runs_on: &str) -> String {
+        good().replacen("    runs-on: ubuntu-24.04\n", runs_on, 1)
+    }
+
+    /// #77: the repository is public, so a workflow must not run with the base repository's
+    /// secrets on text from a fork (`pull_request_target`) or on the result of another
+    /// workflow (`workflow_run`), whatever the YAML form of the trigger.
+    #[test]
+    fn refuses_pull_request_target_and_workflow_run() {
+        for event in ["pull_request_target", "workflow_run"] {
+            let upper = event.to_ascii_uppercase();
+            for on in [
+                format!("on: {event}\n"),
+                format!("on: \"{event}\"\n"),
+                format!("on: [push, {event}]\n"),
+                format!("on: [{event}]\n"),
+                format!("on: {{{event}: {{}}}}\n"),
+                format!("on:\n  - push\n  - {event}\n"),
+                format!("on:\n  - '{event}'\n"),
+                format!("on:\n  {event}:\n"),
+                format!("on:\n  {event}:\n    types: [opened]\n"),
+                format!("on:\n  pull_request:\n  {event}:\n"),
+                format!("on:\n  push:\n  \"{event}\":\n"),
+                format!("on:\n  '{event}':\n"),
+                format!("\"on\":\n  {event}:\n"),
+                format!("on:\n  {upper}:\n"),
+                format!("on:\n  {event}: # comment\n"),
+                format!("on: [push, \"{upper}\"]\n"),
+            ] {
+                let text = with_on(&on);
+                assert_ne!(text, good(), "{on}");
+                let errors = check_workflow(&text);
+                assert!(
+                    errors
+                        .iter()
+                        .any(|e| e.contains(&format!("{event} interdit"))),
+                    "{on}: {errors:?}"
+                );
+            }
+        }
+        // The triggers the workflows use stay accepted.
+        for on in [
+            "on:\n  pull_request:\n  push:\n    branches: [main]\n",
+            "on:\n  schedule:\n    - cron: '17 3 * * *'\n  workflow_dispatch:\n",
+            "on: [push, workflow_dispatch]\n",
+        ] {
+            assert_eq!(check_workflow(&with_on(on)), Vec::<String>::new(), "{on}");
+        }
+    }
+
+    #[test]
+    fn accepts_the_hosted_runners() {
+        for runs_on in [
+            "runs-on: ubuntu-24.04",
+            "runs-on: windows-2025",
+            "runs-on: \"ubuntu-24.04\"",
+            "runs-on: 'windows-2025' # hosted",
+            "runs-on:   ubuntu-24.04  ",
+        ] {
+            let text = with_runs_on(&format!("    {runs_on}\n"));
+            assert_eq!(check_workflow(&text), Vec::<String>::new(), "{runs_on}");
+        }
+        // Two jobs, each with its own runner.
+        let two = format!("{}  b:\n    runs-on: windows-2025\n    steps: []\n", good());
+        assert_eq!(check_workflow(&two), Vec::<String>::new());
+    }
+
+    /// #77: only the explicit GitHub-hosted images pass; a self-hosted runner on a public
+    /// repository would run a fork's code on the maintainer's machine.
+    #[test]
+    fn refuses_self_hosted_and_unlisted_runners() {
+        for runs_on in [
+            "runs-on: self-hosted",
+            "runs-on: Self-Hosted",
+            "runs-on: \"self-hosted\"",
+            "runs-on: [self-hosted]",
+            "runs-on: [self-hosted, linux, x64]",
+            "runs-on: [ubuntu-24.04, self-hosted]",
+            "runs-on: [ubuntu-24.04]",
+            "runs-on: ubuntu-24.04, self-hosted",
+            "runs-on: ubuntu-24.04 self-hosted",
+            "runs-on: ubuntu-latest",
+            "runs-on: ubuntu-22.04",
+            "runs-on: ubuntu-24.04-arm",
+            "runs-on: windows-latest",
+            "runs-on: macos-15",
+            "runs-on: my-runner",
+            "runs-on: Ubuntu-24.04",
+            "runs-on: ubuntu-24.04x",
+            "runs-on: 'ubuntu-24.04",
+            "runs-on: \"ubuntu-24.04'",
+            "runs-on: ''",
+            "runs-on:",
+            "runs-on: ${{ matrix.os }}",
+            "runs-on: ${{ 'ubuntu-24.04' }}",
+            "runs-on: ${{ runner.os }}",
+            "runs-on: ubuntu-${{ matrix.v }}",
+            "runs-on: {group: big, labels: ubuntu-24.04}",
+            "runs-on: *hosted",
+            "runs-on: !!str ubuntu-24.04",
+            "Runs-On: self-hosted",
+            "\"runs-on\": self-hosted",
+            "runs-on:\n      - self-hosted",
+            "runs-on:\n      - ubuntu-24.04",
+            "runs-on:\n      group: ci\n      labels: ubuntu-24.04",
+            "runs-on: |\n      self-hosted",
+        ] {
+            let text = with_runs_on(&format!("    {runs_on}\n"));
+            let errors = check_workflow(&text);
+            assert!(
+                errors.iter().any(|e| e.contains("GitHub-hosted images")),
+                "{runs_on}: {errors:?}"
+            );
+        }
+        // The refusal names the value.
+        let errors = check_workflow(&with_runs_on("    runs-on: self-hosted\n"));
+        assert!(errors.iter().any(|e| e.contains("runs-on `self-hosted`")));
+        // A second job on a self-hosted runner, a runner outside any job, a doubled key.
+        let other = format!("{}  b:\n    runs-on: self-hosted\n    steps: []\n", good());
+        assert!(!check_workflow(&other).is_empty());
+        let top = good().replacen("jobs:", "runs-on: self-hosted\njobs:", 1);
+        assert!(!check_workflow(&top).is_empty());
+        let twice = with_runs_on("    runs-on: ubuntu-24.04\n    runs-on: windows-2025\n");
+        let errors = check_workflow(&twice);
+        assert!(
+            errors.iter().any(|e| e.contains("defined twice")),
+            "{errors:?}"
+        );
+    }
+
+    /// #77: a job whose `runs-on:` the check does not find itself is refused, not assumed hosted
+    /// (a `runs-on:` elsewhere in the job, or in another job, does not count).
+    #[test]
+    fn refuses_a_job_without_its_own_runner() {
+        let errors = check_workflow(&with_runs_on(""));
+        assert!(
+            errors.iter().any(|e| e.contains("job `a` without")),
+            "{errors:?}"
+        );
+        let nested = with_runs_on("    env:\n      runs-on: ubuntu-24.04\n");
+        assert!(
+            check_workflow(&nested)
+                .iter()
+                .any(|e| e.contains("job `a`"))
+        );
+        let reusable = with_runs_on("    uses: ./.github/workflows/x.yml\n");
+        assert!(!check_workflow(&reusable).is_empty());
+        let second = format!("{}  b:\n    steps: []\n", good());
+        let errors = check_workflow(&second);
+        assert!(
+            errors.len() == 1 && errors[0].contains("job `b` without"),
+            "{errors:?}"
+        );
+    }
+
+    /// The workflows of the repository pass every rule above.
+    #[test]
+    fn accepts_the_repository_workflows() {
+        for (path, text) in repo_workflows() {
+            assert_eq!(check_workflow(&text), Vec::<String>::new(), "{path}");
+        }
     }
 
     const SCRIPT: &str = include_str!("../../ci/install-tools.sh");
