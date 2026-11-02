@@ -252,3 +252,5 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
 - **#119** : il y a maintenant 605 refus natifs, générés par un script et vérifiés en CI. Ils couvrent la fusion par l'API, GraphQL et d'autres formes de poussée.
 - **#59** : le reste (versions de schéma, décodeurs, corpus) passe au reliquat de la **phase 2**, avec une barrière : rien ne change d'encodage avant que ce travail soit fait. Décision d'archi-sécu. À fermer après la fusion de la #122.
 - **AU4 bloqué** : le mode auto refuse `git config --unset core.hooksPath` dans la copie principale. Les anciens crochets restent actifs ; ils sont sans risque, mais coûtent du temps. Je ne contourne pas ce refus, c'est un réglage que seul l'utilisateur peut changer. Je lui ai indiqué la commande, à lancer s'il le souhaite.
+- **AU4 fait par le dev, sur autorisation directe de l'utilisateur.** `core.hooksPath` est retiré ; vérifié depuis la copie principale (aucune valeur). L'outillage lent est maintenant entièrement retiré : #96, #118 et AU4.
+- **Second lot noyau** (#120, #121, #122) : `archsec-ok` obtenu. La #120 sera fusionnée en premier.
