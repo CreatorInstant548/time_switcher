@@ -2,8 +2,10 @@
 //! The run directory of `ts-sim run` (`--out`). Rules (Y3):
 //! - `TS_CACHE` is a real directory (not a link), at least two levels below the root of the
 //!   disk, outside any Git working copy; its canonical form is the reference;
-//! - `--out` has no `..`, and **no existing component of it is a link** (symbolic link or
-//!   junction, any reparse point on Windows): nothing is followed;
+//! - `--out` has no `..`, no `.git` name, and on Windows no name ending in a dot or a space
+//!   (checked again after `absolute`, which rewrites such names); **no existing component of
+//!   it is a link** (symbolic link or junction, any reparse point on Windows): nothing is
+//!   followed;
 //! - its canonical form must be **strictly under** `TS_CACHE`; with the explicit option it may
 //!   be elsewhere, but **never inside a Git working copy** (A6: no artefact in the repository);
 //! - missing directories are created one by one, each checked afterwards; files are created
@@ -102,20 +104,46 @@ pub fn cache_root(cache: &Path) -> Result<PathBuf, OutError> {
     Ok(canon)
 }
 
+/// Whether `path` has a component that `--out` never allows: `..`, a `.git` name (it would turn
+/// the run directory into a working copy for [`in_repository`]), and on Windows a name ending in
+/// a dot or a space (Win32 strips them, so `.git.` is `.git` there, and only a verbatim path
+/// can name them).
+fn has_refused_component(path: &Path) -> bool {
+    // In a verbatim path (`\\?\`), `.` and `..` are plain names to `components`, not to Windows.
+    path.components().any(|c| match c {
+        Component::ParentDir => true,
+        Component::Normal(n) => {
+            n == "." || n == ".." || n.eq_ignore_ascii_case(".git") || has_win32_trailing(n)
+        }
+        _ => false,
+    })
+}
+
+#[cfg(windows)]
+fn has_win32_trailing(name: &std::ffi::OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    name.encode_wide()
+        .last()
+        .is_some_and(|u| u == u16::from(b'.') || u == u16::from(b' '))
+}
+
+#[cfg(not(windows))]
+fn has_win32_trailing(_: &std::ffi::OsStr) -> bool {
+    false
+}
+
 /// Checks `out` against the canonical `cache` (from [`cache_root`]), creates the missing
 /// directories, and returns the canonical run directory.
 pub fn prepare(out: &Path, cache: &Path, outside_allowed: bool) -> Result<PathBuf, OutError> {
-    // In a verbatim path (`\\?\`), `.` and `..` are plain names to `components`, not to Windows.
-    // A `.git` name would turn the run directory into a working copy for `in_repository`.
-    let refused = |c: Component<'_>| match c {
-        Component::ParentDir => true,
-        Component::Normal(n) => n == "." || n == ".." || n.eq_ignore_ascii_case(".git"),
-        _ => false,
-    };
-    if out.components().any(refused) {
+    if has_refused_component(out) {
         return Err(OutError::BadPath);
     }
     let out = std::path::absolute(out).map_err(|_| OutError::BadPath)?;
+    // `absolute` rewrites names on Windows (it strips trailing dots and spaces: `.git.` becomes
+    // `.git`), so the same check runs again on what it returns, which is what gets created.
+    if has_refused_component(&out) {
+        return Err(OutError::BadPath);
+    }
     // A link is refused at the deepest existing prefix, and anywhere at or under `TS_CACHE`; a
     // system link above it (`/var` on some systems) is resolved by `canonicalize` below.
     let in_cache = |p: &Path| {
