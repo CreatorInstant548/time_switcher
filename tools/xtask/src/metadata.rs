@@ -31,6 +31,13 @@ pub struct Dependency {
     pub kind: Option<String>,
     #[serde(default)]
     pub features: Vec<String>,
+    /// The `default` feature of the dependency is on (absent field: on, as for Cargo).
+    #[serde(default = "default_on")]
+    pub uses_default_features: bool,
+}
+
+fn default_on() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]

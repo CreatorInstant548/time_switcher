@@ -55,6 +55,9 @@ pub(crate) struct Src {
     raw: Vec<bool>,
     /// The next identifier is raw (its `r#` has just been removed).
     pending_raw: bool,
+    /// Lines holding a `// SAFETY:` line comment with no code before it (not in a literal nor
+    /// in a block comment), in increasing order.
+    pub(crate) safety_lines: Vec<usize>,
 }
 
 impl Src {
@@ -277,8 +280,15 @@ pub(crate) fn normalize(source: &str) -> Src {
             gap = true;
             i += 1;
         } else if c == '/' && at(i + 1) == Some('/') {
+            let start = i;
             while i < s.len() && s[i] != '\n' {
                 i += 1;
+            }
+            // A real `// SAFETY:` line comment, with no code before it on its line (#91).
+            let alone = src.line.last() != Some(&line);
+            let compact: String = s[start..i].iter().filter(|c| !c.is_whitespace()).collect();
+            if alone && compact.starts_with("//SAFETY:") {
+                src.safety_lines.push(line);
             }
             gap = true;
         } else if c == '/' && at(i + 1) == Some('*') {

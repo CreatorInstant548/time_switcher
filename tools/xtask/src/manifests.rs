@@ -63,28 +63,31 @@ pub fn check_unsafe_root(crate_name: &str, source: &str) -> Result<(), String> {
     }
 }
 
-/// The crate-level attribute of [`LOCAL_LINTS_CRATE`], the one mention of `unsafe_code` that needs
-/// no `// SAFETY:` comment.
-const LOCAL_ROOT_ATTRIBUTE: &str = "#![deny(unsafe_code)]";
+/// The attributes naming `unsafe_code` that need no `// SAFETY:` comment: those that only make the
+/// lint stricter, written alone, the crate attribute of [`LOCAL_LINTS_CRATE`] among them.
+const STRICT_ATTRIBUTES: [&str; 4] = [
+    "#![deny(unsafe_code)]",
+    "#![forbid(unsafe_code)]",
+    "#[deny(unsafe_code)]",
+    "#[forbid(unsafe_code)]",
+];
 
 /// First line of a mention of `unsafe_code` in code (comments and literals excluded) that is not
-/// the crate attribute `#![deny(unsafe_code)]` and has no `// SAFETY:` line just before the
-/// attribute that holds it (exception of `ts_py`, AS-18). The source is read as rustc reads it, so
-/// an attribute split over several lines (`#[allow(\n unsafe_code)]`) is seen whole (#91). Fails
-/// closed: a mention outside any attribute (a macro argument, say) is reported too, and so is any
-/// lint level, `allow`, `expect` and `warn` alike.
+/// a strict attribute ([`STRICT_ATTRIBUTES`]) and has no `// SAFETY:` line comment just before
+/// the attribute that holds it (exception of `ts_py`, AS-18). The source is read as rustc reads
+/// it, so an attribute split over several lines (`#[allow(\n unsafe_code)]`) is seen whole, and a
+/// `// SAFETY:` inside a literal or a block comment is no comment (#91). Fails closed: a mention
+/// outside any attribute (a macro argument, say) is reported too, and so is any weakening lint
+/// level, `allow`, `expect` and `warn` alike.
 pub fn unsafe_allow_without_safety(source: &str) -> Option<usize> {
     let src = crate::exemptions::normalize(source);
-    let raw: Vec<String> = source
-        .lines()
-        .map(|l| l.split_whitespace().collect())
-        .collect();
+    let blank: Vec<bool> = source.lines().map(|l| l.trim().is_empty()).collect();
+    // The last non-blank line before `line` is a line comment alone on its line, `// SAFETY:`.
     let safety_before = |line: usize| {
-        raw[..line.saturating_sub(1)]
-            .iter()
+        (1..line)
             .rev()
-            .find(|l| !l.is_empty())
-            .is_some_and(|l| l.starts_with("//SAFETY:"))
+            .find(|&l| !blank[l - 1])
+            .is_some_and(|l| src.safety_lines.contains(&l))
     };
     let tokens = src.tokens();
     let mentions = tokens
@@ -96,7 +99,7 @@ pub fn unsafe_allow_without_safety(source: &str) -> Option<usize> {
             return Some(src.line[at]);
         };
         let text: String = src.text[open..=close].iter().collect();
-        if text == LOCAL_ROOT_ATTRIBUTE || safety_before(src.line[open]) {
+        if STRICT_ATTRIBUTES.contains(&text.as_str()) || safety_before(src.line[open]) {
             continue;
         }
         return Some(src.line[open]);
@@ -193,8 +196,7 @@ fn lint_tables(manifest: &str, prefix: &str) -> Result<BTreeMap<String, Lints>, 
         }
         // `["lints.rust"]` is one key named `lints.rust` for Cargo, not the table [lints.rust]:
         // a quoted segment with a dot is refused in a table name or a key (#91).
-        let left = line.split_once('=').map_or(line, |(k, _)| k);
-        if quoted_dot(left) {
+        if quoted_dot(line) {
             return Err(format!(
                 "line {}: quoted table name or key with a dot refused: {}",
                 n + 1,
@@ -256,18 +258,24 @@ fn toml_code(line: &str) -> &str {
     line
 }
 
-/// A quoted segment (`"…"` or `'…'`, closed or not) of `s` holds a dot.
-fn quoted_dot(s: &str) -> bool {
-    let mut quote = None;
-    for c in s.chars() {
+/// A quoted segment (`"…"` or `'…'`, closed or not) of the table name or key of `line` holds a
+/// dot. The key ends at the first `=` outside quotes, so `"a=b.c" = 1` is read whole; a line
+/// that is not a table header and has no such `=`, or a `,` or `{` before it, is a value (an
+/// array continued over lines).
+fn quoted_dot(line: &str) -> bool {
+    let header = line.trim_start().starts_with('[');
+    let (mut quote, mut dot) = (None, false);
+    for c in line.chars() {
         match (quote, c) {
             (None, '"' | '\'') => quote = Some(c),
             (Some(q), _) if c == q => quote = None,
-            (Some(_), '.') => return true,
+            (None, ',' | '{') if !header => return false,
+            (None, '=') => return dot,
+            (Some(_), '.') => dot = true,
             _ => {}
         }
     }
-    false
+    header && dot
 }
 
 /// Entries of one lint table: key -> value, without blanks.
@@ -349,6 +357,34 @@ fn feature_covered(crate_name: &str, feature: &str, items: &[String]) -> bool {
     }
 }
 
+/// The features `features` of the workspace crate `krate` turn on a development feature of
+/// `ts_kernel`, directly or through the features of the workspace crates they name, whatever
+/// those features are called (#36). `seen` holds the (crate, feature) pairs already followed.
+fn reaches_dev(
+    meta: &Metadata,
+    krate: &str,
+    features: &[String],
+    seen: &mut BTreeSet<(String, String)>,
+) -> bool {
+    for item in features.iter().filter(|f| !f.starts_with("dep:")) {
+        let (target, feature) = match item.split_once('/') {
+            Some((dep, f)) => (dep.trim_end_matches('?'), f),
+            None => (krate, item.as_str()),
+        };
+        if target == "ts_kernel" && DEV_FEATURES.contains(&feature) {
+            return true;
+        }
+        if !seen.insert((target.to_owned(), feature.to_owned())) {
+            continue;
+        }
+        let items = meta.package(target).and_then(|p| p.features.get(feature));
+        if items.is_some_and(|items| reaches_dev(meta, target, items, seen)) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Fonctionnalités dans les manifestes (F4) et règle D-DEV-02. Rend la liste des écarts.
 pub fn check_features(meta: &Metadata) -> Vec<String> {
     let mut errors = Vec::new();
@@ -396,22 +432,29 @@ pub fn check_features(meta: &Metadata) -> Vec<String> {
         for d in p.dependencies.iter().filter(|d| d.name == "ts_kernel") {
             if d.features.iter().any(|f| f == "public") {
                 errors.push(format!(
-                    "{} : sa dépendance ts_kernel active public",
+                    "{}: its ts_kernel dependency turns on public",
                     p.name
                 ));
             }
         }
-        // #36: a dependency on any crate of the workspace, not only ts_kernel, since a core crate
-        // relays the development features (`ts_model = { features = ["dev-commands"] }`).
+        // #36: a dependency on any crate of the workspace, not only ts_kernel, since a crate may
+        // relay the development features (`ts_model = { features = ["dev-commands"] }`).
         for d in p
             .dependencies
             .iter()
             .filter(|d| meta.package(&d.name).is_some())
         {
-            let dev = d
-                .features
-                .iter()
-                .any(|f| DEV_FEATURES.contains(&f.as_str()));
+            let mut on = d.features.clone();
+            if d.uses_default_features {
+                on.push("default".to_owned());
+            }
+            // Fails closed: a development feature named anywhere, even unresolved, counts.
+            let named = d.features.iter().any(|f| {
+                DEV_FEATURES
+                    .iter()
+                    .any(|dev| f == dev || f.ends_with(&format!("/{dev}")))
+            });
+            let dev = named || reaches_dev(meta, &d.name, &on, &mut BTreeSet::new());
             if HOSTS.contains(&p.name.as_str()) && d.kind.is_none() && dev {
                 errors.push(format!(
                     "host {}: normal dependency on {} with a development feature",
@@ -509,6 +552,12 @@ mod tests {
             "m!(unsafe_code);\n",
             // A comment between the SAFETY line and the attribute breaks the pair.
             "// SAFETY: x\n// other\n#[allow(unsafe_code)]\nfn a() {}\n",
+            // A `// SAFETY:` in a literal, in a block comment or after code is no comment.
+            "const S: &str = \"\n// SAFETY: fake\";\n#[allow(unsafe_code)]\nfn a() {}\n",
+            "/* x\n// SAFETY: fake */\n#[allow(unsafe_code)]\nfn a() {}\n",
+            "/* x\n// SAFETY: fake\n*/\n#[allow(unsafe_code)]\nfn a() {}\n",
+            "fn b() {} // SAFETY: fake\n#[allow(unsafe_code)]\nfn a() {}\n",
+            "/// SAFETY: a doc comment\n#[allow(unsafe_code)]\nfn a() {}\n",
         ] {
             let text = format!("{root}{bad}");
             assert!(
@@ -520,6 +569,9 @@ mod tests {
             "// SAFETY: pyo3 macro\n#[allow(\n    unsafe_code\n)]\nfn a() {}\n",
             "/* #[allow(unsafe_code)] */\nconst S: &str = \"#[allow(unsafe_code)]\";\n",
             "// SAFETY: x\n#[cfg_attr(test, allow(unsafe_code))]\nfn a() {}\n",
+            "  //   SAFETY: x\n\n#[allow(unsafe_code)]\nfn a() {}\n",
+            // Attributes that only make the lint stricter need no justification.
+            "mod m {\n    #![forbid( unsafe_code )]\n}\n#[deny(unsafe_code)]\nfn a() {}\n",
         ] {
             let text = format!("{root}{ok}");
             assert_eq!(unsafe_allow_without_safety(&text), None, "{text}");
@@ -618,6 +670,7 @@ mod tests {
             LOCAL.replace("[lints.clippy]", "['lints.clippy']"),
             LOCAL.replace("[lints.clippy]", "[lints.\"clippy.x\"]"),
             LOCAL.replace("unwrap_used =", "\"unwrap_used.x\" ="),
+            LOCAL.replace("unwrap_used =", "\"un=wrap.used\" ="),
         ];
         for manifest in &bad {
             assert!(check_local_lints(manifest, ROOT).is_err(), "{manifest}");
@@ -633,7 +686,10 @@ mod tests {
         assert_eq!(check_local_lints(&commented, ROOT), Ok(()));
         let root = ROOT.replace("[profile.dev]", "# a\\b\n[profile.dev] # c:\\x");
         assert_eq!(check_local_lints(LOCAL, &root), Ok(()));
-        let valued = LOCAL.replace("name = \"ts_py\"", "name = \"ts#py\"\nversion = \"0.1.0\"");
+        let valued = LOCAL.replace(
+            "name = \"ts_py\"",
+            "name = \"ts#py\"\nversion = \"0.1.0\"\ninclude = [\n  \"src/*.rs\",\n  \"a.b\", { x = 1 },\n]",
+        );
         assert_eq!(check_local_lints(&valued, ROOT), Ok(()));
         let err = check_local_lints(&format!("x = \"a\\u0062\"\n{LOCAL}"), ROOT).unwrap_err();
         assert!(err.contains("line 1"), "{err}");
@@ -677,6 +733,9 @@ mod tests {
                 {{"name":"ts_kernel","manifest_path":"/w/k/Cargo.toml","features":{{"default":[]}}}},
                 {{"name":"ts_model","manifest_path":"/w/m/Cargo.toml",
                   "features":{{"dev-commands":["ts_kernel/dev-commands"]}}}},
+                {{"name":"ts_runner","manifest_path":"/w/r/Cargo.toml",
+                  "features":{{"default":["sim"],"sim":["sub"],"sub":["ts_model?/dev-commands"],
+                  "plain":[]}}}},
                 {{"name":"ts_server","manifest_path":"/w/s/Cargo.toml","dependencies":[{dep}]}}]}}"#
             );
             check_features(&parse(&json).unwrap())
@@ -686,8 +745,27 @@ mod tests {
             e,
             ["host ts_server: normal dependency on ts_model with a development feature"]
         );
+        // The kernel's feature named through the dependency's own dependency.
+        let e = run(r#"{"name":"ts_model","kind":null,"features":["ts_kernel/dev-bench"]}"#);
+        assert_eq!(e.len(), 1, "{e:?}");
         assert!(run(r#"{"name":"ts_model","kind":"dev","features":["dev-commands"]}"#).is_empty());
         assert!(run(r#"{"name":"ts_model","kind":null,"features":[]}"#).is_empty());
+        // A relay under another name, followed through the features, default included.
+        let off = r#""uses_default_features":false"#;
+        let e = run(&format!(
+            r#"{{"name":"ts_runner","kind":null,"features":["sim"],{off}}}"#
+        ));
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(
+            run(r#"{"name":"ts_runner","kind":null,"features":[]}"#).len(),
+            1
+        );
+        assert!(
+            run(&format!(
+                r#"{{"name":"ts_runner","kind":null,"features":["plain"],{off}}}"#
+            ))
+            .is_empty()
+        );
         assert!(run(r#"{"name":"other","kind":null,"features":["dev-commands"]}"#).is_empty());
     }
 
