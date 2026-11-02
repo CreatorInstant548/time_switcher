@@ -9,14 +9,13 @@ publish = false
 
 # Test crate (D-DEV-02): never a normal dependency of a host or a rule crate, never in
 # `standard_rules()`. `cargo xtask check` (features step) refuses it there.
-# `bevy_ecs` by name: its derives (`Component`, `Resource`) need it.
+# `bevy_ecs` by name: its derives (`Component`, `Resource`) need it. `ts_persist` for the
+# generic resume test (`resume`, #31), which goes through the bytes of a save.
 [dependencies]
 bevy_ecs.workspace = true
 bevy_tasks.workspace = true
 blake3.workspace = true
 ts_kernel = { path = "../ts_kernel" }
-
-[dev-dependencies]
 ts_persist = { path = "../ts_persist" }
 
 [lints]

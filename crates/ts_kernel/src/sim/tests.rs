@@ -90,7 +90,7 @@ fn record(
             .push((clock.now().as_millis(), at, e.seq, e.event.kind));
         if e.event.kind == RESCHEDULE {
             let next = TimedEvent { kind: 2, ..e.event };
-            q.schedule(e.at.add_millis(10_000), next);
+            q.schedule(e.at.add_millis(10_000), next).unwrap();
         }
     }
 }
@@ -107,14 +107,16 @@ fn timer_setup(b: &mut SimBuilder) {
         (30_000, 0),
         (49, 0),
     ] {
-        queue.schedule(
-            SimTime::from_millis(at),
-            TimedEvent {
-                kind,
-                subject,
-                arg: 0,
-            },
-        );
+        queue
+            .schedule(
+                SimTime::from_millis(at),
+                TimedEvent {
+                    kind,
+                    subject,
+                    arg: 0,
+                },
+            )
+            .unwrap();
     }
     b.add_systems(Phase::Scheduled, record);
 }
@@ -139,7 +141,31 @@ fn due_events_are_those_of_the_tick_in_order() {
 }
 
 fn complete_setup(b: &mut SimBuilder) {
+    let id = b
+        .world_mut()
+        .resource_mut::<StableIds>()
+        .allocate()
+        .unwrap();
+    b.world_mut().spawn((StableEntity::new(id), LodComplete));
+}
+
+fn unstable_complete_setup(b: &mut SimBuilder) {
     b.world_mut().spawn(LodComplete);
+}
+
+/// #31 m2: a full-simulation marker on an entity with no durable identity, which the
+/// fingerprint does not see and a restore drops, does not stop the time skip.
+#[test]
+fn only_stable_entities_stop_the_time_skip() {
+    let stop = StopCondition::At(SimTime::from_millis(60_000));
+    let mut alone = build(&[plugin("timer", timer_setup)]).unwrap();
+    let mut marked = build(&[
+        plugin("timer", timer_setup),
+        plugin("unstable", unstable_complete_setup),
+    ])
+    .unwrap();
+    assert_eq!(alone.run_until(stop), marked.run_until(stop));
+    assert_eq!(alone.state_hash(), marked.state_hash());
 }
 
 /// With or without a time skip, the same events are handled in the same ticks.

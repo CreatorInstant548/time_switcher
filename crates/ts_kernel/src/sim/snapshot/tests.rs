@@ -68,7 +68,7 @@ fn move_all(
 fn on_event(due: Res<DueEvents>, mut queue: ResMut<EventQueue>, mut total: ResMut<Total>) {
     for e in due.iter() {
         total.0 += i64::try_from(e.event.arg).unwrap();
-        queue.schedule(e.at.add_millis(1000), e.event);
+        queue.schedule(e.at.add_millis(1000), e.event).unwrap();
     }
 }
 
@@ -113,7 +113,8 @@ impl Plugin for Life {
         };
         world
             .resource_mut::<EventQueue>()
-            .schedule(SimTime::from_millis(120), event);
+            .schedule(SimTime::from_millis(120), event)
+            .unwrap();
         b.add_systems(Phase::Scheduled, on_event);
         b.add_systems(Phase::Act, move_all);
         b.add_systems(Phase::Consequences, sum);
@@ -528,8 +529,31 @@ fn stable_index_follows_spawn_and_despawn() {
     assert_eq!(sim.world.resource::<StableIndex>().conflicts(), 1);
     sim.world.despawn(twin);
     assert_eq!(sim.world.resource::<StableIndex>().get(id), Some(e));
+    // #31 m1: the count follows the duplicates that are still there.
+    assert_eq!(sim.world.resource::<StableIndex>().conflicts(), 0);
     sim.world.despawn(e);
     assert!(sim.world.resource::<StableIndex>().is_empty());
+}
+
+/// #31 m1: when the indexed entity leaves, a duplicate left alone takes its place, so it
+/// stays in the fingerprint and the snapshot, and the world is sound again.
+#[test]
+fn duplicate_takes_the_place_of_a_despawned_original() {
+    let mut sim = build(&[]);
+    let id = sim.world.resource_mut::<StableIds>().allocate().unwrap();
+    let e = sim.world.spawn(StableEntity::new(id)).id();
+    let twins: Vec<_> = (0..2)
+        .map(|_| sim.world.spawn(StableEntity::new(id)).id())
+        .collect();
+    assert_eq!(sim.world.resource::<StableIndex>().conflicts(), 2);
+    sim.world.despawn(e);
+    let index = sim.world.resource::<StableIndex>();
+    assert_eq!((index.get(id), index.conflicts()), (Some(twins[0]), 1));
+    sim.world.despawn(twins[0]);
+    let index = sim.world.resource::<StableIndex>();
+    assert_eq!((index.get(id), index.conflicts()), (Some(twins[1]), 0));
+    let snap: MemorySnapshot = sim.snapshot(SnapshotScope::Full);
+    assert_eq!(snap.entities, [id]);
 }
 
 /// Order-dependent fold, following the rule: walk the index, sorted by `StableId` (I3).
@@ -588,7 +612,7 @@ fn reschedule(
             e.at.add_millis(offset)
         };
         let arg = e.event.arg.wrapping_mul(7).wrapping_add(3);
-        queue.schedule(at, TimedEvent { arg, ..e.event });
+        queue.schedule(at, TimedEvent { arg, ..e.event }).unwrap();
     }
 }
 
@@ -612,7 +636,9 @@ impl Plugin for Timers {
                 subject,
                 arg: i.unsigned_abs(),
             };
-            queue.schedule(SimTime::from_millis(13 + 997 * i), event);
+            queue
+                .schedule(SimTime::from_millis(13 + 997 * i), event)
+                .unwrap();
         }
         b.add_systems(Phase::Scheduled, reschedule);
     }

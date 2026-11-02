@@ -4,6 +4,34 @@ use core::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, VecDeque};
 
 use crate::SimTime;
+use crate::canonical::MAX_COUNTER;
+
+// spec: revues/architecture.md §8.1, §12.1
+/// Event refused by [`Scheduler::schedule`]: a snapshot could not hold it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleError {
+    /// The date is beyond [`SimTime::MAX_SAVED_ABS_MILLIS`].
+    DateOutOfRange(SimTime),
+    /// The insertion counter reached 2^62, the bound of a snapshot.
+    CounterExhausted,
+}
+
+impl core::fmt::Display for ScheduleError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::DateOutOfRange(at) => {
+                write!(
+                    f,
+                    "event date {} ms is out of the saved range",
+                    at.as_millis()
+                )
+            }
+            Self::CounterExhausted => f.write_str("event counter exhausted"),
+        }
+    }
+}
+
+impl std::error::Error for ScheduleError {}
 
 /// Number of slots of each level: milliseconds of a second, seconds of a minute,
 /// minutes of an hour, hours of a day.
@@ -177,21 +205,27 @@ impl<E> Scheduler<E> {
         self.next_seq
     }
 
+    // spec: revues/architecture.md §8.1, §12.1 ; carnet architecture-securite.md §10
     /// Schedules `event` at date `at` and returns its rank. A date already past is allowed:
     /// the event leaves on the next call, before those with later dates.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If the `seq` counter overflows (2^64 insertions).
-    pub fn schedule(&mut self, at: SimTime, event: E) -> u64 {
+    /// Refuses, without scheduling, what a snapshot could not hold, so that every save can be
+    /// read back: a date beyond [`SimTime::MAX_SAVED_ABS_MILLIS`] (a sentinel such as
+    /// `i64::MAX` included), or a 2^62nd insertion.
+    pub fn schedule(&mut self, at: SimTime, event: E) -> Result<u64, ScheduleError> {
+        if at.as_millis().unsigned_abs() > SimTime::MAX_SAVED_ABS_MILLIS.unsigned_abs() {
+            return Err(ScheduleError::DateOutOfRange(at));
+        }
         let seq = self.next_seq;
-        let Some(next) = seq.checked_add(1) else {
-            panic!("seq overflow");
-        };
-        self.next_seq = next;
+        if seq >= MAX_COUNTER {
+            return Err(ScheduleError::CounterExhausted);
+        }
+        self.next_seq = seq + 1;
         self.place(Scheduled { at, seq, event });
         self.len += 1;
-        seq
+        Ok(seq)
     }
 
     /// Places an event according to the current cursor.
@@ -428,7 +462,7 @@ mod tests {
             let wave = d.below(400).min(u64::from(100_000 - inserted));
             for _ in 0..wave {
                 let at = random_time(&mut d, now);
-                let seq = s.schedule(t(at), inserted);
+                let seq = s.schedule(t(at), inserted).unwrap();
                 reference.insert((at, seq), inserted);
                 inserted += 1;
             }
@@ -477,7 +511,7 @@ mod tests {
             .into_iter()
             .enumerate()
         {
-            s.schedule(t(at), i);
+            s.schedule(t(at), i).unwrap();
         }
         let out: Vec<_> = s
             .pop_due(t(DAY))
@@ -503,7 +537,7 @@ mod tests {
         let mut s = Scheduler::new(SimTime::EPOCH);
         let far = [10 * 365 * DAY, DAY, 2 * DAY - 1, DAY, 400 * DAY + 7];
         for (i, &at) in far.iter().enumerate() {
-            s.schedule(t(at), i);
+            s.schedule(t(at), i).unwrap();
         }
         assert_eq!(s.peek_next_time(), Some(t(DAY)));
         assert!(s.pop_due(t(DAY - 1)).is_empty());
@@ -521,7 +555,7 @@ mod tests {
     fn tick_boundaries_are_inclusive_of_until() {
         let mut s = Scheduler::new(SimTime::EPOCH);
         for at in [0, 49, 50, 99, 100, 999, 1000] {
-            s.schedule(t(at), at);
+            s.schedule(t(at), at).unwrap();
         }
         let tick = |s: &mut Scheduler<i64>, start: i64| -> Vec<i64> {
             s.pop_due(t(start + 49))
@@ -543,14 +577,14 @@ mod tests {
     #[test]
     fn past_and_current_dates_are_served_next() {
         let mut s = Scheduler::new(SimTime::EPOCH);
-        s.schedule(t(500), 0);
-        s.schedule(t(500), 1);
-        s.schedule(t(800), 2);
+        s.schedule(t(500), 0).unwrap();
+        s.schedule(t(500), 1).unwrap();
+        s.schedule(t(800), 2).unwrap();
         let first = s.next_due(t(600)).map(|e| e.event);
         assert_eq!(first, Some(0));
-        s.schedule(t(500), 3);
-        s.schedule(t(100), 4);
-        s.schedule(t(-DAY), 5);
+        s.schedule(t(500), 3).unwrap();
+        s.schedule(t(100), 4).unwrap();
+        s.schedule(t(-DAY), 5).unwrap();
         assert_eq!(s.peek_next_time(), Some(t(-DAY)));
         let out: Vec<_> = s.pop_due(t(600)).into_iter().map(|e| e.event).collect();
         assert_eq!(out, [5, 4, 1, 3]);
@@ -564,7 +598,7 @@ mod tests {
         let mut d = Draws::new(9);
         let mut a = Scheduler::new(SimTime::EPOCH);
         for i in 0..2000 {
-            a.schedule(t(random_time(&mut d, 0)), i);
+            a.schedule(t(random_time(&mut d, 0)), i).unwrap();
         }
         a.pop_due(t(3_600_000));
         let items: Vec<_> = a.pending().into_iter().cloned().collect();
@@ -603,7 +637,7 @@ mod tests {
         let n = 20_000;
         for i in 0..n {
             let at = DAY + 8 * 3_600_000 + d.below(3_600_000) as i64;
-            s.schedule(t(at), i);
+            s.schedule(t(at), i).unwrap();
         }
         SHIFTS.with(|c| c.set(0));
         let out = s.pop_due(t(2 * DAY));
@@ -613,27 +647,28 @@ mod tests {
         assert_eq!(shifts, 0, "{shifts} elements shifted");
     }
 
-    /// T6a review m1: dates and cursors at the bounds of `i64` never overflow, and the
-    /// output still matches a sorted reference.
+    /// T6a review m1: dates at the saved bounds and cursors at the bounds of `i64` never
+    /// overflow, and the output still matches a sorted reference.
     #[test]
     fn extreme_dates_do_not_overflow() {
+        const M: i64 = SimTime::MAX_SAVED_ABS_MILLIS;
         let marks = [
-            i64::MIN,
-            i64::MIN + 1,
-            i64::MIN + 999,
-            i64::MIN + DAY,
+            -M,
+            -M + 1,
+            -M + 999,
+            -M + DAY,
             -DAY,
             0,
             DAY,
-            i64::MAX - DAY,
-            i64::MAX - 1,
-            i64::MAX,
+            M - DAY,
+            M - 1,
+            M,
         ];
-        for &start in &[i64::MIN, -1, 0, i64::MAX - 1] {
+        for &start in &[i64::MIN, -M, -1, 0, M, i64::MAX - 1] {
             let mut s = Scheduler::new(t(start));
             let mut reference = BTreeMap::new();
             for (i, &at) in marks.iter().chain(marks.iter().rev()).enumerate() {
-                let seq = s.schedule(t(at), i);
+                let seq = s.schedule(t(at), i).unwrap();
                 reference.insert((at, seq), i);
             }
             for &until in &marks {
@@ -651,6 +686,25 @@ mod tests {
             }
             assert!(s.is_empty());
         }
+    }
+
+    /// #31: a date or a counter that a snapshot could not hold is refused, and nothing is
+    /// scheduled.
+    #[test]
+    fn unsaveable_events_are_refused() {
+        const M: i64 = SimTime::MAX_SAVED_ABS_MILLIS;
+        let mut s = Scheduler::new(SimTime::EPOCH);
+        for at in [i64::MIN, -M - 1, M + 1, i64::MAX] {
+            assert_eq!(
+                s.schedule(t(at), ()),
+                Err(ScheduleError::DateOutOfRange(t(at)))
+            );
+        }
+        assert_eq!((s.len(), s.next_seq()), (0, 0));
+        let mut s = Scheduler::restore(SimTime::EPOCH, MAX_COUNTER - 1, Vec::new()).unwrap();
+        assert_eq!(s.schedule(t(M), ()), Ok(MAX_COUNTER - 1));
+        assert_eq!(s.schedule(t(0), ()), Err(ScheduleError::CounterExhausted));
+        assert_eq!((s.len(), s.next_seq()), (1, MAX_COUNTER));
     }
 
     #[test]
