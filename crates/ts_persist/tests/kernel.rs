@@ -137,7 +137,7 @@ fn town_sim(n: u64) -> Sim {
 fn town(n: u64) -> MemorySnapshot {
     let mut sim = town_sim(n);
     for _ in 0..3 {
-        sim.step();
+        sim.step().unwrap();
     }
     sim.snapshot(SnapshotScope::Full)
 }
@@ -176,7 +176,7 @@ fn f4_round_trip_through_the_bytes() {
         for codec in [Codec::Stored, Codec::Zstd] {
             let mut straight = town_sim(50);
             for _ in 0..k {
-                straight.step();
+                straight.step().unwrap();
             }
             let snap: MemorySnapshot = straight.snapshot(SnapshotScope::Full);
             let bytes = encode_snapshot(&snap, codec, &Limits::default()).unwrap();
@@ -190,8 +190,8 @@ fn f4_round_trip_through_the_bytes() {
             .unwrap();
             assert_eq!(restored.state_hash(), straight.state_hash(), "k = {k}");
             for _ in 0..N {
-                straight.step();
-                restored.step();
+                straight.step().unwrap();
+                restored.step().unwrap();
             }
             assert_eq!(
                 restored.state_hash(),
@@ -270,7 +270,7 @@ fn meta_date_must_match_the_state() {
     let d = Limits::default();
     let mut sim = town_sim(3);
     let before: MemorySnapshot = sim.snapshot(SnapshotScope::Full);
-    sim.step();
+    sim.step().unwrap();
     let after: MemorySnapshot = sim.snapshot(SnapshotScope::Full);
     let env = encode_parts(
         &[
@@ -321,7 +321,7 @@ fn seeds_decode() {
     let mut sim = Sim::build(SimConfig::default(), &rules, &WorldKey::from_bytes(KEY)).unwrap();
     let first: MemorySnapshot = sim.snapshot(SnapshotScope::Full);
     for _ in 0..30 {
-        sim.step();
+        sim.step().unwrap();
     }
     let later: MemorySnapshot = sim.snapshot(SnapshotScope::Full);
     let seeds = fuzzing::seeds(&[first, later]);

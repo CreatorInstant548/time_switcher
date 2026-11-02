@@ -139,7 +139,7 @@ pub(super) fn build(rules: &[Box<dyn Plugin>]) -> Sim {
 
 pub(super) fn steps(sim: &mut Sim, n: usize) {
     for _ in 0..n {
-        sim.step();
+        sim.step().unwrap();
     }
 }
 
@@ -238,7 +238,7 @@ fn state_hash_does_not_read_keys() {
     let other = WorldKey::insecure_from_u64_for_tests(12);
     let mut b = Sim::build(SimConfig::default(), &life(1), &other).unwrap();
     assert_eq!(a.state_hash(), b.state_hash());
-    b.step();
+    b.step().unwrap();
     assert_ne!(a.state_hash().family("life"), b.state_hash().family("life"));
 }
 
@@ -431,7 +431,11 @@ fn lod_complete_survives_restore() {
     let mut c = restore(&through_bytes(&snap, &rules), &rules).unwrap();
     assert_eq!(c.complete.iter(&c.world).count(), 3);
     let stop = crate::StopCondition::At(SimTime::from_millis(5_000));
-    let (ra, rb, rc) = (a.run_until(stop), b.run_until(stop), c.run_until(stop));
+    let (ra, rb, rc) = (
+        a.run_until(stop).unwrap(),
+        b.run_until(stop).unwrap(),
+        c.run_until(stop).unwrap(),
+    );
     assert_eq!(ra, rb);
     assert_eq!(ra, rc);
     assert_eq!((ra.ticks, ra.skipped_ticks), (90, 0));
@@ -653,16 +657,16 @@ fn time_skip_round_trips() {
     let mut straight = build(&rules);
     let mut snaps = Vec::new();
     for &s in &stops {
-        straight.run_until(crate::StopCondition::At(s));
-        straight.step();
+        straight.run_until(crate::StopCondition::At(s)).unwrap();
+        straight.step().unwrap();
         snaps.push(straight.snapshot::<MemorySnapshot>(SnapshotScope::Full));
     }
     for (k, snap) in snaps.iter().enumerate() {
         // Through the bytes: far, past and pending events round trip too.
         let mut restored = restore(&through_bytes(snap, &rules), &rules).unwrap();
         for &s in &stops[k + 1..] {
-            restored.run_until(crate::StopCondition::At(s));
-            restored.step();
+            restored.run_until(crate::StopCondition::At(s)).unwrap();
+            restored.step().unwrap();
         }
         assert_eq!(restored.state_hash(), straight.state_hash(), "snapshot {k}");
     }

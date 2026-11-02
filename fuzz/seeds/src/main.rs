@@ -37,7 +37,7 @@ fn decode_seeds() -> io::Result<Vec<Vec<u8>>> {
     .map_err(|e| io::Error::other(e.to_string()))?;
     let first: MemorySnapshot = sim.snapshot(SnapshotScope::Full);
     for _ in 0..30 {
-        sim.step();
+        sim.step().map_err(io::Error::other)?;
     }
     let later: MemorySnapshot = sim.snapshot(SnapshotScope::Full);
     Ok(ts_persist::fuzzing::seeds(&[first, later]))
