@@ -248,3 +248,7 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
   - xtask : #119, #17, #36, #55, #85, #91, #95, #12 ;
   - conception : #43 à #45, par la PR #87.
   - La #87 n'a pas bougé depuis le 01/11. Le responsable conception est relancé pour traiter les trois constats importants de la relecture.
+- **La #87 est fusionnée (4997bbd)** : #43, #44 et #45 sont closes. Il ne reste plus aucune issue de conception ouverte. M39 à M41 sont appliqués au code par le dev.
+- **#119** : il y a maintenant 605 refus natifs, générés par un script et vérifiés en CI. Ils couvrent la fusion par l'API, GraphQL et d'autres formes de poussée.
+- **#59** : le reste (versions de schéma, décodeurs, corpus) passe au reliquat de la **phase 2**, avec une barrière : rien ne change d'encodage avant que ce travail soit fait. Décision d'archi-sécu. À fermer après la fusion de la #122.
+- **AU4 bloqué** : le mode auto refuse `git config --unset core.hooksPath` dans la copie principale. Les anciens crochets restent actifs ; ils sont sans risque, mais coûtent du temps. Je ne contourne pas ce refus, c'est un réglage que seul l'utilisateur peut changer. Je lui ai indiqué la commande, à lancer s'il le souhaite.
