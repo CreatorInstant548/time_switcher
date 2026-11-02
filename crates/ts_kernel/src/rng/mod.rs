@@ -5,18 +5,28 @@
 //! *nonce* layout or to the frozen vectors of `vectors.rs` changes the result of every
 //! world.
 //!
-//! - [`WorldKey`] (128 bits) yields [`StreamKeys`] once: a 256-bit [`StreamKey`] per
+//! - [`WorldKey`] (128 bits) yields [`StreamKeys`] once: a 256-bit stream key per
 //!   [`Stream`], derived by BLAKE3 `derive_key` on the stream **name** (K2, K4).
-//! - [`draw`], [`draw_block`] and [`draw_block_at`] draw with XChaCha8 in counter mode (K3).
+//! - A draw goes through a [`DrawSite`], which binds one stream to one purpose under a
+//!   name (#26 m1): [`StreamKeys::draw`], [`StreamKeys::draw_block`] and
+//!   [`StreamKeys::draws`] draw with XChaCha8 in counter mode (K3). The raw draw functions
+//!   and the stream keys stay inside this module.
+//! - [`ArtifactSeed`] yields [`ArtifactKeys`]: the generation streams of the map and of a
+//!   population family only, never a per-world or play stream (P25, #26 m2).
 //! - [`CosmeticSeed`] comes from a private root, separate from the streams (K6, M27).
 //!
 //! No key is `Copy`, `Clone`, `PartialEq`, `Hash` or serializable, and their `Debug` shows
 //! nothing (K5). A witness, then the refusals:
 //!
 //! ```
-//! use ts_kernel::rng::{Stream, StreamKeys, WorldKey, draw};
+//! use ts_kernel::StableIdAllocator;
+//! use ts_kernel::rng::{DrawSite, Stream, StreamKeys, WorldKey};
+//! const HIT: DrawSite = DrawSite::new(Stream::Combat, 1, "combat.hit");
 //! let keys = StreamKeys::derive(&WorldKey::from_bytes([7; 16]));
-//! let _ = draw(keys.get(Stream::Combat), ts_kernel::StableId::from_snapshot_raw(1), 0, 0);
+//! let mut ids = StableIdAllocator::for_new_world();
+//! if let Some(subject) = ids.allocate() {
+//!     let _ = keys.draw(HIT, subject, 0);
+//! }
 //! ```
 //!
 //! ```compile_fail,E0599
@@ -28,17 +38,21 @@
 //! let _ = WorldKey::from_bytes([7; 16]) == WorldKey::from_bytes([7; 16]);
 //! ```
 //!
-//! ```compile_fail,E0308
-//! use ts_kernel::rng::{Stream, StreamKey, StreamKeys, WorldKey};
+//! ```compile_fail,E0624
+//! use ts_kernel::rng::{Stream, StreamKeys, WorldKey};
 //! let keys = StreamKeys::derive(&WorldKey::from_bytes([7; 16]));
-//! let _: StreamKey = keys.get(Stream::Ai).clone();
+//! let _ = keys.get(Stream::Ai);
 //! ```
 //!
 //! ```compile_fail,E0308
-//! use ts_kernel::rng::{StreamKeys, WorldKey, draw};
+//! use ts_kernel::rng::{StreamKeys, WorldKey, WORLD_SUBJECT};
 //! let keys = StreamKeys::derive(&WorldKey::from_bytes([7; 16]));
-//! let seed = keys.cosmetic_seed("hair", ts_kernel::StableId::from_snapshot_raw(1), 0);
-//! let _ = draw(&seed, ts_kernel::StableId::from_snapshot_raw(1), 0, 0);
+//! let seed = keys.cosmetic_seed("hair", WORLD_SUBJECT, 0);
+//! let _ = keys.draw(seed, WORLD_SUBJECT, 0);
+//! ```
+//!
+//! ```compile_fail,E0599
+//! let _ = ts_kernel::rng::ArtifactStream::CityServer;
 //! ```
 //!
 //! The `compile_fail` snippets have their witness above: stable rustdoc does not check their
@@ -78,9 +92,25 @@ const COSMETIC_CONTEXT: &str = "time_switcher 2026-10-30 cosmetic v1";
 pub struct WorldKey([u8; 16]);
 
 impl WorldKey {
-    /// Key read or drawn by the host.
+    /// Key from its bytes, with no check: tests, public test keys and the kernel's own
+    /// layout key. A host that loads or draws the key of a world uses [`Self::checked`].
+    /// Outside the hosts, persistence and tests, `cargo xtask check` refuses this type
+    /// (#26 m3): a rule never builds a key.
     pub const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
+    }
+
+    // spec: revues/generation.md P25
+    /// Key loaded or drawn by a host, or `None` if it is weak: its 16 bytes all equal (the
+    /// zero key included), a buffer left unfilled, or its 8 high bytes all zero, the shape of
+    /// a test key (`insecure_from_u64_for_tests`). Neither comes from a cryptographic
+    /// generator (P25); a drawn key is refused with probability 2^-64.
+    pub const fn checked(bytes: [u8; 16]) -> Option<Self> {
+        if is_weak(&bytes) {
+            None
+        } else {
+            Some(Self(bytes))
+        }
     }
 
     /// **Insecure** test key: `seed` in little-endian, then eight zero bytes. Never in a
@@ -94,6 +124,21 @@ impl WorldKey {
     }
 }
 
+/// True if the 16 bytes are all equal (a buffer left unfilled) or the 8 high ones are all
+/// zero (a test key): never a drawn secret.
+const fn is_weak(bytes: &[u8; 16]) -> bool {
+    let (mut constant, mut high_zero) = (true, true);
+    let mut i = 0;
+    while i < bytes.len() {
+        constant &= bytes[i] == bytes[0];
+        if i >= 8 {
+            high_zero &= bytes[i] == 0;
+        }
+        i += 1;
+    }
+    constant || high_zero
+}
+
 impl fmt::Debug for WorldKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("WorldKey(..)")
@@ -101,9 +146,17 @@ impl fmt::Debug for WorldKey {
 }
 
 // spec: carnet architecture-securite.md §9.9 K2, K5
-/// Key of a stream, 256 bits, obtained only through [`StreamKeys::get`]. Same rules as
-/// [`WorldKey`]: no copy, no comparison, no display.
-pub struct StreamKey([u8; 32]);
+/// Key of a stream, 256 bits, private to this module: rules reach it only through a
+/// [`DrawSite`] (#26 m1). Same rules as [`WorldKey`]: no copy, no comparison, no display.
+pub(crate) struct StreamKey([u8; 32]);
+
+impl StreamKey {
+    /// Key of `stream` for the 16 bytes of a world key or of an artifact seed: BLAKE3
+    /// `derive_key` under the context of the stream (K2, K4), the only derivation of a stream.
+    fn derive(stream: Stream, bytes: &[u8; 16]) -> Self {
+        Self(blake3::derive_key(stream.context(), bytes))
+    }
+}
 
 impl fmt::Debug for StreamKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -211,7 +264,8 @@ impl Stream {
 
 // spec: carnet architecture-securite.md §9.9 K2, K6
 /// Keys derived from a [`WorldKey`], once, when the world is created or loaded: one
-/// [`StreamKey`] per stream and the private cosmetic root. No copy or display.
+/// private stream key per stream and the private cosmetic root. No copy or display. Draws
+/// go through a [`DrawSite`] ([`StreamKeys::draw`]).
 pub struct StreamKeys {
     streams: [StreamKey; Stream::COUNT],
     cosmetic: CosmeticRoot,
@@ -221,14 +275,42 @@ impl StreamKeys {
     /// Derives all the keys by BLAKE3 `derive_key`, each under its own context.
     pub fn derive(world: &WorldKey) -> Self {
         Self {
-            streams: Stream::ALL.map(|s| StreamKey(blake3::derive_key(s.context(), &world.0))),
+            streams: Stream::ALL.map(|s| StreamKey::derive(s, &world.0)),
             cosmetic: CosmeticRoot(blake3::derive_key(COSMETIC_CONTEXT, &world.0)),
         }
     }
 
-    /// Key of stream `stream`. Exhaustive `match` with constant indices: an index outside the
-    /// array would be refused at compile time (`unconditional_panic`), so `get` never panics.
-    pub const fn get(&self, stream: Stream) -> &StreamKey {
+    // spec: revues/architecture.md §6.4 ; carnet architecture-securite.md §9.9 K2, K3
+    /// First value of `site` for (`subject`, `slot`): the same keys and inputs give the same
+    /// value, whatever the execution order.
+    ///
+    /// `slot` is the tick, the index of a schedule block or a counter specific to the subject.
+    /// **Two calls with the same inputs return the same value.** Two distinct values in one
+    /// slot come from two sites, or from the values of one block ([`Self::draw_block`],
+    /// [`Self::draws`]); this value is the first of block 0, so never use both on one triple.
+    /// A draw with no entity (the weather of the world) takes [`WORLD_SUBJECT`].
+    #[must_use]
+    pub fn draw(&self, site: DrawSite, subject: StableId, slot: u64) -> u64 {
+        draw(self.get(site.stream), subject, slot, site.purpose)
+    }
+
+    /// Block `block` (8 values) of `site` for (`subject`, `slot`). Block 0 starts with
+    /// [`Self::draw`].
+    #[must_use]
+    pub fn draw_block(&self, site: DrawSite, subject: StableId, slot: u64, block: u16) -> [u64; 8] {
+        draw_block_at(self.get(site.stream), subject, slot, site.purpose, block)
+    }
+
+    /// Successive values of `site` for (`subject`, `slot`): block 0, then block 1, and so on,
+    /// up to 2^19 values. Its first value is [`Self::draw`].
+    pub fn draws(&self, site: DrawSite, subject: StableId, slot: u64) -> Draws<'_> {
+        Draws::new(self.get(site.stream), subject, slot, site.purpose)
+    }
+
+    /// Key of stream `stream`, inside the kernel only. Exhaustive `match` with constant
+    /// indices: an index outside the array would be refused at compile time
+    /// (`unconditional_panic`), so `get` never panics.
+    pub(crate) const fn get(&self, stream: Stream) -> &StreamKey {
         let s = &self.streams;
         match stream {
             Stream::Ai => &s[0],
@@ -298,7 +380,8 @@ fn nonce(subject: StableId, slot: u64, purpose: u32) -> [u8; 24] {
 ///
 /// The block index is a `u16` (decided): 65,536 blocks of 8 values per triple are enough, and
 /// XChaCha's 32-bit counter can then never run out, so nothing panics.
-pub fn draw_block_at(
+#[must_use]
+pub(crate) fn draw_block_at(
     key: &StreamKey,
     subject: StableId,
     slot: u64,
@@ -319,16 +402,330 @@ pub fn draw_block_at(
 }
 
 /// First block of (subject, slot, purpose): its 8 values.
-pub fn draw_block(key: &StreamKey, subject: StableId, slot: u64, purpose: u32) -> [u64; 8] {
+#[must_use]
+pub(crate) fn draw_block(key: &StreamKey, subject: StableId, slot: u64, purpose: u32) -> [u64; 8] {
     draw_block_at(key, subject, slot, purpose, 0)
 }
 
 // spec: revues/architecture.md §6.4 ; carnet architecture-securite.md §9.9 K2, K3
 /// Pure draw: the same stream key and the same (subject, slot, purpose) give the same value,
-/// whatever the execution order. It is the first value of [`draw_block`].
-///
-/// `slot` is the tick, the index of a schedule block or a counter specific to the subject;
-/// `purpose` tells apart the draws of one system in the same slot.
-pub fn draw(key: &StreamKey, subject: StableId, slot: u64, purpose: u32) -> u64 {
+/// whatever the execution order. It is the first value of [`draw_block`]. Outside this
+/// module, a draw goes through a [`DrawSite`] ([`StreamKeys::draw`]).
+#[must_use]
+pub(crate) fn draw(key: &StreamKey, subject: StableId, slot: u64, purpose: u32) -> u64 {
     draw_block(key, subject, slot, purpose)[0]
+}
+
+// spec: revues/architecture.md §6.4 ; carnet architecture-securite.md §9.9 K3
+/// Draw site: one stream and one purpose, bound together under a name, declared once as a
+/// `const` next to the system that draws there.
+///
+/// Two sites of the rules never share their stream and purpose: each plugin lists its
+/// sites in [`crate::Plugin::draw_sites`], and [`crate::Sim::build`] refuses a pair listed
+/// twice ([`crate::BuildError::DrawSiteConflict`]). Two systems can thus never get the same
+/// draws by picking the same purpose, and a public draw (a lock) never reveals a hidden one
+/// (a camera). The stream is part of the site, so no system passes the key of another domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DrawSite {
+    stream: Stream,
+    purpose: u32,
+    name: &'static str,
+}
+
+impl DrawSite {
+    /// Site `name` (for example `"combat.hit"`) of `stream`, with `purpose`.
+    pub const fn new(stream: Stream, purpose: u32, name: &'static str) -> Self {
+        Self {
+            stream,
+            purpose,
+            name,
+        }
+    }
+
+    /// Stream of the site.
+    pub const fn stream(self) -> Stream {
+        self.stream
+    }
+
+    /// Purpose of the site, unique within its stream.
+    pub const fn purpose(self) -> u32 {
+        self.purpose
+    }
+
+    /// Name of the site, for diagnostics.
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+}
+
+// spec: carnet architecture-securite.md §9.9 K9
+/// Subject of a draw that concerns no entity, such as the weather of the world. Its value is
+/// the last index of the map namespace, but it is a draw subject only, never a reference
+/// kept in the state. Its site serves world-level draws only, never an entity: since sites
+/// are unique, its draws never meet those of an entity or a place, whatever its value.
+pub const WORLD_SUBJECT: StableId = StableId::from_snapshot_raw(u64::MAX);
+
+/// Successive values of one (site, subject, slot): see [`StreamKeys::draws`].
+pub struct Draws<'a> {
+    key: &'a StreamKey,
+    subject: StableId,
+    slot: u64,
+    purpose: u32,
+    /// Next block to compute; beyond `u16::MAX`, the values are exhausted.
+    next_block: u32,
+    block: [u64; 8],
+    /// Next value of `block` to return; 8 when the block is used up.
+    pos: usize,
+}
+
+impl<'a> Draws<'a> {
+    const fn new(key: &'a StreamKey, subject: StableId, slot: u64, purpose: u32) -> Self {
+        Self {
+            key,
+            subject,
+            slot,
+            purpose,
+            next_block: 0,
+            block: [0; 8],
+            pos: 8,
+        }
+    }
+}
+
+impl Iterator for Draws<'_> {
+    type Item = u64;
+
+    fn next(&mut self) -> Option<u64> {
+        if self.pos >= self.block.len() {
+            let block = u16::try_from(self.next_block).ok()?;
+            self.block = draw_block_at(self.key, self.subject, self.slot, self.purpose, block);
+            self.next_block += 1;
+            self.pos = 0;
+        }
+        let value = self.block.get(self.pos).copied();
+        self.pos += 1;
+        value
+    }
+}
+
+impl core::iter::FusedIterator for Draws<'_> {}
+
+impl fmt::Debug for Draws<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Draws(..)")
+    }
+}
+
+// spec: revues/generation.md P25, P26, §5
+/// Streams of a generated artifact (the map, a population family): the only ones an
+/// [`ArtifactSeed`] gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ArtifactStream {
+    /// Generation of the city.
+    CityGen,
+    /// Generation of the population.
+    PopGen,
+    /// Furnishing: fixed furniture of the map, movable furniture of the family (P8).
+    Furnish,
+}
+
+impl ArtifactStream {
+    /// The stream, with the same key as in [`StreamKeys`] for the same 16 bytes.
+    pub const fn stream(self) -> Stream {
+        match self {
+            Self::CityGen => Stream::CityGen,
+            Self::PopGen => Stream::PopGen,
+            Self::Furnish => Stream::Furnish,
+        }
+    }
+}
+
+// spec: revues/generation.md P25 ; revues/securite.md S2
+/// Seed of a generated artifact: public for the map and the solo family, secret for the
+/// online family (P25).
+///
+/// Unlike a [`WorldKey`], it yields only the artifact streams ([`ArtifactKeys`]): never
+/// `CityServer`, `PopHidden` nor a play stream, which come only from the secret key of a
+/// world. A step that holds the public map seed thus cannot draw the server part of the city
+/// or the hidden layer under a key known to all (S2).
+pub struct ArtifactSeed([u8; 16]);
+
+impl ArtifactSeed {
+    /// Seed from its bytes, with no check: the public map and solo family seeds, and tests.
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Secret seed loaded or drawn by a host (the online family), or `None` if it is weak,
+    /// as [`WorldKey::checked`].
+    pub const fn checked(bytes: [u8; 16]) -> Option<Self> {
+        if is_weak(&bytes) {
+            None
+        } else {
+            Some(Self(bytes))
+        }
+    }
+}
+
+impl fmt::Debug for ArtifactSeed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ArtifactSeed(..)")
+    }
+}
+
+/// Draw site of an artifact stream, see [`DrawSite`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ArtifactSite {
+    stream: ArtifactStream,
+    purpose: u32,
+    name: &'static str,
+}
+
+impl ArtifactSite {
+    /// Site `name` of `stream`, with `purpose`.
+    pub const fn new(stream: ArtifactStream, purpose: u32, name: &'static str) -> Self {
+        Self {
+            stream,
+            purpose,
+            name,
+        }
+    }
+
+    /// The same site, to list it with the others or to draw it from [`StreamKeys`].
+    pub const fn site(self) -> DrawSite {
+        DrawSite::new(self.stream.stream(), self.purpose, self.name)
+    }
+}
+
+// spec: carnet architecture-securite.md §9.9 K2, K5
+/// Keys of the artifact streams, derived from an [`ArtifactSeed`] under the same contexts as
+/// [`StreamKeys::derive`]: the same 16 bytes give the same draws. No copy or display.
+pub struct ArtifactKeys {
+    city_gen: StreamKey,
+    pop_gen: StreamKey,
+    furnish: StreamKey,
+}
+
+impl ArtifactKeys {
+    /// Derives the three keys by BLAKE3 `derive_key`.
+    pub fn derive(seed: &ArtifactSeed) -> Self {
+        Self {
+            city_gen: StreamKey::derive(Stream::CityGen, &seed.0),
+            pop_gen: StreamKey::derive(Stream::PopGen, &seed.0),
+            furnish: StreamKey::derive(Stream::Furnish, &seed.0),
+        }
+    }
+
+    const fn get(&self, stream: ArtifactStream) -> &StreamKey {
+        match stream {
+            ArtifactStream::CityGen => &self.city_gen,
+            ArtifactStream::PopGen => &self.pop_gen,
+            ArtifactStream::Furnish => &self.furnish,
+        }
+    }
+
+    /// First value of `site`, as [`StreamKeys::draw`].
+    #[must_use]
+    pub fn draw(&self, site: ArtifactSite, subject: StableId, slot: u64) -> u64 {
+        draw(self.get(site.stream), subject, slot, site.purpose)
+    }
+
+    /// Block `block` of `site`, as [`StreamKeys::draw_block`].
+    #[must_use]
+    pub fn draw_block(
+        &self,
+        site: ArtifactSite,
+        subject: StableId,
+        slot: u64,
+        block: u16,
+    ) -> [u64; 8] {
+        draw_block_at(self.get(site.stream), subject, slot, site.purpose, block)
+    }
+
+    /// Successive values of `site`, as [`StreamKeys::draws`].
+    pub fn draws(&self, site: ArtifactSite, subject: StableId, slot: u64) -> Draws<'_> {
+        Draws::new(self.get(site.stream), subject, slot, site.purpose)
+    }
+}
+
+impl fmt::Debug for ArtifactKeys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ArtifactKeys(..)")
+    }
+}
+
+/// Seal of [`SiteDraw`]: no other crate implements it.
+mod sealed {
+    pub trait Sealed {}
+}
+
+// spec: carnet architecture-securite.md §9.9 K3
+/// Holder of stream keys that draws at a [`DrawSite`], for code generic over who holds the
+/// keys: a generator run while building, or by a host or a test.
+///
+/// Sealed, implemented only by [`StreamKeys`], which only a holder of the [`WorldKey`]
+/// derives (hosts, tools, tests), and by [`crate::WorldStreams`], which checks that an
+/// active plugin declares the site (#26 m1). A system thus never reaches the keys of the
+/// world without that check. Witness, then the refusal:
+///
+/// ```
+/// use ts_kernel::rng::{DrawSite, SiteDraw, Stream, StreamKeys, WORLD_SUBJECT, WorldKey};
+/// fn roll(keys: &impl SiteDraw) -> u64 {
+///     keys.draw(DrawSite::new(Stream::Weather, 1, "weather.rain"), WORLD_SUBJECT, 0)
+/// }
+/// let _ = roll(&StreamKeys::derive(&WorldKey::from_bytes([7; 16])));
+/// ```
+///
+/// ```compile_fail,E0277
+/// use ts_kernel::StableId;
+/// use ts_kernel::rng::{DrawSite, Draws, SiteDraw};
+/// struct Mine;
+/// impl SiteDraw for Mine {
+///     fn draw(&self, _: DrawSite, _: StableId, _: u64) -> u64 { 0 }
+///     fn draw_block(&self, _: DrawSite, _: StableId, _: u64, _: u16) -> [u64; 8] { [0; 8] }
+///     fn draws(&self, _: DrawSite, _: StableId, _: u64) -> Draws<'_> { todo!() }
+/// }
+/// ```
+pub trait SiteDraw: sealed::Sealed {
+    /// First value of `site`, see [`StreamKeys::draw`].
+    #[must_use]
+    fn draw(&self, site: DrawSite, subject: StableId, slot: u64) -> u64;
+
+    /// Block `block` of `site`, see [`StreamKeys::draw_block`].
+    #[must_use]
+    fn draw_block(&self, site: DrawSite, subject: StableId, slot: u64, block: u16) -> [u64; 8];
+
+    /// Successive values of `site`, see [`StreamKeys::draws`].
+    fn draws(&self, site: DrawSite, subject: StableId, slot: u64) -> Draws<'_>;
+}
+
+impl sealed::Sealed for StreamKeys {}
+impl sealed::Sealed for crate::WorldStreams {}
+
+impl SiteDraw for StreamKeys {
+    fn draw(&self, site: DrawSite, subject: StableId, slot: u64) -> u64 {
+        Self::draw(self, site, subject, slot)
+    }
+
+    fn draw_block(&self, site: DrawSite, subject: StableId, slot: u64, block: u16) -> [u64; 8] {
+        Self::draw_block(self, site, subject, slot, block)
+    }
+
+    fn draws(&self, site: DrawSite, subject: StableId, slot: u64) -> Draws<'_> {
+        Self::draws(self, site, subject, slot)
+    }
+}
+
+impl SiteDraw for crate::WorldStreams {
+    fn draw(&self, site: DrawSite, subject: StableId, slot: u64) -> u64 {
+        Self::draw(self, site, subject, slot)
+    }
+
+    fn draw_block(&self, site: DrawSite, subject: StableId, slot: u64, block: u16) -> [u64; 8] {
+        Self::draw_block(self, site, subject, slot, block)
+    }
+
+    fn draws(&self, site: DrawSite, subject: StableId, slot: u64) -> Draws<'_> {
+        Self::draws(self, site, subject, slot)
+    }
 }

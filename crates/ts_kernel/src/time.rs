@@ -20,6 +20,10 @@ impl SimTime {
     pub const EPOCH: Self = Self(0);
     /// Milliseconds per simulation day.
     pub const MILLIS_PER_DAY: i64 = 86_400_000;
+    /// Largest absolute date a snapshot holds, in milliseconds: 2^62, about 146 million
+    /// years. The snapshot decoder refuses a date beyond it, so the scheduler refuses one too:
+    /// every save can be read back.
+    pub const MAX_SAVED_ABS_MILLIS: i64 = 1 << 62;
 
     /// The instant `millis` milliseconds from the epoch.
     pub const fn from_millis(millis: i64) -> Self {
