@@ -3,7 +3,7 @@
 use core::fmt;
 use core::num::NonZeroU16;
 use core::ops::{Deref, DerefMut};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::component::{Component, ComponentId};
 use bevy_ecs::entity::Entity;
@@ -13,8 +13,8 @@ use bevy_ecs::schedule::{Schedule, Schedules};
 use bevy_ecs::world::World;
 use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 
-use crate::phase::phase_schedule;
-use crate::rng::{StreamKeys, WorldKey};
+use crate::phase::{ExecutorSwitch, phase_schedule};
+use crate::rng::{CosmeticSeed, DrawSite, Draws, Stream, StreamKeys, WorldKey};
 use crate::state::{
     StableIndex, StateEntry, StateWriter, hash_world, stable_entities, undeclared_components,
 };
@@ -84,8 +84,41 @@ impl StateHash for TimedEvent {
 pub enum Threads {
     /// One thread: sequential executor, one-thread pool for `par_iter`.
     Single,
-    /// `n` threads: parallel `bevy_ecs` executor.
+    /// `n` threads: `n`-thread pool for `par_iter`, and the parallel `bevy_ecs` executor for
+    /// the phases that [`ParallelPhases`] selects.
     Fixed(NonZeroU16),
+}
+
+// spec: revues/architecture.md §9.1, §9.2
+/// Work from which a phase runs on the parallel executor by default; see
+/// [`ParallelPhases::FromWork`]. A speed setting, never a game value.
+// PROVISIONAL(design #94): to calibrate on the phase 1 systems; the result does not depend on it.
+pub const PARALLEL_FROM_WORK: u32 = 256;
+
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md §9.10 L6
+/// Which phases run on the parallel `bevy_ecs` executor with [`Threads::Fixed`]; the others
+/// run on the single-threaded executor, where `par_iter` still uses the whole pool. Ignored
+/// with [`Threads::Single`].
+///
+/// **No effect on the result** (R1), only on speed: see `AdaptiveExecutor` in `phase.rs`.
+/// The choice is made before each phase from the configuration and the world state alone,
+/// and kept outside the `World`, so no system can see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParallelPhases {
+    /// Every phase, every tick: the behaviour before issue #67. The determinism proofs use it
+    /// to exercise the parallel executor on small worlds.
+    Always,
+    /// Only a phase with at least two systems (a single system gains nothing from the
+    /// parallel executor), and only when its **work** reaches this value: the entities in
+    /// full simulation ([`LodComplete`]) at the start of the phase, plus the events due in
+    /// the tick (none yet in [`Phase::Input`]). Counted in work units, never in time.
+    FromWork(u32),
+}
+
+impl Default for ParallelPhases {
+    fn default() -> Self {
+        Self::FromWork(PARALLEL_FROM_WORK)
+    }
 }
 
 impl Threads {
@@ -106,6 +139,8 @@ pub struct SimConfig {
     pub tick_hz: u32,
     /// Number of compute threads.
     pub threads: Threads,
+    /// Phases on the parallel executor, with [`Threads::Fixed`]. Speed only.
+    pub parallel_phases: ParallelPhases,
     /// Disabled plugins, by name; each must be [`Plugin::disableable`].
     pub disabled_plugins: Vec<&'static str>,
 }
@@ -115,6 +150,7 @@ impl Default for SimConfig {
         Self {
             tick_hz: 20,
             threads: Threads::Single,
+            parallel_phases: ParallelPhases::default(),
             disabled_plugins: Vec::new(),
         }
     }
@@ -122,7 +158,8 @@ impl Default for SimConfig {
 
 // spec: revues/architecture.md §6.5, §8.1 ; carnet architecture-securite.md §9.10 L2
 /// "Full simulation" marker of an entity. Defined here only, it serves the time skip;
-/// `ts_model` re-exports it with `LodSimplified` and `LodStatistical`.
+/// `ts_model` re-exports it with `LodSimplified` and `LodStatistical`. It counts only on an
+/// entity that carries [`StableEntity`] (#31 m2).
 #[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LodComplete;
 
@@ -210,15 +247,72 @@ impl StableIds {
 }
 
 // spec: revues/architecture.md §6.4 ; carnet architecture-securite.md §9.10 L4
-/// Resource: the stream keys, derived from the world key at build time. They are never
-/// recorded or hashed; the world key is not kept.
+/// Resource: the stream keys, derived from the world key at build time, and the draw sites
+/// declared by the active plugins. The keys are never recorded or hashed; the world key is
+/// not kept.
+///
+/// Systems draw through [`Self::draw`], [`Self::draw_block`] and [`Self::draws`], or
+/// through [`crate::rng::SiteDraw`] in code generic over the holder of the keys (a generator
+/// run while building). In debug builds (every test), every one of these panics on a site
+/// that no active plugin declares ([`Plugin::draw_sites`]), so that the uniqueness check of
+/// the build covers every draw of the rules (#26 m1). The keys themselves are never handed
+/// out: no `Deref` to [`StreamKeys`], whose draws check nothing. Witness, then the refusal:
+///
+/// ```
+/// fn draws_here(s: &ts_kernel::WorldStreams) -> &impl ts_kernel::rng::SiteDraw {
+///     s
+/// }
+/// ```
+///
+/// ```compile_fail,E0308
+/// fn keys(s: &ts_kernel::WorldStreams) -> &ts_kernel::rng::StreamKeys {
+///     s
+/// }
+/// ```
 #[derive(Resource, Debug)]
-pub struct WorldStreams(StreamKeys);
+pub struct WorldStreams {
+    keys: StreamKeys,
+    sites: BTreeSet<DrawSite>,
+}
 
-impl Deref for WorldStreams {
-    type Target = StreamKeys;
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl WorldStreams {
+    /// First value of a declared `site`, as [`StreamKeys::draw`].
+    #[must_use]
+    pub fn draw(&self, site: DrawSite, subject: StableId, slot: u64) -> u64 {
+        self.declared(site);
+        self.keys.draw(site, subject, slot)
+    }
+
+    /// Block `block` of a declared `site`, as [`StreamKeys::draw_block`].
+    #[must_use]
+    pub fn draw_block(&self, site: DrawSite, subject: StableId, slot: u64, block: u16) -> [u64; 8] {
+        self.declared(site);
+        self.keys.draw_block(site, subject, slot, block)
+    }
+
+    /// Successive values of a declared `site`, as [`StreamKeys::draws`].
+    pub fn draws(&self, site: DrawSite, subject: StableId, slot: u64) -> Draws<'_> {
+        self.declared(site);
+        self.keys.draws(site, subject, slot)
+    }
+
+    /// Cosmetic seed, see [`StreamKeys::cosmetic_seed`].
+    pub fn cosmetic_seed(&self, usage: &'static str, subject: StableId, slot: u64) -> CosmeticSeed {
+        self.keys.cosmetic_seed(usage, subject, slot)
+    }
+
+    /// The keys, for the tests of the kernel only.
+    #[cfg(test)]
+    pub(crate) const fn keys(&self) -> &StreamKeys {
+        &self.keys
+    }
+
+    fn declared(&self, site: DrawSite) {
+        debug_assert!(
+            self.sites.contains(&site),
+            "draw site {} is declared by no active plugin (Plugin::draw_sites)",
+            site.name()
+        );
     }
 }
 
@@ -269,6 +363,13 @@ pub enum BuildError {
         /// Required plugin, placed after it.
         dependency: &'static str,
     },
+    /// Two draw sites of the rules share a stream and a purpose (#26 m1).
+    DrawSiteConflict {
+        /// Site listed first, and its plugin.
+        first: (&'static str, DrawSite),
+        /// Site listed next, with the same stream and purpose, and its plugin.
+        second: (&'static str, DrawSite),
+    },
     /// A plugin switched off ambiguity detection (L7): `ambiguous_with_all` on a system of
     /// `phase`, or, with `phase: None`, `allow_ambiguous_component` or
     /// `allow_ambiguous_resource` on the world.
@@ -310,6 +411,16 @@ impl fmt::Display for BuildError {
                     "plugin {plugin} depends on {dependency}, which comes after it"
                 )
             }
+            Self::DrawSiteConflict { first, second } => write!(
+                f,
+                "draw site {} of plugin {} reuses stream {:?} and purpose {} of site {} of plugin {}",
+                second.1.name(),
+                second.0,
+                second.1.stream(),
+                second.1.purpose(),
+                first.1.name(),
+                first.0
+            ),
             Self::AmbiguityOptOut { phase: Some(phase) } => {
                 write!(
                     f,
@@ -356,10 +467,15 @@ pub struct RunReport {
 pub struct Sim {
     world: World,
     phases: Vec<Schedule>,
+    /// Indexed like `phases`: with [`Threads::Fixed`], the executor switch of the phase and
+    /// its number of systems; `None` with [`Threads::Single`].
+    switches: Vec<Option<(ExecutorSwitch, usize)>>,
+    parallel_phases: ParallelPhases,
     tick_ms: i64,
     active: Vec<(&'static str, u32)>,
     rules: RulesFingerprint,
-    complete: QueryState<Entity, With<LodComplete>>,
+    /// Stable entities in full simulation: the only ones the fingerprint sees (#31 m2).
+    complete: QueryState<Entity, (With<LodComplete>, With<StableEntity>)>,
     state: Vec<StateEntry>,
     migrations: Vec<(&'static str, u32)>,
     /// Components allowed on stable entities (M2).
@@ -418,6 +534,7 @@ fn active_plugins<'a>(
         .filter(|p| !cfg.disabled_plugins.contains(&p.name()))
         .map(|p| &**p)
         .collect();
+    check_draw_sites(rules)?;
     // Dependencies are checked before any `build` runs (T6a review m5).
     for (i, p) in active.iter().enumerate() {
         for &dependency in p.dependencies() {
@@ -435,6 +552,22 @@ fn active_plugins<'a>(
         }
     }
     Ok(active)
+}
+
+// spec: carnet architecture-securite.md §9.9 K3
+/// Refuses two draw sites of `rules` (active or not) with the same stream and purpose.
+fn check_draw_sites(rules: &[Box<dyn Plugin>]) -> Result<(), BuildError> {
+    let mut seen: BTreeMap<(Stream, u32), (&'static str, DrawSite)> = BTreeMap::new();
+    for p in rules {
+        for &site in p.draw_sites() {
+            let second = (p.name(), site);
+            if let Some(&first) = seen.get(&(site.stream(), site.purpose())) {
+                return Err(BuildError::DrawSiteConflict { first, second });
+            }
+            seen.insert((site.stream(), site.purpose()), second);
+        }
+    }
+    Ok(())
 }
 
 impl Sim {
@@ -471,14 +604,22 @@ impl Sim {
         world.insert_resource(EventQueue(Scheduler::new(SimTime::EPOCH)));
         world.insert_resource(DueEvents::default());
         world.insert_resource(StableIds(StableIdAllocator::for_new_world()));
-        world.insert_resource(WorldStreams(StreamKeys::derive(world_key)));
+        world.insert_resource(WorldStreams {
+            keys: StreamKeys::derive(world_key),
+            sites: plugins
+                .iter()
+                .flat_map(|p| p.draw_sites())
+                .copied()
+                .collect(),
+        });
 
+        let (phases, switches): (Vec<_>, Vec<_>) = Phase::ALL
+            .iter()
+            .map(|&p| phase_schedule(p, cfg.threads))
+            .unzip();
         let mut b = SimBuilder {
             world,
-            phases: Phase::ALL
-                .iter()
-                .map(|&p| phase_schedule(p, cfg.threads))
-                .collect(),
+            phases,
             current: "",
             state: Vec::new(),
             migrations: Vec::new(),
@@ -514,12 +655,21 @@ impl Sim {
                 return Err(BuildError::Schedule { phase, message });
             }
         }
+        // After `initialize`, so that the count includes the sync points that `bevy_ecs`
+        // inserted: an upper bound of the systems that can run together (speed only).
+        let switches = switches
+            .into_iter()
+            .zip(&phases)
+            .map(|(switch, schedule)| switch.map(|s| (s, schedule.systems_len())))
+            .collect();
         let active: Vec<_> = plugins.iter().map(|p| (p.name(), p.version())).collect();
         let rules = RulesFingerprint::of(&active);
-        let complete = world.query_filtered::<Entity, With<LodComplete>>();
+        let complete = world.query_filtered::<Entity, (With<LodComplete>, With<StableEntity>)>();
         Ok(Self {
             world,
             phases,
+            switches,
+            parallel_phases: cfg.parallel_phases,
             tick_ms,
             active,
             rules,
@@ -577,12 +727,12 @@ impl Sim {
     pub fn step(&mut self) -> StepReport {
         let tick_start = self.now();
         let last = tick_start.add_millis(self.tick_ms - 1);
-        self.phases[Phase::Input.index()].run(&mut self.world);
+        self.run_phase(Phase::Input, 0);
         let due = self.world.resource_mut::<EventQueue>().pop_due(last);
         let due_events = due.len();
         self.world.resource_mut::<DueEvents>().0 = due;
-        for schedule in &mut self.phases[Phase::Scheduled.index()..] {
-            schedule.run(&mut self.world);
+        for &phase in &Phase::ALL[Phase::Scheduled.index()..] {
+            self.run_phase(phase, due_events);
         }
         self.world.resource_mut::<DueEvents>().0.clear();
         self.world.resource_mut::<SimClock>().now = last.add_millis(1);
@@ -593,7 +743,31 @@ impl Sim {
         }
     }
 
-    /// True if an entity carries [`LodComplete`].
+    // spec: revues/architecture.md §9.1, §9.2
+    /// Runs one phase. With [`Threads::Fixed`], first picks its executor (speed only, see
+    /// [`ParallelPhases`]) from the configuration and the world state alone: nothing is
+    /// carried from one tick to the next.
+    fn run_phase(&mut self, phase: Phase, due_events: usize) {
+        if let Some((switch, systems)) = &self.switches[phase.index()] {
+            let parallel = match self.parallel_phases {
+                ParallelPhases::Always => true,
+                ParallelPhases::FromWork(from) => {
+                    *systems >= 2 && {
+                        // Exact and cheap: both `With` filters are archetype filters, so the
+                        // lower bound is the sum of the matched table sizes.
+                        let complete = self.complete.iter(&self.world).size_hint().0;
+                        complete.saturating_add(due_events) >= from as usize
+                    }
+                }
+            };
+            switch.set_parallel(parallel);
+        }
+        self.phases[phase.index()].run(&mut self.world);
+    }
+
+    /// True if a stable entity carries [`LodComplete`]. Only stable entities count, as in the
+    /// fingerprint and the snapshot: a marker on another entity, which a restore drops, must
+    /// not change the choice between ticking and skipping (#31 m2).
     fn has_complete_entities(&mut self) -> bool {
         self.complete.iter(&self.world).next().is_some()
     }
@@ -608,7 +782,7 @@ impl Sim {
     // spec: revues/architecture.md §8.1, §8.5
     /// Advances to the first tick start at or after the stop date.
     ///
-    /// **Time skip**: while no entity carries [`LodComplete`], the loop stops ticking and
+    /// **Time skip**: while no stable entity carries [`LodComplete`], the loop stops ticking and
     /// jumps straight to the tick that contains the next event. The skipped ticks are empty:
     /// an event is therefore handled in the same tick, with or without a skip.
     /// This relies on the time-skip contract stated on [`Plugin`].

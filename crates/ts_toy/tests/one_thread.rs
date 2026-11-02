@@ -15,6 +15,11 @@ fn short_version() {
 }
 
 #[test]
+fn default_policy() {
+    common::default_policy_agrees(&common::SHORT, THREADS);
+}
+
+#[test]
 fn generator() {
     common::generator(THREADS);
 }

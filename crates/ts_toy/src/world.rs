@@ -10,11 +10,11 @@
 //! kernel's keyed streams.
 
 use bevy_ecs::prelude::{Commands, Component, Query, Res, ResMut, Resource, With};
-use ts_kernel::rng::{Stream, StreamKey, draw};
+use ts_kernel::rng::{DrawSite, Stream};
 use ts_kernel::{
     CanonicalError, DueEvents, EventQueue, LodComplete, Phase, Plugin, SimBuilder, SimClock,
     SimTime, StableEntity, StableId, StableIds, StableIndex, StateDecode, StateHash, StateReader,
-    StateWriter, TimedEvent, WorldStreams,
+    StateWriter, TimedEvent, WorldStreams, par_for_each_mut,
 };
 
 use crate::day_start;
@@ -49,11 +49,23 @@ const ARRIVE_HOME: u32 = 4;
 const STROLL_START: u32 = 5;
 const STROLL_END: u32 = 6;
 
-/// Draw purposes (`Population` stream for the agenda, `Ai` for the stroll).
-const P_DEPART: u32 = 1;
-const P_TRAVEL: u32 = 2;
-const P_WORK: u32 = 4;
-const P_STEP: u32 = 5;
+/// Draw sites: `Population` stream for the agenda, `Ai` for the stroll.
+const DEPART: DrawSite = DrawSite::new(Stream::Population, 1, "toy.depart");
+const TRAVEL_OUT: DrawSite = DrawSite::new(Stream::Population, 2, "toy.travel_out");
+const TRAVEL_BACK: DrawSite = DrawSite::new(Stream::Population, 3, "toy.travel_back");
+const WORK: DrawSite = DrawSite::new(Stream::Population, 4, "toy.work");
+const STEP: DrawSite = DrawSite::new(Stream::Ai, 5, "toy.step");
+/// Every site of the plugin, those of the generator included.
+const SITES: [DrawSite; 8] = [
+    DEPART,
+    TRAVEL_OUT,
+    TRAVEL_BACK,
+    WORK,
+    STEP,
+    crate::town::KIND,
+    crate::town::MEMBERS,
+    crate::town::WORKPLACE,
+];
 
 /// Where a resident is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,20 +204,21 @@ const fn after(at: SimTime, minutes: i64) -> SimTime {
 }
 
 /// Drawn number in `0..spread`.
-fn spread(key: &StreamKey, who: StableId, day: u64, purpose: u32, spread: u64) -> i64 {
+fn spread(keys: &WorldStreams, site: DrawSite, who: StableId, day: u64, spread: u64) -> i64 {
     // Exact: below `spread`, itself small.
-    (draw(key, who, day, purpose) % spread) as i64
+    (keys.draw(site, who, day) % spread) as i64
 }
 
 /// Departure from home on `day`.
-fn departure(key: &StreamKey, who: StableId, day: u64) -> SimTime {
-    let minutes = DEPART_FROM + spread(key, who, day, P_DEPART, DEPART_SPREAD);
+fn departure(keys: &WorldStreams, who: StableId, day: u64) -> SimTime {
+    let minutes = DEPART_FROM + spread(keys, DEPART, who, day, DEPART_SPREAD);
     after(day_start(day as i64), minutes)
 }
 
-/// Travel time of leg `leg` (0 to work, 1 home) on `day`, in minutes.
-fn travel(key: &StreamKey, who: StableId, c: &Commuter, day: u64, leg: u32) -> i64 {
-    let jitter = spread(key, who, day, P_TRAVEL + leg, TRAVEL_SPREAD);
+/// Travel time of leg `leg` ([`TRAVEL_OUT`] to work, [`TRAVEL_BACK`] home) on `day`, in
+/// minutes.
+fn travel(keys: &WorldStreams, who: StableId, c: &Commuter, day: u64, leg: DrawSite) -> i64 {
+    let jitter = spread(keys, leg, who, day, TRAVEL_SPREAD);
     TRAVEL_BASE + TRAVEL_PER_CELL * i64::from(c.cells) + jitter
 }
 
@@ -226,7 +239,7 @@ fn on_events(
     mut people: Query<(&Commuter, &mut Whereabouts)>,
     mut commands: Commands,
 ) {
-    let key = streams.get(Stream::Population);
+    let keys = &*streams;
     for item in due.iter() {
         let TimedEvent { kind, subject, arg } = item.event;
         let Some(e) = index.get(subject) else {
@@ -236,14 +249,15 @@ fn on_events(
             continue;
         };
         let mut next = |when: SimTime, kind: u32, day: u64| {
-            queue.schedule(
-                when,
-                TimedEvent {
-                    kind,
-                    subject,
-                    arg: day,
-                },
-            );
+            let event = TimedEvent {
+                kind,
+                subject,
+                arg: day,
+            };
+            let scheduled = queue.schedule(when, event);
+            if let Err(e) = scheduled {
+                panic!("toy dates stay within the saved range: {e}");
+            }
         };
         let moved = |place: Place, at: &mut Whereabouts| {
             at.place = place;
@@ -254,7 +268,7 @@ fn on_events(
                 moved(Place::ToWork, &mut at);
                 tally.departures += 1;
                 tally.travelling += 1;
-                let minutes = travel(key, subject, commuter, arg, 0);
+                let minutes = travel(keys, subject, commuter, arg, TRAVEL_OUT);
                 next(after(item.at, minutes), ARRIVE_WORK, arg);
             }
             ARRIVE_WORK => {
@@ -263,7 +277,7 @@ fn on_events(
                 // Plain subtraction: an arrival without its departure panics (overflow-checks).
                 tally.travelling -= 1;
                 tally.at_work += 1;
-                let minutes = WORK_BASE + spread(key, subject, arg, P_WORK, WORK_SPREAD);
+                let minutes = WORK_BASE + spread(keys, WORK, subject, arg, WORK_SPREAD);
                 next(after(item.at, minutes), DEPART_WORK, arg);
             }
             DEPART_WORK => {
@@ -271,7 +285,7 @@ fn on_events(
                 tally.departures += 1;
                 tally.at_work -= 1;
                 tally.travelling += 1;
-                let minutes = travel(key, subject, commuter, arg, 1);
+                let minutes = travel(keys, subject, commuter, arg, TRAVEL_BACK);
                 next(after(item.at, minutes), ARRIVE_HOME, arg);
             }
             ARRIVE_HOME => {
@@ -279,7 +293,7 @@ fn on_events(
                 at.trips += 1;
                 tally.arrivals += 1;
                 tally.travelling -= 1;
-                next(departure(key, subject, arg + 1), DEPART_HOME, arg + 1);
+                next(departure(keys, subject, arg + 1), DEPART_HOME, arg + 1);
             }
             STROLL_START => {
                 commands.entity(e).insert(LodComplete);
@@ -297,16 +311,16 @@ fn on_events(
 
 // spec: revues/architecture.md §8.1, §9.2
 /// Phase `Act`, every tick: the residents in full simulation walk. Each writes only its own
-/// component, with a keyed draw per tick.
+/// component, with a keyed draw per tick; a plain loop while they are few (issue #67).
 fn stroll(
     clock: Res<SimClock>,
     streams: Res<WorldStreams>,
     mut q: Query<(&StableEntity, &mut Stroll), With<LodComplete>>,
 ) {
     let slot = clock.now().as_millis().unsigned_abs();
-    let key = streams.get(Stream::Ai);
-    q.par_iter_mut().for_each(|(s, mut st)| {
-        st.steps += 1 + draw(key, s.id(), slot, P_STEP) % 3;
+    let keys = &*streams;
+    par_for_each_mut(&mut q, |(s, mut st)| {
+        st.steps += 1 + keys.draw(STEP, s.id(), slot) % 3;
     });
 }
 
@@ -324,6 +338,10 @@ impl Plugin for ToyWorld {
 
     fn version(&self) -> u32 {
         1
+    }
+
+    fn draw_sites(&self) -> &'static [DrawSite] {
+        &SITES
     }
 
     fn build(&self, b: &mut SimBuilder) {
@@ -359,7 +377,7 @@ impl Plugin for ToyWorld {
             }
             people.push(id);
         }
-        let key = world.resource::<WorldStreams>().get(Stream::Population);
+        let keys = world.resource::<WorldStreams>();
         let mut first: Vec<(SimTime, TimedEvent)> = people
             .iter()
             .map(|&subject| {
@@ -369,7 +387,7 @@ impl Plugin for ToyWorld {
                     subject,
                     arg: 0,
                 };
-                (departure(key, subject, 0), event)
+                (departure(keys, subject, 0), event)
             })
             .collect();
         for &subject in people.iter().take(STROLLERS) {
@@ -385,7 +403,10 @@ impl Plugin for ToyWorld {
         }
         let mut queue = world.resource_mut::<EventQueue>();
         for (at, event) in first {
-            queue.schedule(at, event);
+            let scheduled = queue.schedule(at, event);
+            if let Err(e) = scheduled {
+                panic!("toy dates stay within the saved range: {e}");
+            }
         }
         b.add_systems(Phase::Scheduled, on_events);
         b.add_systems(Phase::Act, stroll);

@@ -1,0 +1,37 @@
+[package]
+name = "ts_py"
+version = "0.0.0"
+description = "Python bindings of time_switcher (pyo3): load the toy world, advance it, read copies of its state."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# Built by maturin (`cargo xtask py`), tested by pytest (python/tests). No Rust test target:
+# `cargo test --workspace` would link a test binary against libpython.
+[lib]
+crate-type = ["cdylib"]
+test = false
+doctest = false
+
+# Tool crate (TOOLS): outside `default-members` (A13), never in a public binary (PY7).
+[dependencies]
+numpy.workspace = true
+pyo3.workspace = true
+ts_kernel = { path = "../ts_kernel" }
+ts_toy = { path = "../ts_toy" }
+
+# Exception of SEC0-19 (AS-18, PY1): the tables of [workspace.lints], copied, except
+# `unsafe_code = "deny"`. `cargo xtask check` (unsafe step) compares them with the workspace.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+expect_used = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+todo = "warn"
+unwrap_used = "warn"

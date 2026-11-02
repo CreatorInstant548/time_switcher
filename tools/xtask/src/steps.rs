@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::manifests::{self, DEV_FEATURES, HOSTS, TOOLS};
 use crate::metadata::{self, Metadata};
 use crate::sys::{self, cargo, run_captured, run_live, stdout_of};
-use crate::{exemptions, scan, workflows};
+use crate::{exemptions, macros, reserved, scan, workflows};
 
 pub enum Outcome {
     Ok(String),
@@ -44,6 +44,7 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn new(root: PathBuf, all: bool) -> Self {
+        sys::set_root(&root);
         let (meta, files, changed) = (OnceCell::new(), OnceCell::new(), OnceCell::new());
         Self {
             root,
@@ -120,6 +121,16 @@ impl Ctx {
             .as_ref()
             .map(Vec::as_slice)
             .map_err(Clone::clone)
+    }
+
+    /// Files modified since `HEAD`, or new (not ignored), and not committed (m11). The steps read
+    /// the disk, not `HEAD`: with such files, the result may differ from what will be merged.
+    pub(crate) fn uncommitted(&self) -> Result<Vec<String>, String> {
+        let mut all = self.git_paths(&["diff", "--name-only", "-z", "--no-renames", "HEAD"])?;
+        all.extend(self.git_paths(&["ls-files", "-z", "-o", "--exclude-standard"])?);
+        all.sort();
+        all.dedup();
+        Ok(all)
     }
 
     pub(crate) fn read(&self, rel: &str) -> Result<Vec<u8>, String> {
@@ -213,10 +224,174 @@ pub fn clippy(cx: &Ctx) -> Outcome {
             return Outcome::Fail(format!("cargo clippy (fonctionnalité {f}) a échoué"));
         }
     }
+    let live = tri!(live_bans(cx));
     Outcome::Ok(format!(
-        "espace de travail, public, et {} fonctionnalités de développement",
+        "espace de travail, public, {} fonctionnalités de développement, {live} interdictions vivantes",
         DEV_FEATURES.len()
     ))
+}
+
+/// An entry of `clippy.toml` in the one layout the file uses, a whole entry on one line:
+/// `{ path = "P", reason = "R" },` with or without `, allow-invalid = true` after the reason.
+struct Entry<'a> {
+    path: &'a str,
+    reason: &'a str,
+    /// The entry has `allow-invalid = true`.
+    lenient: bool,
+    /// What follows the entry: `,` or nothing.
+    tail: &'a str,
+}
+
+/// Reads a line in that layout. `P` is plain (`[A-Za-z0-9_:]`) and `R` has no quote or escape.
+fn entry(line: &str) -> Option<Entry<'_>> {
+    let rest = line.trim().strip_prefix("{ path = \"")?;
+    let (path, rest) = rest.split_once('"')?;
+    let rest = rest.strip_prefix(", reason = \"")?;
+    let (reason, rest) = rest.split_once('"')?;
+    let (lenient, rest) = match rest.strip_prefix(", allow-invalid = true }") {
+        Some(tail) => (true, tail),
+        None => (false, rest.strip_prefix(" }")?),
+    };
+    let plain = !path.is_empty()
+        && path
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b':');
+    (plain && !reason.contains('\\') && matches!(rest, "" | ",")).then_some(Entry {
+        path,
+        reason,
+        lenient,
+        tail: rest,
+    })
+}
+
+/// Crates whose banned paths are internal locations that an upgrade moves (the hash collections of
+/// bevy): their entries must resolve. The others (`rand`, `getrandom`, `chrono`) ban the public API
+/// of several versions at once, so one of two alternative paths is always unresolved.
+const STRICT_CRATE_PREFIX: &str = "bevy_";
+
+/// `clippy.toml` with `allow-invalid = true` removed from every entry of a bevy crate that is in
+/// `closure` (m1 of the review of PR #33): such an entry must resolve, so one that became dead after
+/// a dependency upgrade is a warning. The other entries keep the flag. Fails closed: a line that
+/// carries `allow-invalid` in any other layout than [`entry`] (no blanks around `=`,
+/// several lines, single quotes, an escaped crate name, two entries on a line, a flag on a line
+/// of its own) is an error, never skipped. Returns the text and the number of entries made strict.
+fn strict_clippy_config(text: &str, closure: &BTreeSet<String>) -> Result<(String, usize), String> {
+    let (mut out, mut strict) = (String::new(), 0);
+    for line in text.lines() {
+        // A unicode escape can spell any key (`"allow\\u002dinvalid" = true`): none is read.
+        if !line.trim_start().starts_with('#') && (line.contains("\\u") || line.contains("\\U")) {
+            return Err(format!(
+                "clippy.toml: unicode escape refused: {}",
+                line.trim()
+            ));
+        }
+        // Only a line with the flag is rewritten, and it must be in the one layout; a line
+        // without it (an entry already strict, possibly spread over lines) is left as it is.
+        let line = if line.trim_start().starts_with('#') || !line.contains("allow-invalid") {
+            line.to_owned()
+        } else {
+            let Some(e) = entry(line) else {
+                return Err(format!(
+                    "clippy.toml: entry layout not understood: {}",
+                    line.trim()
+                ));
+            };
+            let krate = e.path.split("::").next().unwrap_or(e.path);
+            if e.lenient && krate.starts_with(STRICT_CRATE_PREFIX) && closure.contains(krate) {
+                strict += 1;
+                let indent = &line[..line.len() - line.trim_start().len()];
+                format!(
+                    "{indent}{{ path = \"{}\", reason = \"{}\" }}{}",
+                    e.path, e.reason, e.tail
+                )
+            } else {
+                line.to_owned()
+            }
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+    Ok((out, strict))
+}
+
+/// Normal dependencies of `ts_kernel`, whole graph, as library names (`bevy_ecs`).
+fn kernel_closure(cx: &Ctx) -> Result<BTreeSet<String>, String> {
+    let args = [
+        "tree",
+        "-p",
+        "ts_kernel",
+        "-e",
+        "normal",
+        "--prefix",
+        "none",
+        "--locked",
+    ];
+    let out = stdout_of(&cx.root, &cargo(), &args)?;
+    let names: BTreeSet<String> = out
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .map(|n| n.replace('-', "_"))
+        .collect();
+    // The root of the tree is the crate itself: an empty or unreadable listing is an error.
+    match names.contains("ts_kernel") {
+        true => Ok(names),
+        false => Err("cargo tree -p ts_kernel did not list ts_kernel".to_owned()),
+    }
+}
+
+/// The bans of `clippy.toml` on crates the kernel depends on still resolve (m1 of the review of
+/// PR #33): clippy runs on `ts_kernel` with `allow-invalid` removed from those entries, from a
+/// copy of the configuration under `TS_CACHE`, set for that run only (`CLIPPY_CONF_DIR`). Without
+/// it, a ban made dead by a dependency upgrade is silent. Returns the number of entries checked.
+fn live_bans(cx: &Ctx) -> Result<usize, String> {
+    let text = String::from_utf8(cx.read("clippy.toml")?)
+        .map_err(|_| "clippy.toml is not UTF-8".to_owned())?;
+    let (strict, count) = strict_clippy_config(&text, &kernel_closure(cx)?)?;
+    let scratch = sys::Scratch::new("clippy-config")?;
+    let dir = scratch.path("conf");
+    std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", sys::shown(&dir)))?;
+    sys::write(&dir.join("clippy.toml"), strict.as_bytes())?;
+    let conf = dir.to_string_lossy().into_owned();
+    // No colour: CI forces it, and the alarm lines are recognised by their first word.
+    let args = [
+        "clippy",
+        "--color",
+        "never",
+        "--locked",
+        "-p",
+        "ts_kernel",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ];
+    println!(
+        "  $ cargo {} (CLIPPY_CONF_DIR: strict copy of clippy.toml)",
+        args.join(" ")
+    );
+    let env = [
+        ("CLIPPY_CONF_DIR", conf.as_str()),
+        ("CARGO_TERM_COLOR", "never"),
+    ];
+    let (ok, out) = sys::run_captured_env(&cx.root, &cargo(), &args, &env)?;
+    // A ban that does not resolve is a plain warning, which `-D warnings` does not turn into a
+    // failure: any `warning` or `error` line is one (a clean run prints none).
+    let alarms: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with("warning") || l.starts_with("error"))
+        .collect();
+    alarms.iter().for_each(|l| println!("  {l}"));
+    match (ok, alarms.is_empty()) {
+        (true, true) => Ok(count),
+        (false, true) => {
+            Err("cargo clippy failed on ts_kernel with the strict copy of clippy.toml".to_owned())
+        }
+        _ => Err(
+            "a clippy.toml ban on a bevy crate no longer resolves (allow-invalid removed \
+                  for this run): update the path, or the ban is dead"
+                .to_owned(),
+        ),
+    }
 }
 
 /// Crate de cœur ou de règles : ni hôte, ni outil (refus par défaut).
@@ -269,45 +444,13 @@ pub fn test(cx: &Ctx) -> Outcome {
     status(tri!(run_live(&cx.root, &cargo(), &args)), "cargo test")
 }
 
-/// Copie épinglée des crochets, désignée par `core.hooksPath` (F2) : jamais la copie de travail.
-fn pinned_dir(cx: &Ctx) -> Result<PathBuf, String> {
-    let dir = PathBuf::from(cx.git(&["config", "--get", "core.hooksPath"])?.trim());
-    let name = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let hooks = sys::ts_cache().join("hooks");
-    let same_parent = dir.parent().is_some_and(|p| {
-        p.to_string_lossy()
-            .replace('\\', "/")
-            .eq_ignore_ascii_case(&hooks.to_string_lossy().replace('\\', "/"))
-    });
-    // Empreinte du jeu installé, écrite par xtask hooks install ; hooks verify recalcule le contenu.
-    let current = sys::read_text(&hooks.join("current.sha256")).unwrap_or_default();
-    let hex = name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit());
-    if !same_parent || !hex || !current.trim().eq_ignore_ascii_case(&name) {
-        return Err(
-            "core.hooksPath ne désigne pas la copie épinglée TS_CACHE/hooks/<current.sha256> : \
-             réinstaller les crochets (cargo xtask hooks install)"
-                .to_owned(),
-        );
-    }
-    Ok(dir)
-}
-
-fn lock_value(lock: &str, key: &str) -> Result<String, String> {
+pub(crate) fn lock_value(lock: &str, key: &str) -> Result<String, String> {
     lock.lines()
         .filter_map(|l| l.split_once('='))
         .find(|(k, _)| k.trim() == key)
         .map(|(_, v)| v.trim().trim_matches('"').to_owned())
         .filter(|v| !v.is_empty())
         .ok_or_else(|| format!("{key} absent de tools.lock"))
-}
-
-fn pinned_lock(cx: &Ctx) -> Result<(PathBuf, String), String> {
-    let dir = pinned_dir(cx)?;
-    let lock = sys::read_text(&dir.join("tools.lock"))?;
-    Ok((dir, lock))
 }
 
 /// Version installée d'un outil cargo, comparée au `tools.lock` du dépôt (F9). Une version n'est
@@ -375,7 +518,7 @@ pub fn audit(cx: &Ctx) -> Outcome {
     }
 }
 
-/// gitleaks à lancer : binaire, empreinte attendue, configuration et dossier d'exceptions.
+/// gitleaks to run: binary, expected SHA-256, configuration and folder of exceptions.
 struct GitleaksSetup {
     bin: PathBuf,
     sha256: String,
@@ -383,19 +526,30 @@ struct GitleaksSetup {
     ignore_dir: PathBuf,
 }
 
-/// Mode CI (A2) : `CI=true` et `GITHUB_ACTIONS=true`. Un exécuteur n'a pas de copie épinglée des
-/// crochets ; le mode CI n'est pas plus permissif : binaire vérifié, configuration de `main`.
+/// Mode CI (A2) : `CI=true` et `GITHUB_ACTIONS=true`. Le mode CI n'est pas plus permissif :
+/// binaire vérifié, configuration de `main`.
 pub fn ci_mode() -> bool {
     let is_true = |v: &str| sys::env(v).as_deref() == Some("true");
     is_true("CI") && is_true("GITHUB_ACTIONS")
 }
 
-/// Poste local : binaire, empreinte et configuration de la copie épinglée (F2).
-fn gitleaks_local(cx: &Ctx) -> Result<GitleaksSetup, String> {
-    let (dir, lock) = pinned_lock(cx)?;
+/// Local machine (AS-50: no more pinned hook copy): binary and SHA-256 from `tools.lock`, and
+/// configuration from `gitleaks.toml`, both read from `origin/main` by `git show`, never from the
+/// working copy, so a branch cannot point at another binary nor add an exception (F2, G5). The
+/// configuration is written to the `config` folder of this run's scratch folder.
+fn gitleaks_local(cx: &Ctx, scratch: &sys::Scratch) -> Result<GitleaksSetup, String> {
+    let lock = cx.git(&["show", "origin/main:tools/dev/tools.lock"])?;
+    let config = cx.git(&["show", "origin/main:tools/dev/hooks/gitleaks.toml"])?;
+    let (bin, sha256) = (
+        PathBuf::from(lock_value(&lock, "gitleaks.path")?),
+        lock_value(&lock, "gitleaks.sha256")?,
+    );
+    let dir = scratch.path("config");
+    std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", sys::shown(&dir)))?;
+    sys::write(&dir.join("gitleaks.toml"), config.as_bytes())?;
     Ok(GitleaksSetup {
-        bin: PathBuf::from(lock_value(&lock, "gitleaks.path")?),
-        sha256: lock_value(&lock, "gitleaks.sha256")?,
+        bin,
+        sha256,
         config: dir.join("gitleaks.toml"),
         ignore_dir: dir,
     })
@@ -441,8 +595,8 @@ fn gitleaks_ci(cx: &Ctx) -> Result<GitleaksSetup, String> {
     let main = cx.git(&["show", "origin/main:tools/dev/hooks/gitleaks.toml"])?;
     if sys::read_text(&config)? != main {
         return Err(format!(
-            "{} diffère de tools/dev/hooks/gitleaks.toml d'origin/main (G5)",
-            config.display()
+            "{} differs from tools/dev/hooks/gitleaks.toml of origin/main (G5)",
+            sys::shown(&config)
         ));
     }
     if dir.join(".gitleaksignore").exists() {
@@ -456,14 +610,89 @@ fn gitleaks_ci(cx: &Ctx) -> Result<GitleaksSetup, String> {
     })
 }
 
-/// gitleaks épinglé (SHA-256 vérifié), configuration épinglée, `--redact` (F2, SEC0-08). En CI
-/// (A2), binaire et configuration viennent de [`gitleaks_ci`] ; le reste est identique.
+/// A finding of gitleaks' JSON report. Only these fields are read: `Match` and `Secret` are
+/// redacted by `--redact`, and the author, e-mail and message of a commit are never shown.
+#[derive(serde::Deserialize)]
+struct Finding {
+    #[serde(rename = "RuleID")]
+    rule: String,
+    #[serde(rename = "File")]
+    file: String,
+    #[serde(rename = "StartLine")]
+    line: u64,
+    #[serde(rename = "Commit", default)]
+    commit: String,
+}
+
+/// One line per finding of a gitleaks JSON report: rule, file, line and abbreviated commit, never
+/// the secret (m5). `scan` is the folder that was scanned: the report gives absolute paths for it.
+fn findings(report: &str, scan: Option<&Path>) -> Result<Vec<String>, String> {
+    let list: Vec<Finding> =
+        serde_json::from_str(report).map_err(|e| format!("gitleaks report unreadable: {e}"))?;
+    // Paths of the report, normalised to `/`; a file under the scanned folder is shown relative to it.
+    let relative = |file: &str| {
+        let file = file.replace('\\', "/");
+        let under = scan.and_then(|s| sys::relative_to(Path::new(&file), s));
+        match (under, Path::new(&file).is_absolute()) {
+            (Some(rel), _) => rel,
+            (None, true) => sys::shown(Path::new(&file)),
+            (None, false) => file,
+        }
+    };
+    Ok(list
+        .iter()
+        .map(|f| {
+            let commit: String = f.commit.chars().take(12).collect();
+            let at = if commit.is_empty() {
+                String::new()
+            } else {
+                format!(" (commit {commit})")
+            };
+            format!("{} at {}:{}{at}", f.rule, relative(&f.file), f.line)
+        })
+        .collect())
+}
+
+/// Runs `gitleaks <sub> <common> --report-path <report> <tail>`, then reads the JSON report: the
+/// findings, or an error when the tool failed without one (never a silent success).
+fn run_gitleaks(
+    cx: &Ctx,
+    bin: &str,
+    sub: &str,
+    common: &[&str],
+    report: &Path,
+    tail: &[&str],
+) -> Result<Vec<String>, String> {
+    let path = report.to_string_lossy().into_owned();
+    let extra = ["--report-format", "json", "--report-path", path.as_str()];
+    let args = [&[sub][..], common, &extra, tail].concat();
+    let ok = run_live(&cx.root, bin, &args)?;
+    let text = sys::read_text(report).map_err(|_| "gitleaks wrote no report".to_owned())?;
+    let scan = (sub == "dir").then(|| Path::new(tail.last().copied().unwrap_or_default()));
+    let found = findings(&text, scan)?;
+    match (ok, found.is_empty()) {
+        (false, true) => Err("gitleaks failed without reporting a finding".to_owned()),
+        _ => Ok(found),
+    }
+}
+
+fn show_findings(found: &[String]) {
+    found.iter().take(50).for_each(|f| println!("  - {f}"));
+    if found.len() > 50 {
+        println!("  - ... and {} more", found.len() - 50);
+    }
+}
+
+/// Pinned gitleaks (SHA-256 checked), pinned configuration, `--redact` (F2, SEC0-08). In CI
+/// (A2), binary and configuration come from [`gitleaks_ci`]; the rest is the same. Findings are
+/// listed from the JSON report, by rule, file and line.
 pub fn gitleaks(cx: &Ctx) -> Outcome {
+    let scratch = tri!(sys::Scratch::new("gitleaks"));
     let setup = tri!(if ci_mode() {
-        println!("  Mode CI : gitleaks.linux.* de tools.lock, configuration d'origin/main.");
+        println!("  CI mode: gitleaks.linux.* of tools.lock, configuration of origin/main.");
         gitleaks_ci(cx)
     } else {
-        gitleaks_local(cx)
+        gitleaks_local(cx, &scratch)
     });
     let GitleaksSetup {
         bin,
@@ -474,15 +703,15 @@ pub fn gitleaks(cx: &Ctx) -> Outcome {
     let expected = sha256.to_ascii_lowercase();
     if !bin.is_file() || tri!(sys::sha256(&cx.root, &bin)) != expected {
         return Outcome::Fail(format!(
-            "gitleaks absent ou d'empreinte inattendue ({})",
-            bin.display()
+            "gitleaks missing or with an unexpected SHA-256 ({})",
+            sys::shown(&bin)
         ));
     }
     if !config.is_file() {
-        return Outcome::Fail("gitleaks.toml absent de la copie épinglée".to_owned());
+        return Outcome::Fail("gitleaks.toml of origin/main missing".to_owned());
     }
     if cx.root.join(".gitleaksignore").exists() {
-        return Outcome::Fail(".gitleaksignore à la racine refusé (SEC0-08)".to_owned());
+        return Outcome::Fail(".gitleaksignore at the root refused (SEC0-08)".to_owned());
     }
     let (cfg, ign) = (
         config.to_string_lossy().into_owned(),
@@ -501,39 +730,51 @@ pub fn gitleaks(cx: &Ctx) -> Outcome {
     ];
     let bin = bin.to_string_lossy().into_owned();
 
-    let scan = sys::ts_cache()
-        .join("tmp")
-        .join(format!("xtask-gitleaks-{}", std::process::id()));
-    let extracted = extract(cx, &scan);
-    let tree_ok = extracted.and_then(|()| {
-        let target = scan.to_string_lossy().into_owned();
-        run_live(
-            &cx.root,
-            &bin,
-            &[&["dir"][..], &common, &[target.as_str()]].concat(),
-        )
-    });
-    let _ = std::fs::remove_dir_all(&scan); // dossier créé ici, qui ne contient que des copies
-    if !tri!(tree_ok) {
-        return Outcome::Fail("gitleaks a trouvé un secret probable dans l'arbre".to_owned());
+    let scan = scratch.path("tree");
+    tri!(extract(cx, &scan));
+    let target = scan.to_string_lossy().into_owned();
+    let tree_report = scratch.path("tree.json");
+    let tree = tri!(run_gitleaks(
+        cx,
+        &bin,
+        "dir",
+        &common,
+        &tree_report,
+        &[&target]
+    ));
+    if !tree.is_empty() {
+        show_findings(&tree);
+        return Outcome::Fail(format!(
+            "gitleaks found {} probable secret(s) in the tree",
+            tree.len()
+        ));
     }
     tri!(cx.git(&["rev-parse", "--verify", "--quiet", "origin/main"]));
     let range = "--log-opts=--text --no-ext-diff --no-textconv origin/main..HEAD";
-    match tri!(run_live(
-        &cx.root,
+    let git_report = scratch.path("commits.json");
+    let commits = tri!(run_gitleaks(
+        cx,
         &bin,
-        &[&["git"][..], &common, &[range, "."]].concat()
-    )) {
-        true => Outcome::Ok("arbre et commits depuis origin/main".to_owned()),
-        false => Outcome::Fail("gitleaks a trouvé un secret probable dans les commits".to_owned()),
+        "git",
+        &common,
+        &git_report,
+        &[range, "."]
+    ));
+    if !commits.is_empty() {
+        show_findings(&commits);
+        return Outcome::Fail(format!(
+            "gitleaks found {} probable secret(s) in the commits",
+            commits.len()
+        ));
     }
+    Outcome::Ok("tree and commits since origin/main".to_owned())
 }
 
-/// Copie des fichiers ordinaires de l'arbre, comme le `pre-commit` : aucun attribut ne masque
-/// leur contenu ; ni `target/` ni lien. Un `.gitleaksignore` est renommé.
+/// Copy of the ordinary files of the tree, like the old `pre-commit`: no attribute hides their
+/// content; no `target/` and no link. A `.gitleaksignore` is renamed. `scan` is created here,
+/// exclusively, inside the run's scratch folder.
 fn extract(cx: &Ctx, scan: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(scan.parent().unwrap_or(scan)).map_err(|e| e.to_string())?;
-    std::fs::create_dir(scan).map_err(|e| format!("{} : {e}", scan.display()))?;
+    std::fs::create_dir(scan).map_err(|e| format!("{}: {e}", sys::shown(scan)))?;
     for rel in cx.files()?.iter().filter(|f| !f.starts_with("target/")) {
         let src = cx.root.join(rel);
         let mut dst = scan.join(rel);
@@ -544,7 +785,7 @@ fn extract(cx: &Ctx, scan: &Path) -> Result<(), String> {
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|()| std::fs::copy(&src, &dst));
-        copied.map_err(|e| format!("copie de {rel} impossible : {e}"))?;
+        copied.map_err(|e| format!("cannot copy {rel}: {e}"))?;
     }
     Ok(())
 }
@@ -556,11 +797,11 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
         if let Err(e) =
             sys::read_text(Path::new(src)).and_then(|t| manifests::check_unsafe_root(name, &t))
         {
-            errors.push(format!("{name} ({src}) : {e}"));
+            errors.push(format!("{name} ({}): {e}", sys::shown(Path::new(src))));
         }
     }
     // ts_py : chaque allow ou expect de unsafe_code, dans tout fichier, suit un // SAFETY:.
-    if let Some(py) = meta.package("ts_py") {
+    if let Some(py) = meta.package(manifests::LOCAL_LINTS_CRATE) {
         let dir = format!("{}/", meta.rel_dir(py));
         for rel in tri!(cx.files())
             .iter()
@@ -574,17 +815,31 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
             }
         }
     }
+    // F3: inherited lints everywhere; local tables equal to the workspace's in ts_py (AS-18).
+    let root_manifest = tri!(sys::read_text(&cx.root.join("Cargo.toml")));
     for p in &meta.packages {
-        if let Err(e) = sys::read_text(Path::new(&p.manifest_path))
-            .and_then(|t| manifests::check_lints_section(&t))
-        {
+        let check = |t: String| {
+            if p.name == manifests::LOCAL_LINTS_CRATE {
+                manifests::check_local_lints(&t, &root_manifest)
+            } else {
+                manifests::check_lints_section(&t)
+            }
+        };
+        if let Err(e) = sys::read_text(Path::new(&p.manifest_path)).and_then(check) {
             errors.push(format!("{} : {e}", p.name));
         }
     }
     from_errors(errors, format!("{} crate(s)", meta.packages.len()))
 }
 
-/// `public` avec chaque fonctionnalité de développement doit échouer sur notre message (SEC0-20, E8).
+/// Message of the `compile_error!` raised by `ts_kernel` for `public` together with the
+/// development feature `f` (`crates/ts_kernel/src/build_profile.rs`), searched for word for word
+/// by [`profiles`]. A test checks that the kernel still carries it.
+fn profile_error(f: &str) -> String {
+    format!("public profile: feature `{f}` is forbidden (SEC0-20, M28)")
+}
+
+/// `public` with each development feature must fail on our own message (SEC0-20, E8).
 pub fn profiles(cx: &Ctx) -> Outcome {
     for f in DEV_FEATURES {
         let features = format!("public,{f}");
@@ -598,15 +853,38 @@ pub fn profiles(cx: &Ctx) -> Outcome {
         ];
         println!("  $ cargo {}", args.join(" "));
         let (ok, out) = tri!(run_captured(&cx.root, &cargo(), &args));
-        let message = format!("profil public : la fonctionnalité `{f}` est interdite");
+        let message = profile_error(f);
         if ok || !out.contains(&message) {
+            // Error lines without a path separator only (SEC0-26: no local path in the output).
+            out.lines()
+                .filter(|l| l.starts_with("error") && !l.contains(['/', '\\']))
+                .for_each(|l| println!("  {l}"));
             return Outcome::Fail(format!(
-                "public,{f} n'échoue pas sur le compile_error! attendu"
+                "public,{f} does not fail on the expected compile_error!"
             ));
         }
-        println!("  échec attendu : « {message} »");
+        println!("  expected failure: \"{message}\"");
     }
-    Outcome::Ok("4 combinaisons refusées".to_owned())
+    Outcome::Ok(format!("{} combinations refused", DEV_FEATURES.len()))
+}
+
+/// `cargo tree` of a host: normal edges and their features, for every target, so that a
+/// dependency or a feature that only a non-host platform activates is seen too (m1).
+fn tree_args(host: &str) -> Vec<String> {
+    [
+        "tree",
+        "-p",
+        host,
+        "--edges",
+        "normal,features",
+        "--target",
+        "all",
+        "--locked",
+        "-f",
+        "{p} {f}",
+    ]
+    .map(str::to_owned)
+    .to_vec()
 }
 
 pub fn features(cx: &Ctx) -> Outcome {
@@ -624,20 +902,12 @@ pub fn features(cx: &Ctx) -> Outcome {
         errors.extend(
             manifests::patch_sections(&text)
                 .into_iter()
-                .map(|l| format!("{} : {l} interdit (E7)", m.display())),
+                .map(|l| format!("{}: {l} forbidden (E7)", sys::shown(&m))),
         );
     }
     for host in HOSTS.iter().filter(|h| meta.package(h).is_some()) {
-        let args = [
-            "tree",
-            "-p",
-            host,
-            "--edges",
-            "normal,features",
-            "--locked",
-            "-f",
-            "{p} {f}",
-        ];
+        let args = tree_args(host);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let tree = tri!(stdout_of(&cx.root, &cargo(), &args));
         errors.extend(
             manifests::tree_dev_features(&tree)
@@ -649,6 +919,7 @@ pub fn features(cx: &Ctx) -> Outcome {
 }
 
 /// Exemptions de clippy hors des hôtes et des outils (E6, F5) ; `clippy.toml` hors de la racine.
+/// Also the kernel items reserved to some crates, and the raw primitives (#26 m3, m4).
 pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
     let meta = tri!(cx.meta());
     let mut errors = Vec::new();
@@ -656,19 +927,49 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
         errors.push("CLIPPY_CONF_DIR remplace clippy.toml : refusé".to_owned());
     }
     let files = tri!(cx.files());
+    let mut read = 0;
     for p in meta.packages.iter().filter(|p| is_core(&p.name)) {
         let dir = format!("{}/", meta.rel_dir(p));
-        for rel in files
+        // Every `macro_rules!` of the crate: file relative to the crate, line, name (AS-56).
+        let mut macros = Vec::new();
+        let sources: Vec<&String> = files
             .iter()
             .filter(|f| f.starts_with(&dir) && f.ends_with(".rs"))
-        {
+            .collect();
+        // m7: a core crate none of whose files is read would pass without being looked at.
+        if sources.is_empty() {
+            errors.push(format!("{}: no .rs file read under {dir}", p.name));
+        }
+        read += sources.len();
+        for rel in sources {
             let text = String::from_utf8_lossy(&tri!(cx.read(rel))).into_owned();
+            macros.extend(
+                macros::definitions(&text)
+                    .into_iter()
+                    .map(|(line, name)| (rel[dir.len()..].to_owned(), line, name)),
+            );
             errors.extend(
                 exemptions::clippy_exemptions(&text)
                     .iter()
                     .map(|l| format!("{rel}:{l} : exemption ou code caché à clippy interdit")),
             );
+            // #26 m3, m4: what clippy cannot ban in the core, which may not exempt itself.
+            errors.extend(
+                reserved::reserved_uses(rel, &text)
+                    .into_iter()
+                    .map(|(l, ident, why)| format!("{rel}:{l}: {ident} is reserved: {why}")),
+            );
         }
+        for d in p
+            .dependencies
+            .iter()
+            .filter(|d| d.kind.as_deref() != Some("dev"))
+        {
+            if let Some(why) = reserved::refused_dependency(&p.name, &d.name) {
+                errors.push(format!("{}: dependency on {}: {why}", p.name, d.name));
+            }
+        }
+        errors.extend(macros::errors(&p.name, &macros));
         // Un fichier non .rs sous src/ ne peut servir qu'à #[path] ou include! (I2).
         let src = format!("{dir}src/");
         for rel in files.iter().filter(|f| {
@@ -701,7 +1002,7 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
     if cx.root.join(".clippy.toml").exists() {
         errors.push(".clippy.toml à la racine : seul clippy.toml est permis".to_owned());
     }
-    from_errors(errors, String::new())
+    from_errors(errors, format!("{read} core source file(s) read"))
 }
 
 pub fn local_paths(cx: &Ctx) -> Outcome {
@@ -731,19 +1032,27 @@ pub fn local_paths(cx: &Ctx) -> Outcome {
 pub fn workflows(cx: &Ctx) -> Outcome {
     let files = tri!(cx.files());
     let mut errors = Vec::new();
-    let mut count = 0;
+    let mut flows = Vec::new();
     for rel in files.iter().filter(|f| f.starts_with(".github/workflows/")) {
         if !(rel.ends_with(".yml") || rel.ends_with(".yaml")) {
             errors.push(format!("{rel} : fichier inattendu dans .github/workflows/"));
             continue;
         }
-        count += 1;
         let text = String::from_utf8_lossy(&tri!(cx.read(rel))).into_owned();
         errors.extend(
             workflows::check_workflow(&text)
                 .into_iter()
                 .map(|e| format!("{rel} : {e}")),
         );
+        flows.push((rel.clone(), text));
+    }
+    let count = flows.len();
+    if count > 0 {
+        // Every installer call needs its pins in tools.lock (#75).
+        let script =
+            String::from_utf8_lossy(&tri!(cx.read(workflows::INSTALL_SCRIPT))).into_owned();
+        let lock = String::from_utf8_lossy(&tri!(cx.read(workflows::TOOLS_LOCK))).into_owned();
+        errors.extend(workflows::tool_lock_errors(&flows, &script, &lock));
     }
     match (count, errors.is_empty()) {
         (0, true) => Outcome::Skipped("aucun workflow".to_owned()),
@@ -759,6 +1068,9 @@ pub fn spec_map(cx: &Ctx) -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
     #[test]
     fn reads_tools_lock() {
         let lock =
@@ -806,6 +1118,149 @@ mod tests {
         }
         assert!(super::is_core("ts_kernel") && super::is_core("ts_rules_x"));
         assert!(!super::is_core("xtask") && !super::is_core("ts_host"));
+    }
+
+    /// m1: the host graph is read for every target.
+    #[test]
+    fn host_tree_covers_every_target() {
+        let args = super::tree_args("ts_host");
+        assert!(args.windows(2).any(|w| w[0] == "--target" && w[1] == "all"));
+        assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "ts_host"));
+        assert!(args.iter().any(|a| a == "--locked"));
+    }
+
+    /// m5: a finding is listed by rule, file and line, with a short commit, and nothing else of
+    /// the report (secret, author, e-mail, message) is shown.
+    #[test]
+    fn lists_gitleaks_findings_without_the_secret() {
+        let report = r#"[
+          {"RuleID":"github-pat","Description":"d","StartLine":3,"EndLine":3,"Match":"REDACTED",
+           "Secret":"REDACTED","File":"C:\\scratch\\tree\\src\\a.rs","Commit":"",
+           "Author":"Someone","Email":"a@b.c","Message":"msg"},
+          {"RuleID":"aws-access-token","StartLine":9,"File":"b/c.txt",
+           "Commit":"0123456789abcdef0123","Author":"Someone","Email":"a@b.c"}]"#;
+        let scan = Path::new("C:/scratch/tree");
+        let lines = super::findings(report, Some(scan)).unwrap();
+        assert_eq!(
+            lines,
+            [
+                "github-pat at src/a.rs:3",
+                "aws-access-token at b/c.txt:9 (commit 0123456789ab)"
+            ]
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|l| !l.contains("Someone") && !l.contains('@'))
+        );
+        assert!(super::findings("[]", None).unwrap().is_empty());
+        assert!(super::findings("not json", None).is_err());
+    }
+
+    /// m1 (PR #33): `allow-invalid` is removed only from the entries of crates in the closure.
+    #[test]
+    fn strict_clippy_config_follows_the_closure() {
+        let text = "allow-unwrap-in-tests = true\n\
+            disallowed-types = [\n\
+            \x20   { path = \"bevy_ecs::entity::EntityHashMap\", reason = \"r\", allow-invalid = true },\n\
+            \x20   { path = \"rand::rng\", reason = \"r\", allow-invalid = true },\n\
+            \x20   { path = \"std::collections::HashMap\", reason = \"r\" },\n\
+            ]\n";
+        let closure: BTreeSet<String> = ["bevy_ecs".to_owned()].into();
+        let (out, strict) = super::strict_clippy_config(text, &closure).unwrap();
+        assert_eq!(strict, 1);
+        assert!(out.contains("{ path = \"bevy_ecs::entity::EntityHashMap\", reason = \"r\" },"));
+        assert!(out.contains("{ path = \"rand::rng\", reason = \"r\", allow-invalid = true },"));
+        assert_eq!(out.lines().count(), text.lines().count());
+        // An entry of the closure that cannot be read is refused, never skipped (review of #114).
+        for odd in [
+            "{ allow-invalid = true, path = \"bevy_ecs::X\", reason = \"r\" },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", allow-invalid=true },",
+            "{path = \"bevy_ecs::X\", reason = \"r\", allow-invalid = true},",
+            "{ path=\"bevy_ecs::X\", reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = 'r', allow-invalid = true },",
+            "{ path = 'bevy_ecs::X', reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", allow-invalid = true }, # note",
+            "{ path = \"\\u0062evy_ecs::X\", reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\",\n  reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\",\n  allow-invalid = true },",
+            "    allow-invalid = true,",
+            "[[disallowed-types]]\npath = \"bevy_ecs::X\"\nallow-invalid = true",
+            "{ path = \"bevy_ecs::X\", reason = \"r \\\" q\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", \"allow\\u002dinvalid\" = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", \"\\U00000061llow-invalid\" = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"caf\\u00e9\" },",
+        ] {
+            assert!(super::strict_clippy_config(odd, &closure).is_err(), "{odd}");
+        }
+        // Whatever the crate: a flag in a layout that cannot be read is an error too.
+        assert!(
+            super::strict_clippy_config("{path=\"rand::rng\", allow-invalid=true},", &closure)
+                .is_err()
+        );
+        // A strict (flag-free) entry may span lines, and other keys are left alone.
+        let multi = "x = 1\n{ path = \"bevy_ecs::X\",\n  reason = \"r\" },\n";
+        assert_eq!(
+            super::strict_clippy_config(multi, &closure).unwrap().0,
+            multi
+        );
+        // The real file: its entries on bevy crates all become strict.
+        let real = include_str!("../../../clippy.toml");
+        let all: BTreeSet<String> = [
+            "bevy_ecs",
+            "bevy_utils",
+            "bevy_platform",
+            "rand",
+            "hashbrown",
+        ]
+        .map(str::to_owned)
+        .into();
+        let (out, count) = super::strict_clippy_config(real, &all).unwrap();
+        assert!(count > 0);
+        // Every bevy entry is strict; the others keep their flag.
+        assert!(
+            !out.lines()
+                .any(|l| l.contains("path = \"bevy_") && l.contains("allow-invalid"))
+        );
+        assert!(
+            out.lines()
+                .any(|l| l.contains("path = \"rand::") && l.contains("allow-invalid"))
+        );
+        // Comments and two entries on one line are not rewritten silently.
+        let commented = "# { path = \"bevy_ecs::X\", allow-invalid = true },\n";
+        assert_eq!(super::strict_clippy_config(commented, &all).unwrap().1, 0);
+        let two = "{ path = \"bevy_ecs::X\", reason = \"r\", allow-invalid = true }, { path = \"bevy_ecs::Y\", reason = \"r\" },\n";
+        assert!(super::strict_clippy_config(two, &all).is_err());
+    }
+
+    /// The `profiles` step searches the output for these messages: the kernel must carry exactly
+    /// one `compile_error!` per development feature, under the `cfg` of that very feature, with
+    /// the text the step expects.
+    #[test]
+    fn kernel_carries_the_profile_errors() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/ts_kernel/src/build_profile.rs");
+        let source = crate::sys::read_text(&path)
+            .expect("build_profile.rs moved: update this test and the `profiles` step");
+        for f in crate::manifests::DEV_FEATURES {
+            let literal = format!("\"{}\"", super::profile_error(f));
+            assert_eq!(source.matches(&literal).count(), 1, "{f}: message");
+            let head = &source[..source.find(&literal).unwrap_or_default()];
+            let cfg = head.rfind("#[cfg(all(").unwrap_or_default();
+            let expected = format!("#[cfg(all(feature = \"public\", feature = \"{f}\"))]");
+            let gate = head[cfg..].split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(gate.starts_with(&expected), "{f}: gate {gate}");
+        }
+        let count = source
+            .lines()
+            .filter(|l| l.trim_start().starts_with("compile_error!("))
+            .count();
+        assert_eq!(
+            count,
+            crate::manifests::DEV_FEATURES.len(),
+            "compile_error! count"
+        );
     }
 
     #[test]

@@ -38,20 +38,20 @@ La chaîne est épinglée par `rust-toolchain.toml` (1.99.1, A14), changée seul
 ## 3. Profil de construction de `ts_kernel` (SEC0-20)
 
 - Fonctionnalités `dev-commands`, `dev-introspection`, `external-pilot`, `dev-bench` et `public`, toutes vides et aucune par défaut.
-- `public` exclut les quatre autres, par un `compile_error!` en français pour chaque paire.
+- `public` exclut les quatre autres, par un `compile_error!` pour chaque paire, dont le message, en anglais, est cherché mot pour mot par l'étape `profiles` de `cargo xtask check`.
 - `public` ne s'active **dans aucun `Cargo.toml`** : seulement en ligne de commande, par la future `xtask release`. Les fonctionnalités de développement ne sont activées par aucune dépendance normale d'une crate d'hôte.
 - `ts_kernel::BUILD_PROFILE` vaut `"public"` si et seulement si `public` est active, sinon `"dev"` (E9). `ts_kernel::active_dev_features()` liste les fonctionnalités de développement compilées, pour le refus de démarrer et la vérification de l'artefact.
 
 ## 4. Dépendances
 
 - **Une ligne triée par dépendance** dans `[workspace.dependencies]` du `Cargo.toml` racine ; les crates y renvoient par `workspace = true`.
-- Toute nouvelle dépendance directe est **justifiée dans la PR** (SEC0-05) : besoin, alternative écartée, licence, présence d'un `build.rs` ou d'une macro procédurale. Une crate de cryptographie, de décodage de format externe ou de réseau hors de la liste pré-approuvée demande l'avis d'archi-sécu avant la fusion.
+- Toute nouvelle dépendance directe est **justifiée dans la PR** (SEC0-05) : besoin, alternative écartée, licence, présence d'un `build.rs` ou d'une macro procédurale. Les `build.rs` des dépendances transitives sont aussi du code exécuté à la compilation : par exemple, celui de `proc-macro2` compile des sondes avec `rustc` (m9, SEC0-05 reste respectée : la justification porte sur les dépendances directes). Une crate de cryptographie, de décodage de format externe ou de réseau hors de la liste pré-approuvée demande l'avis d'archi-sécu avant la fusion.
 - `deny.toml` (format v2) : crates.io seulement, aucun dépôt git ; licences en liste blanche, GPL, LGPL et AGPL refusées ; vulnérabilités, versions retirées et crates non maintenues refusées ; crates réseau et TLS refusées en phase 0 ; versions `*` refusées. Une entrée `ignore` porte l'identifiant, la raison et la date, et se revoit chaque semaine.
 - Interdits (E7) : sections `[source]`, `[registries]`, `[patch]` et `[replace]`, `linker`, `rustflags` et `target-dir`, dans `Cargo.toml` comme dans `.cargo/config.toml`.
 
 ## 5. Lints et interdictions de clippy
 
-- `unsafe_code = "forbid"` pour tout l'espace de travail, et `#![forbid(unsafe_code)]` dans chaque crate (SEC0-19). Seules exceptions, en liste fermée : `ts_client_native`, et `ts_py` si `pyo3` l'exige.
+- `unsafe_code = "forbid"` pour tout l'espace de travail, et `#![forbid(unsafe_code)]` dans chaque crate (SEC0-19). Seule exception, en liste fermée : `ts_py` (AS-18), en `deny`, avec des tables `[lints.*]` locales identiques à celles de l'espace de travail, sauf `unsafe_code = "deny"`. Aucune exception n'est anticipée pour `ts_client_native` (PY1) : elle demandera un avis d'archi-sécu ([xtask](xtask.md) §1, étape `unsafe`).
 - Chaque crate déclare `[lints] workspace = true`. Les lints de clippy sont en `warn`, et `-D warnings` les rend bloquants. `unwrap` et `expect` restent permis dans les tests.
 - `clippy.toml` interdit l'horloge (`Instant::now`, `SystemTime::now`, `elapsed`, `chrono::Utc::now`, `Local::now`), l'environnement et la ligne de commande (`env::var`, `var_os`, `vars`, `args`), les fichiers (`fs::read`, `read_to_string`, `read_dir`, `write`, `File::open`, `File::create`, `OpenOptions::open`), l'aléa du système (fonctions et types de `rand` et de `getrandom`, `SeedableRng::from_os_rng`, `RandomState::new`) et les tables `HashMap` et `HashSet` de `std` et de `hashbrown`. Chaque interdiction porte sa raison ; les chemins des crates absentes du graphe portent `allow-invalid = true`.
 - **Exemption locale : crates d'hôte et d'outil seulement** (E6), par `#[allow(clippy::disallowed_methods)]` ou `#[allow(clippy::disallowed_types)]` sur l'élément le plus petit possible, avec un commentaire qui dit pourquoi. Elle est **refusée** dans `ts_kernel`, `ts_model`, `ts_data` et les crates de règles ; `xtask check` le vérifiera (T2b).

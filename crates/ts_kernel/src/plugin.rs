@@ -8,6 +8,7 @@ use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule};
 use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::world::World;
 
+use crate::rng::DrawSite;
 use crate::state::StateEntry;
 use crate::{Phase, StateDecode, StateHash};
 
@@ -19,7 +20,7 @@ use crate::{Phase, StateDecode, StateHash};
 /// not change the rules of the others; the build fails if an active plugin depends on a
 /// disabled one.
 ///
-/// **Time-skip contract** (architecture §8.1): while no entity carries
+/// **Time-skip contract** (architecture §8.1): while no stable entity carries
 /// [`crate::LodComplete`], [`crate::Sim::run_until`] skips the ticks that have no due event.
 /// A system must therefore leave the state unchanged on a tick with no due event and no
 /// entity in full simulation: no per-tick counter, no `Local` accumulator, no polling of the
@@ -41,9 +42,10 @@ use crate::{Phase, StateDecode, StateHash};
 /// - a cache that can be rebuilt from the state is declared with
 ///   [`SimBuilder::transient_component`].
 ///
-/// Enforced before the first rule plugin merges (phase 1) by a generic restore test and
-/// `clippy.toml` bans, see #31 (AS-27).
-// TODO(#31): enforce this contract automatically.
+/// Enforced (#31, AS-27) by the generic resume test `ts_toy::resume::check_resume`, which
+/// `ts_game` runs on `standard_rules()` and each rule crate on its plugins, and by the
+/// `clippy.toml` bans on `Local`, `Added`, `Changed` and the other change-detection reads
+/// (tooling part of #31, merged with it).
 // spec: revues/architecture.md §11.1, §12.4
 pub trait Plugin {
     /// Stable, unique name of the plugin (for example `"economy"`).
@@ -62,6 +64,14 @@ pub trait Plugin {
     /// that it is built first. They are checked before any [`Plugin::build`] runs, so a
     /// wrong order is a [`crate::BuildError`], never a panic in `build`.
     fn dependencies(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    // spec: carnet architecture-securite.md §9.9 K3
+    /// Draw sites of the plugin's systems. A system draws only at a site listed here, and
+    /// [`crate::Sim::build`] refuses two sites of the rules, active or not, with the same
+    /// stream and purpose ([`crate::BuildError::DrawSiteConflict`]).
+    fn draw_sites(&self) -> &'static [DrawSite] {
         &[]
     }
 

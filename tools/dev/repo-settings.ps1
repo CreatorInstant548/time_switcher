@@ -3,8 +3,8 @@
 #   -Check : lecture seule (GET) ; tout écart avec le fichier d'origin/main est affiché (code 1) ;
 #   -Apply : crée ou remplace les rulesets, règle le dépôt et les Actions selon ce fichier, puis -Check ;
 #   -Check -SourceCommit <sha> (AS-38) : -Check avec le fichier du commit <sha> (40 caractères
-#     hexadécimaux minuscules, présent après git fetch). Réservé à cargo xtask merge, qui le lance en
-#     processus enfant pour la tête d'une PR de réparation ; le garde le refuse aux sessions.
+#     hexadécimaux minuscules, présent après git fetch). Réservé à l'ancienne exception de réparation de
+#     cargo xtask merge (retirée par AS-50) : plus rien ne la lance.
 # Les valeurs sont lues par git show (origin/main, ou <sha>), jamais sur le disque : une branche ne peut
 # pas faire appliquer les siennes. Lancé depuis la racine de la copie principale, propre, sur main, à jour
 # d'origin/main, et le script lancé doit être celui de cette copie (S4). Les invariants sont codés ici

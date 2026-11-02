@@ -734,6 +734,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "610a5acd306ec67f907abe5567859a3c693fb9886eb1f012ab8f2a47bef3db51"
 
 [[package]]
+name = "once_cell"
+version = "1.21.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -801,6 +807,20 @@ name = "raw-window-handle"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
+
+[[package]]
+name = "ron"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81116b9531d61eabc41aeb228e4b6b2435bcca3233b98cf3b3077d4e6e9debb3"
+dependencies = [
+ "bitflags",
+ "once_cell",
+ "serde",
+ "serde_derive",
+ "typeid",
+ "unicode-ident",
+]
 
 [[package]]
 name = "rustc-hash"
@@ -1019,6 +1039,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ts_data"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "ron",
+ "serde",
+ "ts_kernel",
+]
+
+[[package]]
 name = "ts_kernel"
 version = "0.0.0"
 dependencies = [
@@ -1044,6 +1074,7 @@ name = "ts_persist_fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "ts_data",
  "ts_persist",
 ]
 
@@ -1051,6 +1082,7 @@ dependencies = [
 name = "ts_persist_fuzz_seeds"
 version = "0.0.0"
 dependencies = [
+ "ts_data",
  "ts_kernel",
  "ts_persist",
 ]

@@ -34,6 +34,7 @@ mod build_profile;
 mod canonical;
 mod id;
 mod money;
+mod par;
 mod phase;
 mod plugin;
 pub mod rng;
@@ -50,13 +51,14 @@ pub use build_profile::{BUILD_PROFILE, DevFeature, active_dev_features};
 pub use canonical::{CanonicalError, CanonicalLimits, StateDecode, StateReader};
 pub use id::{StableId, StableIdAllocator};
 pub use money::{BasisPoints, Money, div_round_half_even};
+pub use par::{PAR_ITER_FROM, par_for_each_mut};
 pub use phase::Phase;
 pub use plugin::{Plugin, RulesFingerprint, SimBuilder};
-pub use scheduler::{Scheduled, Scheduler};
+pub use scheduler::{ScheduleError, Scheduled, Scheduler};
 pub use sim::{
-    BuildError, DueEvents, EventQueue, LodComplete, MemorySnapshot, RestoreError, RunReport, Sim,
-    SimClock, SimConfig, Snapshot, SnapshotScope, StableIds, StateLayout, StepReport,
-    StopCondition, Threads, TimedEvent, WorldStreams,
+    BuildError, DueEvents, EventQueue, LodComplete, MemorySnapshot, PARALLEL_FROM_WORK,
+    ParallelPhases, RestoreError, RunReport, Sim, SimClock, SimConfig, Snapshot, SnapshotScope,
+    StableIds, StateLayout, StepReport, StopCondition, Threads, TimedEvent, WorldStreams,
 };
 pub use state::{
     KERNEL_FAMILY, StableEntity, StableIndex, StateDigest, StateHash, StateHashes, StateWriter,

@@ -42,7 +42,8 @@ impl<'a> Cursor<'a> {
 /// # Errors
 ///
 /// The first failed check, in this order: envelope bound, magic, version, signature scheme,
-/// manifest bound, lengths, manifest digest, manifest schema, manifest rules.
+/// manifest bound, lengths, manifest digest, announced part count, manifest schema, manifest
+/// rules.
 pub fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Manifest, &'a [u8]), DecodeError> {
     let max = limits.max_envelope_len;
     if len64(bytes.len()) > max {
@@ -82,6 +83,7 @@ pub fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Manifest, &'a [u8])
     if manifest_digest(manifest_bytes) != digest {
         return Err(DecodeError::ManifestDigest);
     }
+    check_announced_parts(manifest_bytes, limits)?;
     let (manifest, rest) = postcard::take_from_bytes::<Manifest>(manifest_bytes)
         .map_err(|_| DecodeError::Malformed("manifest"))?;
     if !rest.is_empty() {
@@ -91,6 +93,29 @@ pub fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Manifest, &'a [u8])
         return Err(DecodeError::LengthMismatch);
     }
     Ok((manifest, payload))
+}
+
+// spec: carnet architecture-securite.md SEC0-23, §9.13
+/// Checks the number of parts the manifest announces against `limits` before the manifest
+/// is decoded (m4 of #50), so that decoding never builds more entries than allowed.
+///
+/// The manifest is a postcard structure whose first field is the [`crate::Seq`] of parts: its
+/// bytes start with the element count, a postcard varint of `usize`. It is read here with
+/// postcard's own `u64` varint, which is the same encoding up to 10 bytes; a count that does
+/// not fit in `usize` is above any bound and refused as too large. [`Manifest::check`] checks
+/// the count again on the decoded entries.
+fn check_announced_parts(manifest_bytes: &[u8], limits: &Limits) -> Result<(), DecodeError> {
+    let (count, _) = postcard::take_from_bytes::<u64>(manifest_bytes)
+        .map_err(|_| DecodeError::Malformed("manifest"))?;
+    let max = u64::from(limits.max_parts);
+    if count > max {
+        return Err(DecodeError::TooLarge {
+            bound: Bound::Parts,
+            len: count,
+            max,
+        });
+    }
+    Ok(())
 }
 
 /// Writes an envelope around the manifest and the stored bytes of the parts, then checks

@@ -22,5 +22,11 @@ ts_data = { path = "../ts_data" }
 ts_kernel = { path = "../ts_kernel" }
 ts_toy = { path = "../ts_toy" }
 
+# Wall time of the toy world's time skip per thread count (issue #67): a measurement, not a
+# test. In this tool crate, since it reads the wall clock and its command line (E6).
+[[bench]]
+name = "time_skip"
+harness = false
+
 [lints]
 workspace = true

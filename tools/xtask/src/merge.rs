@@ -1,14 +1,17 @@
 //! `cargo xtask merge <PR> [--dry-run]` : **seul chemin de fusion** (SEC0-15 révisée). Lancé
-//! depuis la copie principale, avec le binaire compilé depuis `main` (J2). Les contrôles se font
-//! dans l'ordre de la consigne T3a, et le premier qui échoue arrête tout : en cas de doute, refus.
-//! `--dry-run` fait tous les contrôles, sans fusion ni *issue* : il poursuit après une suspension
-//! des fusions (étape 2) pour tout montrer, mais son résultat reste alors un refus. Il n'appelle
-//! jamais `gh pr merge` ni `git pull`, et ne touche ni l'arbre, ni l'index, ni les branches de la
+//! depuis la copie principale. Les contrôles se font dans l'ordre, et le premier qui échoue
+//! arrête tout : en cas de doute, refus. Since AS-50 (#55), merge only makes the checks of the PR
+//! itself, in a few calls: no open anomaly issue of `verify-main` (AU2), PR state (no fork, base
+//! `main`, up to date, title), `ci-ok` (G3), files and sensitive paths, workflows when the PR
+//! changes `.github/`, approvals (with the AS-40 carry-over). The history (`verify-main`), the
+//! GitHub settings (`-Check`) and the hooks are no longer checked here.
+//! `--dry-run` fait tous les contrôles, sans fusion ni *issue*. Il n'appelle jamais
+//! `gh pr merge` ni `git pull`, et ne touche ni l'arbre, ni l'index, ni les branches de la
 //! copie principale (test `dry_run_never_merges`). Les deux `git fetch` (`origin` et
 //! `pull/<n>/head`) écrivent en revanche dans `.git` : références distantes, `FETCH_HEAD`, objets.
-//! Hors de la copie principale, son résultat est au mieux « OK sauf J2 », avec le code 3 (m1).
-//! A GitHub settings drift alone lets through only a repair PR (AS-38, step 6a).
-//! spec: carnet architecture-securite.md SEC0-15, SEC0-16 ; §9.6 G3, G8 ; §9.8 J1, J2, J8
+//! Hors de la copie principale, son résultat est au mieux « OK sauf copie principale », avec le
+//! code 3 (m1).
+//! spec: carnet architecture-securite.md SEC0-15, SEC0-16 ; §9.6 G3, G8 ; §9.8 J1, J8
 //! Voir aussi l'issue #6, conditions T3-a et T3-b.
 
 use std::collections::BTreeMap;
@@ -17,10 +20,8 @@ use std::process::ExitCode;
 use serde_json::Value;
 
 use crate::carry::{Carry, Pr};
-use crate::github::{Repo, is_sha, same_path};
-use crate::{build_inputs, hooks, sensitive, verify_main, workflows};
-
-use crate::BUILT_FROM;
+use crate::github::{Repo, is_anomaly, is_sha, same_path};
+use crate::{sensitive, workflows};
 
 const TYPES: [&str; 9] = [
     "feat", "fix", "refactor", "perf", "test", "docs", "build", "ci", "chore",
@@ -66,66 +67,6 @@ pub fn pr_files(items: &[Value]) -> Result<(usize, Vec<String>), String> {
     Ok((items.len(), paths))
 }
 
-/// AS-38: the only file a repair PR may change while the GitHub settings drift.
-pub const SETTINGS_FILE: &str = "tools/ci/repo-settings.json";
-
-/// AS-38, condition 1: the PR changes `tools/ci/repo-settings.json` and nothing else, by the full
-/// list of step 6 (`count` files from the API; `paths`: both paths of a rename, local diff
-/// included). Paths compare byte for byte: a case variant or a Windows 8.3 alias of the file
-/// (G8, B1) is another path, so a refusal.
-pub fn repair_only(count: usize, paths: &[String]) -> Result<(), String> {
-    if count == 1 && paths == [SETTINGS_FILE] {
-        return Ok(());
-    }
-    let others: Vec<&str> = paths
-        .iter()
-        .map(String::as_str)
-        .filter(|p| *p != SETTINGS_FILE)
-        .collect();
-    let alias = others.iter().any(|p| {
-        sensitive::norm(p) == SETTINGS_FILE || p.split(['/', '\\']).any(sensitive::short_name)
-    });
-    Err(format!(
-        "not a repair PR: it must change {SETTINGS_FILE} only ({count} file(s) listed; other \
-         paths: {}{})",
-        if others.is_empty() {
-            "none".to_owned()
-        } else {
-            others.join(", ")
-        },
-        if alias {
-            "; a case variant or 8.3 name of the file is another path (G8)"
-        } else {
-            ""
-        }
-    ))
-}
-
-/// Merges suspended by a settings drift alone: names the AS-38 exception and what follows it.
-fn drift_refusal(why: &str) -> String {
-    refuse(
-        format!(
-            "merges suspended: the GitHub settings drift from {SETTINGS_FILE} (issue \
-             repo-settings-drift). AS-38 exception: only a PR that changes {SETTINGS_FILE} alone, \
-             whose file passes the S2 invariants (AS-41) and leaves no drift, goes through, with a conforming \
-             history and hooks and every other check green. Refused: {why}"
-        ),
-        "align tools/ci/repo-settings.json with GitHub in such a PR, or the orchestrator runs \
-         pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply from the main copy; after a \
-         repair PR is merged, the orchestrator runs -Apply, then -Check",
-    )
-}
-
-/// A refusal that `--dry-run` notes and goes past: its result stays a refusal (the first one).
-fn hold(repo: &Repo, suspended: &mut Option<String>, why: String) -> Result<(), String> {
-    if !repo.dry_run {
-        return Err(why);
-    }
-    println!("  REFUS: {why}\n  --dry-run goes on with the checks; the result stays a refusal.");
-    suspended.get_or_insert(why);
-    Ok(())
-}
-
 /// Refus, avec la commande qui débloque.
 fn refuse(why: impl std::fmt::Display, fix: &str) -> String {
     format!("{why}\n  Pour débloquer : {fix}")
@@ -135,68 +76,15 @@ fn step(n: &str, what: &str) {
     println!("\n[{n}] {what}");
 }
 
-/// Empreinte des entrées de construction de `xtask` dans `HEAD` de la copie principale.
-fn head_fingerprint(repo: &Repo) -> Result<String, String> {
-    let ls = repo.git(&["ls-tree", "-r", "-z", "--full-tree", "HEAD"])?;
-    let mut files = Vec::new();
-    for entry in ls.split('\0').filter(|e| !e.is_empty()) {
-        let (meta, path) = entry
-            .split_once('\t')
-            .ok_or("sortie de git ls-tree illisible")?;
-        if !build_inputs::is_input(path) {
-            continue;
-        }
-        let oid = match meta.split(' ').collect::<Vec<_>>()[..] {
-            ["100644" | "100755", "blob", oid] => oid,
-            _ => {
-                return Err(format!(
-                    "{path} : entrée de construction inattendue ({meta})"
-                ));
-            }
-        };
-        files.push((
-            path.to_owned(),
-            repo.out(&repo.main, "git", &["cat-file", "blob", oid])?,
-        ));
-    }
-    Ok(build_inputs::fingerprint(&files))
-}
-
-/// J2 : binaire sous `<copie principale>\target`, construit depuis les entrées exactes de `HEAD`.
-fn binary_check(repo: &Repo) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| format!("exécutable introuvable : {e}"))?;
-    // Chemins canoniques (jonction de l'emplacement résolue, casse du disque) : comparaison par composants.
-    let (exe_c, target) = (
-        std::fs::canonicalize(&exe),
-        std::fs::canonicalize(repo.main.join("target")),
-    );
-    let inside = matches!((exe_c, target), (Ok(e), Ok(t)) if e.starts_with(&t));
-    if !inside {
-        return Err(refuse(
-            format!(
-                "binaire hors de {}\\target ({})",
-                repo.main.display(),
-                exe.display()
-            ),
-            "lancer cargo xtask merge <PR> depuis la racine de la copie principale",
-        ));
-    }
-    let want = head_fingerprint(repo)?;
-    if BUILT_FROM != want {
-        return Err(refuse(
-            format!(
-                "binaire construit depuis d'autres entrées que HEAD de main (empreinte {BUILT_FROM}, attendu {want})"
-            ),
-            "relancer cargo xtask merge <PR> depuis la racine de la copie principale : cargo reconstruit xtask",
-        ));
-    }
-    Ok(())
-}
-
-/// Étape 1 : copie principale propre, sur `main`, à jour d'`origin/main` (par `--ff-only`).
-/// Rend faux en `--dry-run` si J2 n'est pas rempli (m1).
-fn main_copy(repo: &Repo, j2_check: J2Check) -> Result<bool, String> {
-    let pull = "git pull --ff-only dans la copie principale";
+/// Étape 1 : copie principale propre, sur `main`, égale à `origin/main` dès le lancement.
+/// Rend faux en `--dry-run` lancé hors de la copie principale (m1).
+///
+/// AS-50 retires J2 (binary fingerprint). What remains of it costs no process: `cargo xtask`
+/// rebuilds the binary from the clean main copy before it runs, so a copy equal to `origin/main`
+/// at launch means a binary built from `main`. A copy behind it is brought up to date by
+/// `git pull --ff-only`, then the merge is refused: the next launch rebuilds `xtask` from the new
+/// `main` instead of checking with the code of the old one.
+fn main_copy(repo: &Repo) -> Result<bool, String> {
     if repo.git(&["branch", "--show-current"])? != "main" {
         return Err(refuse(
             "la copie principale n'est pas sur main",
@@ -210,51 +98,64 @@ fn main_copy(repo: &Repo, j2_check: J2Check) -> Result<bool, String> {
         ));
     }
     repo.git(&["fetch", "--quiet", "origin"])?;
-    if !repo.dry_run {
-        repo.git(&["pull", "--ff-only", "--quiet"])?;
-    }
-    let behind = repo.git(&["rev-parse", "HEAD"])? != repo.git(&["rev-parse", "origin/main"])?;
+    let revs = repo.git(&["rev-parse", "HEAD", "origin/main"])?;
+    let behind = match revs.lines().collect::<Vec<_>>()[..] {
+        [head, main] => head != main,
+        _ => return Err(format!("git rev-parse illisible : {revs}")),
+    };
     if behind && repo.dry_run {
         // La vraie fusion fait git pull --ff-only ; les contrôles suivants lisent origin/main.
         println!(
-            "  AVERTISSEMENT (--dry-run) : copie principale en retard d'origin/main ({pull})."
+            "  AVERTISSEMENT (--dry-run) : copie principale en retard d'origin/main ; la vraie \
+             fusion la met à jour, puis demande de relancer."
         );
     } else if behind {
+        repo.git(&["pull", "--ff-only", "--quiet"])?;
         return Err(refuse(
-            "la copie principale n'est pas à jour d'origin/main",
-            pull,
+            "la copie principale était en retard d'origin/main : elle vient d'être mise à jour \
+             par git pull --ff-only, et ce binaire a été construit depuis l'ancien main",
+            "relancer cargo xtask merge <PR> : cargo reconstruit xtask depuis le nouveau main",
         ));
+    }
+    if same_path(&repo.here, &repo.main) {
+        return Ok(true);
     }
     if repo.dry_run {
-        let mut j2 = true;
-        if let Err(e) = j2_check(repo) {
-            println!(
-                "  AVERTISSEMENT (--dry-run) : contrôle J2 non rempli, bloquant sans --dry-run :\n  {e}"
-            );
-            j2 = false;
-        }
-        if !same_path(&repo.here, &repo.main) {
-            println!(
-                "  AVERTISSEMENT (--dry-run) : lancé hors de la copie principale ({}).",
-                repo.here.display()
-            );
-            j2 = false;
-        }
-        return Ok(j2);
+        println!(
+            "  AVERTISSEMENT (--dry-run) : lancé hors de la copie principale ({}).",
+            repo.here.display()
+        );
+        return Ok(false);
     }
-    if !same_path(&repo.here, &repo.main) {
-        return Err(refuse(
-            format!(
-                "lancé depuis {}, pas depuis la copie principale",
-                repo.here.display()
-            ),
-            "cd vers la copie principale, puis cargo xtask merge <PR>",
-        ));
-    }
-    j2_check(repo).map(|()| true)
+    Err(refuse(
+        format!(
+            "lancé depuis {}, pas depuis la copie principale",
+            repo.here.display()
+        ),
+        "cd vers la copie principale, puis cargo xtask merge <PR>",
+    ))
 }
 
-/// PR ouverte, base `main`, hors brouillon, fusionnable, en retard de 0 commit, titre A31.
+/// AS-50 AU2 and AS-52 (AU8): the open anomaly issues, those of `verify-main` written by the
+/// owner (P3, the same filter as the approvals) and the nightly one of `github-actions[bot]`, by
+/// one paginated read of all the open issues, whatever their author and labels. [`is_anomaly`]
+/// is applied here; a pull request is not an issue. Their numbers. A failed read is a refusal.
+fn open_anomalies(repo: &Repo) -> Result<Vec<u64>, String> {
+    let list = repo.api_all(&format!(
+        "repos/{}/issues?state=open&per_page=100",
+        repo.slug
+    ))?;
+    // The same definition as the reuse in `Repo::open_issue`: an anomaly that `verify-main`
+    // reported is always an issue counted here, and so is the nightly one (AS-52).
+    Ok(list
+        .iter()
+        .filter(|i| is_anomaly(i, &repo.slug))
+        .map(|i| i["number"].as_u64().unwrap_or_default())
+        .collect())
+}
+
+/// PR ouverte, venue du dépôt lui-même (pas d'un *fork*), base `main`, hors brouillon,
+/// fusionnable, en retard de 0 commit, titre A31.
 fn pr_state(repo: &Repo, pr: u64) -> Result<Value, String> {
     let v = repo.gh(&[
         "pr",
@@ -263,7 +164,8 @@ fn pr_state(repo: &Repo, pr: u64) -> Result<Value, String> {
         "-R",
         &repo.slug,
         "--json",
-        "number,state,baseRefName,headRefOid,isDraft,mergeable,changedFiles,title,url",
+        "number,state,baseRefName,headRefOid,isDraft,isCrossRepository,mergeable,changedFiles,\
+         title,url",
     ])?;
     let p: Value = serde_json::from_str(&v).map_err(|e| format!("gh pr view illisible : {e}"))?;
     let sha = p["headRefOid"]
@@ -273,6 +175,16 @@ fn pr_state(repo: &Repo, pr: u64) -> Result<Value, String> {
     let fix_pr = format!("gh pr view {pr}");
     if p["state"] != "OPEN" {
         return Err(refuse(format!("PR #{pr} à l'état {}", p["state"]), &fix_pr));
+    }
+    // A fork's PR is never merged: its branch is outside the repository (AS-50).
+    if p["isCrossRepository"] != false {
+        return Err(refuse(
+            format!(
+                "PR #{pr} venue d'un fork (isCrossRepository: {})",
+                p["isCrossRepository"]
+            ),
+            "reprendre le changement sur une branche du dépôt",
+        ));
     }
     if p["baseRefName"] != "main" {
         return Err(refuse(
@@ -394,62 +306,47 @@ fn workflows_at(repo: &Repo, sha: &str) -> Result<(), String> {
     ))
 }
 
-/// Vrai si tout est conforme ; faux en `--dry-run` quand seul J2 manque (m1).
-/// J2 check of the running binary: [`binary_check`], replaced only in tests.
-type J2Check = fn(&Repo) -> Result<(), String>;
-
+/// Vrai si tout est conforme ; faux en `--dry-run` lancé hors de la copie principale (m1).
 fn run(repo: &Repo, pr: u64) -> Result<bool, String> {
-    run_with(repo, pr, binary_check)
-}
-
-fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
-    // The CI mode skips repo-settings.ps1 -Check: never in a merge (AS-31 E4).
+    // A merge is made from the main copy, never by a CI job.
     if repo.ci {
         return Err(refuse(
-            "CI et GITHUB_ACTIONS valent true : mode CI, où les réglages GitHub ne sont pas contrôlés",
-            "lancer cargo xtask merge <PR> hors CI, sans ces variables",
+            "CI et GITHUB_ACTIONS valent true : mode CI",
+            "lancer cargo xtask merge <PR> depuis la copie principale, hors CI",
         ));
     }
-    step(
-        "1",
-        "copie principale propre, sur main, à jour ; binaire construit depuis main (J2)",
-    );
-    let j2 = main_copy(repo, j2_check)?;
+    step("1", "copie principale propre, sur main, à jour");
+    let main_ok = main_copy(repo)?;
     step(
         "2",
-        "verify-main (SEC0-17, réglages GitHub AS-30 R5) et hooks verify (SEC0-35)",
+        "no open anomaly issue: verify-main by the owner, or the nightly run (AS-50 AU2, AS-52)",
     );
-    let health = verify_main::verify_parts(repo)?;
-    let hooks_ok = hooks::verify_or_report(repo)?;
-    // AS-38, condition 3: a settings drift alone leaves one way through, a repair PR (step 6a).
-    let repair = health.history && hooks_ok && health.settings == Some(false);
-    if repair {
-        println!(
-            "  settings drift alone: merges suspended except for a repair PR (AS-38, step 6a)"
+    let open = open_anomalies(repo)?;
+    let mut suspended = None;
+    if open.is_empty() {
+        println!("  none");
+    } else {
+        let list: Vec<String> = open.iter().map(|n| format!("#{n}")).collect();
+        let why = refuse(
+            format!(
+                "merges suspended: open anomaly issue(s): {}",
+                list.join(", ")
+            ),
+            "clear the anomaly (J5, -Apply for the settings; for the nightly issue, read its run \
+             and run cargo xtask verify-main locally), then close the issue (docs/dev/ci.md §4)",
         );
-    }
-    // `settings: None`: -Check could not conclude, which only --dry-run goes past.
-    let mut suspended = (!health.history || !hooks_ok || health.settings.is_none()).then(|| {
-        refuse(
-            "fusions suspendues : anomalie de l'historique ou des crochets, ou réglages GitHub \
-             non contrôlés ; un écart des réglages, s'il y en a un, n'ouvre alors aucune \
-             exception (AS-38)",
-            "lever l'anomalie (issue role:architecture), puis cargo xtask verify-main et \
-             cargo xtask hooks verify ; pour un écart des réglages (issue repo-settings-drift), \
-             l'orchestrateur lance pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply \
-             depuis la copie principale",
-        )
-    });
-    match &suspended {
-        Some(why) if !repo.dry_run => return Err(why.clone()),
-        Some(_) => println!(
-            "  REFUS : fusions suspendues ; --dry-run poursuit les contrôles, le résultat restera un refus."
-        ),
-        None => {}
+        if !repo.dry_run {
+            return Err(why);
+        }
+        // --dry-run shows every other check; its result stays this refusal.
+        println!(
+            "  REFUSED: {why}\n  --dry-run goes on with the other checks; the result stays a refusal."
+        );
+        suspended = Some(why);
     }
     step(
         "3-4",
-        "PR ouverte, base main, fusionnable, à jour ; titre (A31)",
+        "PR ouverte, hors fork, base main, fusionnable, à jour ; titre (A31)",
     );
     let p = pr_state(repo, pr)?;
     let sha = p["headRefOid"].as_str().unwrap_or_default().to_owned();
@@ -458,11 +355,6 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
         p["url"].as_str().unwrap_or_default(),
         p["title"].as_str().unwrap_or_default()
     );
-    // AS-38: during a drift, a PR of more than one file is refused here, before any fetch.
-    if repair && p["changedFiles"].as_u64() != Some(1) {
-        let why = format!("not a repair PR: {} files changed", p["changedFiles"]);
-        hold(repo, &mut suspended, drift_refusal(&why))?;
-    }
     step("5", "ci-ok vert sur la tête, venu de ci.yml (G3)");
     if let Some(why) = repo.ci_ok(&sha)? {
         return Err(refuse(
@@ -523,32 +415,6 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
     paths.sort();
     paths.dedup();
     println!("  {count} fichier(s)");
-    if repair {
-        step("6a", "settings repair exception (AS-38)");
-        // Condition 2 only once condition 1 holds: the script reads the head's file. The main
-        // copy's script (equal to origin/main, S4) first applies its S2 invariants to that file,
-        // which pin every protective value (AS-41): a file that records a weakening is refused.
-        let why = if let Err(e) = repair_only(count, &paths) {
-            Some(e)
-        } else if !tree.iter().any(|f| f == SETTINGS_FILE) {
-            Some(format!(
-                "not a repair PR: {SETTINGS_FILE} is deleted at the head"
-            ))
-        } else if verify_main::settings_at(repo, &sha)? {
-            None
-        } else {
-            Some(format!(
-                "{SETTINGS_FILE} of the head {sha} fails the S2 invariants of origin/main's \
-                 script (AS-41), or the drift recomputed with it is not empty"
-            ))
-        };
-        match why {
-            None => println!(
-                "  OK: repair PR, no drift with the head's file; approvals required (step 10)"
-            ),
-            Some(why) => hold(repo, &mut suspended, drift_refusal(&why))?,
-        }
-    }
     step("7", "chemins sensibles (liste d'origin/main, G8)");
     let hits = sensitive::hits(repo, &rules, &base, &sha, &paths)?;
     println!(
@@ -563,13 +429,21 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
         "8-9",
         "workflows de la tête rejoués avec le code de main (J1) ; actions épinglées (J8)",
     );
-    workflows_at(repo, &sha)?;
+    // AS-50: the workflows of main were checked when they were merged; only a PR that changes
+    // `.github/` (compared without case) needs them checked again.
+    if paths
+        .iter()
+        .any(|p| p.to_ascii_lowercase().starts_with(".github/"))
+    {
+        workflows_at(repo, &sha)?;
+    } else {
+        println!("  sans objet : la PR ne modifie pas .github/");
+    }
     step(
         "10",
         "approbations sur le SHA de tête, ou reportées d'un SHA antérieur (chemin sensible, AS-40)",
     );
-    // AS-38, condition 4: a repair PR needs both approvals, whatever the sensitive list says.
-    if hits.is_empty() && !repair {
+    if hits.is_empty() {
         println!("  sans objet");
     } else {
         let bodies = repo.comments(pr)?;
@@ -589,9 +463,7 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
             // W6: the same function as verify-main; W7: ci-ok was checked on the head (step 5).
             match carry.resolve(tag, &bodies, &|_| true)? {
                 Ok(from) if from == sha => println!("  {tag}: {sha}"),
-                Ok(from) => println!(
-                    "  {tag} carried over from {from} to the head {sha} (AS-40, W1 to W5 hold)"
-                ),
+                Ok(from) => println!("  {tag} {}", carry.describe(&from)),
                 Err(why) => {
                     return Err(refuse(
                         format!("sensitive path: {why}"),
@@ -615,7 +487,7 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
     }
     if repo.dry_run {
         println!("  --dry-run : tous les contrôles sont passés ; aucune fusion (PR #{pr}, {sha}).");
-        return Ok(j2);
+        return Ok(main_ok);
     }
     let n = pr.to_string();
     repo.gh(&[
@@ -659,12 +531,6 @@ fn run_with(repo: &Repo, pr: u64, j2_check: J2Check) -> Result<bool, String> {
             )),
         }
     })?;
-    if repair {
-        println!(
-            "  AS-38: repair PR merged; the orchestrator now runs, from the main copy, \
-             pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply, then -Check"
-        );
-    }
     // m4: the PR is merged on GitHub; a failed local update is not a refusal.
     if let Err(e) = repo.git(&["pull", "--ff-only", "--quiet"]) {
         println!("  PR #{pr} merged ({sha}); local update failed: run git pull --ff-only ({e})");
@@ -695,7 +561,7 @@ pub fn main(args: &[String]) -> ExitCode {
         }
         Ok(false) => {
             println!(
-                "\nRésultat : OK sauf J2 (--dry-run hors de la copie principale, ou binaire non construit depuis main)"
+                "\nRésultat : OK sauf copie principale (--dry-run lancé hors de la copie principale)"
             );
             ExitCode::from(3)
         }
@@ -714,7 +580,7 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::github::{Output, Run, issues_path, owner_item};
+    use crate::github::{ANOMALY_TITLES, NIGHTLY_ANOMALY_TITLE, Output, Run, owner_item};
 
     use super::*;
 
@@ -756,34 +622,10 @@ mod tests {
         assert!(pr_files(&[json!({"status": "added"})]).is_err());
     }
 
-    /// B2 : sur une copie propre, l'empreinte inscrite par `build.rs` égale celle recalculée sur
-    /// `HEAD` par Git. Ignoré par défaut (exige une copie sans modification non commise) :
-    /// `cargo test -p xtask -- --ignored built_from_head`.
-    #[test]
-    #[ignore = "copie de travail propre exigée"]
-    fn built_from_head() {
-        let root = crate::sys::stdout_of(Path::new("."), "git", &["rev-parse", "--show-toplevel"])
-            .unwrap();
-        let root = std::path::PathBuf::from(root.trim());
-        let repo = Repo {
-            main: root.clone(),
-            here: root,
-            slug: String::new(),
-            dry_run: true,
-            ci: false,
-            cache: std::env::temp_dir(),
-            home: None,
-            runner: Box::new(crate::github::System),
-        };
-        assert_eq!(head_fingerprint(&repo).unwrap(), BUILT_FROM);
-    }
-
     /// Lanceur enregistreur : réponses par préfixe de commande (le plus long gagne), appels notés.
-    /// Exit code by command suffix in `codes` (the longest wins), 0 otherwise.
     struct Fake {
         calls: Rc<RefCell<Vec<String>>>,
         answers: Vec<(String, String)>,
-        codes: Vec<(String, i32)>,
     }
 
     impl Run for Fake {
@@ -795,27 +637,19 @@ mod tests {
                 .iter()
                 .filter(|(k, _)| line.starts_with(k.as_str()))
                 .max_by_key(|(k, _)| k.len());
-            let code = self
-                .codes
-                .iter()
-                .filter(|(k, _)| line.ends_with(k.as_str()))
-                .max_by_key(|(k, _)| k.len())
-                .map_or(0, |(_, c)| *c);
             match best {
-                Some((_, out)) => Ok((Some(code), out.clone().into_bytes(), String::new())),
+                // A failed command: exit code 1, the rest of the answer on stderr.
+                Some((_, out)) if out.starts_with(FAILS) => {
+                    Ok((Some(1), Vec::new(), out[FAILS.len()..].to_owned()))
+                }
+                Some((_, out)) => Ok((Some(0), out.clone().into_bytes(), String::new())),
                 None => Err(format!("commande inattendue : {line}")),
             }
         }
     }
 
-    /// Changes to [`scenario`]: answers replacing those of the same prefix, exit codes by command
-    /// suffix, and a broken `hooks verify` (wrong `current.sha256`).
-    #[derive(Default)]
-    struct Setup {
-        extra: Vec<(String, String)>,
-        codes: Vec<(String, i32)>,
-        break_hooks: bool,
-    }
+    /// Prefix of a [`Fake`] answer that makes the command fail.
+    const FAILS: &str = "exit 1: ";
 
     const SHA: &str = "c41e984ba8594dedd592744fcb69a70f3716cd87";
     const MAIN: &str = "43b3509aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -842,75 +676,39 @@ mod tests {
         "git stash",
     ];
 
-    /// Plays `merge` on recorded answers for a sensitive-free PR #7 whose every check passes,
-    /// `hooks verify` included (temporary cache with the pinned set, fake gitleaks, empty home).
-    fn scenario(dry_run: bool, j2_check: J2Check) -> (Result<bool, String>, Vec<String>) {
-        scenario_with(dry_run, j2_check, Vec::new())
+    /// Plays `merge` on recorded answers for a sensitive-free PR #7 whose every check passes.
+    fn scenario(dry_run: bool) -> (Result<bool, String>, Vec<String>) {
+        scenario_with(dry_run, Vec::new())
     }
 
     /// [`scenario`], where `extra` answers replace those of the same prefix.
     fn scenario_with(
         dry_run: bool,
-        j2_check: J2Check,
         extra: Vec<(String, String)>,
     ) -> (Result<bool, String>, Vec<String>) {
-        scenario_setup(
-            dry_run,
-            j2_check,
-            Setup {
-                extra,
-                ..Setup::default()
-            },
-        )
+        scenario_in(dry_run, true, extra)
     }
 
-    /// [`scenario`], changed by `setup`.
-    fn scenario_setup(
+    /// [`scenario_with`], run from the main copy if `in_main`, else from another folder.
+    fn scenario_in(
         dry_run: bool,
-        j2_check: J2Check,
-        setup: Setup,
+        in_main: bool,
+        extra: Vec<(String, String)>,
     ) -> (Result<bool, String>, Vec<String>) {
-        let Setup {
-            extra,
-            codes,
-            break_hooks,
-        } = setup;
         // One folder per call: tests run in parallel.
         static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let run = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!(
-            "xtask-merge-test-{}-{dry_run}-{run}",
+            "xtask-merge-test-{}-{dry_run}-{n}",
             std::process::id()
         ));
-        let (main, cache, home) = (base.join("main"), base.join("cache"), base.join("home"));
-        for d in [&main, &home] {
+        let (main, other) = (base.join("main"), base.join("other"));
+        for d in [&main, &other] {
             std::fs::create_dir_all(d).unwrap();
         }
-        let gitleaks = base.join("gitleaks.exe");
-        crate::sys::write(&gitleaks, b"fake gitleaks").unwrap();
-        let lock = format!(
-            "gitleaks.path = \"{}\"\ngitleaks.sha256 = \"{}\"\n",
-            gitleaks.display(),
-            crate::sha256::hex(b"fake gitleaks")
-        );
-        let set = vec![("tools.lock".to_owned(), lock.clone().into_bytes())];
-        let hash = hooks::set_hash(&set).unwrap();
-        std::fs::create_dir_all(cache.join("hooks").join(&hash)).unwrap();
-        crate::sys::write(
-            &cache.join("hooks").join(&hash).join("tools.lock"),
-            lock.as_bytes(),
-        )
-        .unwrap();
-        let current = if break_hooks { "0".repeat(64) } else { hash };
-        crate::sys::write(
-            &cache.join("hooks").join("current.sha256"),
-            current.as_bytes(),
-        )
-        .unwrap();
-
         let pr = json!({"number": 7, "state": "OPEN", "baseRefName": "main", "headRefOid": SHA,
-            "isDraft": false, "mergeable": "MERGEABLE", "changedFiles": 1,
-            "title": "docs(test): x", "url": "u"});
+            "isDraft": false, "isCrossRepository": false, "mergeable": "MERGEABLE",
+            "changedFiles": 1, "title": "docs(test): x", "url": "u"});
         let check = json!({"name": "ci-ok", "status": "completed", "conclusion": "success",
             "head_sha": SHA, "check_suite": {"id": 5}});
         let wfr = json!({"workflow_runs": [{"path": ".github/workflows/ci.yml", "workflow_id": 9,
@@ -921,24 +719,17 @@ mod tests {
             ("git fetch", String::new()),
             ("git pull", String::new()),
             ("git rev-parse", MAIN.to_owned()),
+            ("git rev-parse HEAD origin/main", format!("{MAIN}\n{MAIN}")),
             ("git ls-tree", String::new()),
-            ("git ls-files", String::new()),
             ("git log --oneline -1", "x".to_owned()),
             ("git cat-file -e", String::new()),
-            ("git cat-file blob origin/main:tools/dev/tools.lock", lock),
             (
                 "git cat-file blob origin/main:tools/ci/sensitive-paths.txt",
                 include_str!("../../ci/sensitive-paths.txt").to_owned(),
             ),
-            ("git worktree list", String::new()),
             (
-                "git cat-file blob origin/pilotage:architecture-securite.md",
-                "## 9. Avis\n".to_owned(),
-            ),
-            (
-                "git rev-list --reverse origin/main",
-                "8ca4088bd38829d6c5aaa9281c4fa32b33a95e35\n2b5681461e46cc1cc008e786b8b04ccd22b4993f\n"
-                    .to_owned(),
+                "gh api --paginate repos/o/r/issues?state=open",
+                "[]".to_owned(),
             ),
             ("git merge-base", MAIN.to_owned()),
             ("git diff --name-only", "docs/a.md\0".to_owned()),
@@ -962,10 +753,6 @@ mod tests {
             ),
             ("gh api repos/o/r/actions/runs", wfr.to_string()),
             (
-                "pwsh -NoProfile -NonInteractive -File",
-                "repo-settings -Check : conforme\n".to_owned(),
-            ),
-            (
                 "gh api --paginate repos/o/r/pulls/7/files",
                 json!([{"filename": "docs/a.md"}]).to_string(),
             ),
@@ -977,19 +764,17 @@ mod tests {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let repo = Repo {
             main: main.clone(),
-            here: main,
+            here: if in_main { main } else { other },
             slug: "o/r".to_owned(),
             dry_run,
             ci: false,
-            cache,
-            home: Some(home),
+            cache: base.join("cache"),
             runner: Box::new(Fake {
                 calls: Rc::clone(&calls),
                 answers,
-                codes,
             }),
         };
-        let result = run_with(&repo, 7, j2_check);
+        let result = run(&repo, 7);
         let _ = std::fs::remove_dir_all(&base); // temporary files written above only
         let calls = calls.borrow().clone();
         (result, calls)
@@ -997,43 +782,243 @@ mod tests {
 
     /// B4, AS-23 point 2: a `--dry-run` whose every check passes never calls `gh pr merge`, and
     /// runs no command that writes to the main copy or to GitHub. Only the `git fetch` write, in
-    /// `.git`. The binary is not under the fake main copy's `target`, so J2 fails: « OK sauf J2 ».
+    /// `.git`. Run outside the main copy: « OK sauf copie principale ».
     #[test]
     fn dry_run_never_merges() {
-        let (result, calls) = scenario(true, binary_check);
-        assert_eq!(result, Ok(false), "{calls:#?}");
-        assert_eq!(
-            calls
-                .iter()
-                .filter(|c| c.starts_with("gh pr view 7"))
-                .count(),
-            2
-        );
-        for c in &calls {
-            assert!(
-                !WRITES.iter().any(|w| c.starts_with(w)),
-                "write in --dry-run: {c}"
+        for in_main in [true, false] {
+            let (result, calls) = scenario_in(true, in_main, Vec::new());
+            assert_eq!(result, Ok(in_main), "{calls:#?}");
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|c| c.starts_with("gh pr view 7"))
+                    .count(),
+                2
             );
-            // AS-30 R5: the only other command is the read-only `repo-settings.ps1 -Check`.
-            let settings = c.starts_with("pwsh ") && c.ends_with("repo-settings.ps1 -Check");
+            for c in &calls {
+                assert!(
+                    !WRITES.iter().any(|w| c.starts_with(w)),
+                    "write in --dry-run: {c}"
+                );
+                assert!(c.starts_with("gh ") || c.starts_with("git "), "{c}");
+            }
             assert!(
-                c.starts_with("gh ") || c.starts_with("git ") || settings,
-                "{c}"
+                calls
+                    .iter()
+                    .any(|c| c == "git fetch --quiet origin pull/7/head")
             );
         }
-        assert_eq!(
-            calls.iter().filter(|c| c.starts_with("pwsh ")).count(),
-            1,
+        // Without --dry-run, outside the main copy: refused before any GitHub read.
+        let (result, calls) = scenario_in(false, false, Vec::new());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("pas depuis la copie principale"),
             "{calls:#?}"
         );
+        assert!(!calls.iter().any(|c| c.starts_with("gh ")), "{calls:#?}");
+    }
+
+    /// AS-50 (#55): merge no longer checks the history, the GitHub settings nor the hooks. A PR
+    /// that does not change `.github/` runs few commands: no `repo-settings.ps1`, no history walk,
+    /// no workflow replay (J1, J8).
+    #[test]
+    fn merge_reads_only_the_pr() {
+        let (result, calls) = scenario(false);
+        assert_eq!(result, Ok(true), "{calls:#?}");
+        for absent in [
+            "pwsh",
+            "git rev-list",
+            "origin/pilotage",
+            "git worktree",
+            "git config",
+            ".github/workflows/",
+            "commits/refs/tags/",
+        ] {
+            assert!(
+                !calls.iter().any(|c| c.contains(absent)),
+                "{absent}: {calls:#?}"
+            );
+        }
+        // 24 commands for a PR outside the sensitive paths and `.github/`: 12 `git`, 12 `gh`.
+        assert!(calls.len() <= 24, "{} commands: {calls:#?}", calls.len());
+        // A PR that changes a workflow (path compared without case) gets J1 and J8; it is
+        // sensitive, so it carries both approvals.
+        let extra = vec![
+            (
+                "gh api --paginate repos/o/r/pulls/7/files".to_owned(),
+                json!([{"filename": ".GitHub/workflows/x.yml"}]).to_string(),
+            ),
+            (
+                "gh api --paginate repos/o/r/issues/7/comments".to_owned(),
+                json!([
+                    owner_item(&format!("review-ok: {SHA}")),
+                    owner_item(&format!("archsec-ok: {SHA}"))
+                ])
+                .to_string(),
+            ),
+        ];
+        let (result, calls) = scenario_with(false, extra);
+        assert_eq!(result, Ok(true), "{calls:#?}");
         assert!(
             calls
                 .iter()
-                .any(|c| c == "git fetch --quiet origin pull/7/head")
+                .any(|c| c == &format!("git ls-tree -r -z --full-tree {SHA} .github/workflows/")),
+            "{calls:#?}"
         );
     }
 
-    /// AS-31 E4: in CI mode, where `repo-settings.ps1 -Check` is skipped, merge runs nothing.
+    /// AS-50 AU2, AU3: an open anomaly issue of `verify-main` (a commit of `main`, or the GitHub
+    /// settings) written by the owner stops the merge before the PR is read; the same issue from
+    /// another account, a pull request, or another owner's issue does not.
+    #[test]
+    fn open_anomaly_issue_stops_merges() {
+        let titled = |title: &str| {
+            let mut v = owner_item("x");
+            v["title"] = json!(title);
+            v["number"] = json!(41);
+            v
+        };
+        let anomaly = || titled(&format!("{} 1234567", ANOMALY_TITLES[0]));
+        let issues = |list: Value| {
+            vec![(
+                "gh api --paginate repos/o/r/issues?state=open".to_owned(),
+                list.to_string(),
+            )]
+        };
+        for title in ANOMALY_TITLES {
+            let (result, calls) = scenario_with(false, issues(json!([titled(title)])));
+            let e = result.unwrap_err();
+            assert!(e.contains("merges suspended") && e.contains("#41"), "{e}");
+            assert!(
+                !calls
+                    .iter()
+                    .any(|c| c.starts_with("gh pr view") || c.starts_with("gh pr merge")),
+                "{calls:#?}"
+            );
+        }
+        // --dry-run goes on with every other check, and its result stays the refusal.
+        let anomaly_list = issues(json!([anomaly()]));
+        let (result, calls) = scenario_in(true, true, anomaly_list);
+        assert!(result.unwrap_err().contains("#41"));
+        assert!(
+            calls.iter().any(|c| c.contains("/check-runs")),
+            "{calls:#?}"
+        );
+        assert!(!calls.iter().any(|c| c.starts_with("gh pr merge")));
+        let mut stranger = anomaly();
+        stranger["user"]["login"] = json!("someone");
+        stranger["author_association"] = json!("NONE");
+        let mut pr = anomaly();
+        pr["pull_request"] = json!({});
+        let mut other = owner_item("x");
+        other["title"] = json!("repo-settings drift");
+        other["number"] = json!(42);
+        let (result, calls) = scenario_with(false, issues(json!([stranger, pr, other])));
+        assert_eq!(result, Ok(true), "{calls:#?}");
+    }
+
+    /// AS-52 (AU8): the issue that the nightly `report` job opens, written by `github-actions[bot]`
+    /// under [`NIGHTLY_ANOMALY_TITLE`], stops the merge; another bot, another title, another
+    /// account or a pull request does not. All open issues are read once, without the `creator`
+    /// filter; a failed read refuses the merge.
+    #[test]
+    fn nightly_anomaly_issue_stops_merges() {
+        let read = "gh api --paginate repos/o/r/issues?state=open&per_page=100";
+        let issues = |list: Value| vec![(read.to_owned(), list.to_string())];
+        let bot = || {
+            json!({"title": NIGHTLY_ANOMALY_TITLE, "number": 43, "body": "Run: u",
+                   "user": {"login": "github-actions[bot]", "type": "Bot"},
+                   "author_association": "NONE",
+                   "labels": [{"name": "nightly-failure"}, {"name": "role:architecture"}]})
+        };
+        let (result, calls) = scenario_with(false, issues(json!([bot()])));
+        let e = result.unwrap_err();
+        assert!(e.contains("merges suspended") && e.contains("#43"), "{e}");
+        assert_eq!(
+            calls.iter().filter(|c| c.contains("/issues?")).count(),
+            1,
+            "{calls:#?}"
+        );
+        assert!(calls.iter().any(|c| c == read), "{calls:#?}");
+        assert!(!calls.iter().any(|c| c.contains("creator=")), "{calls:#?}");
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.starts_with("gh pr view") || c.starts_with("gh pr merge")),
+            "{calls:#?}"
+        );
+        let mut other_bot = bot();
+        other_bot["user"]["login"] = json!("dependabot[bot]");
+        let mut other_title = bot();
+        other_title["title"] = json!("Tâche périodique en échec");
+        let mut user = bot();
+        user["user"] = json!({"login": "someone", "type": "User"});
+        let mut owner = owner_item("x");
+        owner["title"] = json!(NIGHTLY_ANOMALY_TITLE);
+        owner["number"] = json!(44);
+        let mut pr = bot();
+        pr["pull_request"] = json!({});
+        let harmless = json!([other_bot, other_title, user, owner, pr]);
+        let (result, calls) = scenario_with(false, issues(harmless));
+        assert_eq!(result, Ok(true), "{calls:#?}");
+        // A failed read of the issues refuses the merge before the PR is read (4xx: no retry).
+        let failed = vec![(read.to_owned(), format!("{FAILS}gh: Not Found (HTTP 404)"))];
+        let (result, calls) = scenario_with(false, failed);
+        let e = result.unwrap_err();
+        assert!(e.contains("HTTP 404"), "{e}");
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.starts_with("gh pr view") || c.starts_with("gh pr merge")),
+            "{calls:#?}"
+        );
+    }
+
+    /// What remains of J2 (AS-50): a main copy behind `origin/main` at launch is updated by
+    /// `git pull --ff-only`, then the merge is refused before any GitHub read, so that the next
+    /// launch rebuilds `xtask` from the new `main`. `--dry-run` only warns and pulls nothing.
+    #[test]
+    fn behind_main_copy_is_pulled_then_refused() {
+        let behind = vec![(
+            "git rev-parse HEAD origin/main".to_owned(),
+            format!("{SHA}\n{MAIN}"),
+        )];
+        let (result, calls) = scenario_with(false, behind.clone());
+        let e = result.unwrap_err();
+        assert!(e.contains("relancer cargo xtask merge"), "{e}");
+        assert!(calls.iter().any(|c| c.starts_with("git pull --ff-only")));
+        assert!(!calls.iter().any(|c| c.starts_with("gh ")), "{calls:#?}");
+        let (result, calls) = scenario_in(true, true, behind);
+        assert_eq!(result, Ok(true), "{calls:#?}");
+        assert!(!calls.iter().any(|c| c.starts_with("git pull")));
+    }
+
+    /// AS-50: a PR from a fork is never merged.
+    #[test]
+    fn fork_pr_is_refused() {
+        let pr = json!({"number": 7, "state": "OPEN", "baseRefName": "main", "headRefOid": SHA,
+            "isDraft": false, "isCrossRepository": true, "mergeable": "MERGEABLE",
+            "changedFiles": 1, "title": "docs(test): x", "url": "u"});
+        let (result, calls) =
+            scenario_with(false, vec![("gh pr view 7".to_owned(), pr.to_string())]);
+        assert!(result.unwrap_err().contains("fork"));
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.contains("pull/7/head") || c.starts_with("gh pr merge")),
+            "{calls:#?}"
+        );
+        let mut unknown = pr.clone();
+        unknown.as_object_mut().unwrap().remove("isCrossRepository");
+        let (result, _) = scenario_with(
+            false,
+            vec![("gh pr view 7".to_owned(), unknown.to_string())],
+        );
+        assert!(result.unwrap_err().contains("fork"));
+    }
+
+    /// A merge is never made in CI mode: nothing runs.
     #[test]
     fn ci_mode_never_merges() {
         let calls = Rc::new(RefCell::new(Vec::new()));
@@ -1044,14 +1029,12 @@ mod tests {
             dry_run: false,
             ci: true,
             cache: std::env::temp_dir(),
-            home: None,
             runner: Box::new(Fake {
                 calls: Rc::clone(&calls),
                 answers: Vec::new(),
-                codes: Vec::new(),
             }),
         };
-        assert!(run_with(&repo, 7, |_| Ok(())).is_err());
+        assert!(run(&repo, 7).is_err());
         assert!(calls.borrow().is_empty());
     }
 
@@ -1073,7 +1056,7 @@ mod tests {
                 comments.to_string(),
             ),
         ];
-        let (result, calls) = scenario_with(false, |_| Ok(()), extra);
+        let (result, calls) = scenario_with(false, extra);
         let e = result.unwrap_err();
         assert!(e.contains(&format!("ci-ok absent sur {SHA}")), "{e}");
         assert!(
@@ -1139,19 +1122,19 @@ mod tests {
             .collect()
         };
         let merged = |calls: &[String]| calls.iter().any(|c| c.starts_with("gh pr merge"));
-        let (result, calls) = scenario_with(false, |_| Ok(()), extra(&[&a, SHA], "b"));
+        let (result, calls) = scenario_with(false, extra(&[&a, SHA], "b"));
         assert_eq!(result, Ok(true), "{calls:#?}");
         assert!(merged(&calls));
         assert!(
             !calls.iter().any(|c| c.contains("/git/trees/")),
             "{calls:#?}"
         );
-        let (result, calls) = scenario_with(false, |_| Ok(()), extra(&[SHA], "b"));
+        let (result, calls) = scenario_with(false, extra(&[SHA], "b"));
         let e = result.unwrap_err();
         assert!(e.contains("W1: not among"), "{e}");
         assert!(!merged(&calls));
         // The local tree of `a` has another blob: W2.
-        let (result, calls) = scenario_with(false, |_| Ok(()), extra(&[&a, SHA], "d"));
+        let (result, calls) = scenario_with(false, extra(&[&a, SHA], "d"));
         let e = result.unwrap_err();
         assert!(
             e.contains("W2: tools/xtask/src/x.rs has another blob"),
@@ -1160,10 +1143,10 @@ mod tests {
         assert!(!merged(&calls));
     }
 
-    /// Witness: the same scenario without `--dry-run` (J2 replaced) merges the checked head.
+    /// Witness: the same scenario without `--dry-run` merges the checked head.
     #[test]
     fn real_run_merges_checked_head() {
-        let (result, calls) = scenario(false, |_| Ok(()));
+        let (result, calls) = scenario(false);
         assert_eq!(result, Ok(true), "{calls:#?}");
         let merge =
             format!("gh pr merge 7 -R o/r --squash --delete-branch --match-head-commit {SHA}");
@@ -1184,250 +1167,27 @@ mod tests {
         );
     }
 
-    /// AS-38: PR #7 changes only `tools/ci/repo-settings.json`, with both approvals on its head,
-    /// while `-Check` drifts (code 1) and `-Check -SourceCommit <head>` does not. `more` answers
-    /// and `codes` replace those of the same key.
-    fn repair_setup(more: Vec<(String, String)>, codes: Vec<(String, i32)>) -> Setup {
-        let comments = json!([
-            owner_item(&format!("review-ok: {SHA}")),
-            owner_item(&format!("archsec-ok: {SHA}"))
-        ]);
-        let mut extra: Vec<(String, String)> = vec![
-            (
-                "gh api --paginate repos/o/r/pulls/7/files".to_owned(),
-                json!([{ "filename": SETTINGS_FILE }]).to_string(),
-            ),
-            (
-                "git diff --name-only".to_owned(),
-                format!("{SETTINGS_FILE}\0"),
-            ),
-            (
-                format!("git ls-tree -r -z --name-only --full-tree {SHA}"),
-                format!("{SETTINGS_FILE}\0"),
-            ),
-            (
-                "gh api --paginate repos/o/r/issues/7/comments".to_owned(),
-                comments.to_string(),
-            ),
-            (
-                format!("gh api --paginate {}", issues_path("o/r")),
-                "[]".to_owned(),
-            ),
-            ("gh issue create".to_owned(), "u".to_owned()),
-        ];
-        extra.extend(more);
-        let mut all = vec![
-            ("repo-settings.ps1 -Check".to_owned(), 1),
-            (format!("repo-settings.ps1 -Check -SourceCommit {SHA}"), 0),
-        ];
-        all.extend(codes);
-        Setup {
-            extra,
-            codes: all,
-            break_hooks: false,
-        }
-    }
-
-    fn repair(
-        more: Vec<(String, String)>,
-        codes: Vec<(String, i32)>,
-    ) -> (Result<bool, String>, Vec<String>) {
-        scenario_setup(false, |_| Ok(()), repair_setup(more, codes))
-    }
-
-    fn merged(calls: &[String]) -> bool {
-        calls.iter().any(|c| c.starts_with("gh pr merge"))
-    }
-
-    /// `repo-settings.ps1 -Check -SourceCommit <head>` was run.
-    fn head_check(calls: &[String]) -> bool {
-        let tail = format!("repo-settings.ps1 -Check -SourceCommit {SHA}");
-        calls
-            .iter()
-            .any(|c| c.starts_with("pwsh -NoProfile -NonInteractive -File ") && c.ends_with(&tail))
-    }
-
-    fn assert_drift_refusal(e: &str) {
-        assert!(
-            e.contains("AS-38 exception") && e.contains("-Apply, then -Check"),
-            "{e}"
-        );
-    }
-
-    /// AS-38, nominal case: despite the drift, a repair PR whose every other check passes is
-    /// merged. The drift is recomputed with the file of the PR's head (`-SourceCommit <head>`,
-    /// read by `git show` in the script), not with the disk's nor `origin/main`'s; never `-Apply`.
+    /// A sensitive PR without `review-ok` or without `archsec-ok` on its head (nor carried over):
+    /// refused, never merged.
     #[test]
-    fn repair_pr_merges_despite_drift() {
-        let (result, calls) = repair(vec![], vec![]);
-        assert_eq!(result, Ok(true), "{calls:#?}");
-        assert!(merged(&calls) && head_check(&calls), "{calls:#?}");
-        assert_eq!(
-            calls.iter().filter(|c| c.starts_with("pwsh ")).count(),
-            2,
-            "{calls:#?}"
-        );
-        assert!(!calls.iter().any(|c| c.contains("-Apply")), "{calls:#?}");
-        // AS-41: the script run is the main copy's (S2 of origin/main by S4), never the head's.
-        let sep = std::path::MAIN_SEPARATOR;
-        let main_script =
-            format!("main{sep}tools{sep}dev{sep}repo-settings.ps1 -Check -SourceCommit {SHA}");
-        assert!(
-            calls.iter().any(|c| c.ends_with(&main_script)),
-            "{calls:#?}"
-        );
-        // Both approvals were read, though the sensitive list is not consulted for them.
-        assert!(calls.iter().any(|c| c.contains("/issues/7/comments")));
-    }
-
-    /// AS-38, condition 1: another file, by the local diff or as the other path of a rename, or
-    /// a case variant of the file (G8): refused, without recomputing the drift.
-    #[test]
-    fn repair_refused_if_another_file() {
-        for (files, local) in [
-            (
-                json!([{ "filename": SETTINGS_FILE }]),
-                format!("{SETTINGS_FILE}\0docs/a.md\0"),
-            ),
-            (
-                json!([{"filename": SETTINGS_FILE, "previous_filename": "tools/ci/old.json"}]),
-                format!("{SETTINGS_FILE}\0"),
-            ),
-            (
-                json!([{ "filename": "tools/ci/Repo-Settings.json" }]),
-                "tools/ci/Repo-Settings.json\0".to_owned(),
-            ),
-            // AS-41: a head that also changes the script (S2 invariants) is no repair PR.
-            (
-                json!([{ "filename": SETTINGS_FILE }]),
-                format!("{SETTINGS_FILE}\0tools/dev/repo-settings.ps1\0"),
-            ),
-        ] {
-            let more = vec![
+    fn sensitive_pr_needs_both_approvals() {
+        let f = "tools/xtask/src/x.rs";
+        for given in ["review-ok", "archsec-ok"] {
+            let extra = vec![
                 (
                     "gh api --paginate repos/o/r/pulls/7/files".to_owned(),
-                    files.to_string(),
+                    json!([{ "filename": f }]).to_string(),
                 ),
-                ("git diff --name-only".to_owned(), local.clone()),
+                ("git diff --name-only".to_owned(), format!("{f}\0")),
                 (
-                    format!("git ls-tree -r -z --name-only --full-tree {SHA}"),
-                    local,
+                    "gh api --paginate repos/o/r/issues/7/comments".to_owned(),
+                    json!([owner_item(&format!("{given}: {SHA}"))]).to_string(),
                 ),
             ];
-            let (result, calls) = repair(more, vec![]);
+            let (result, calls) = scenario_with(false, extra);
             let e = result.unwrap_err();
-            assert!(e.contains("not a repair PR"), "{e}");
-            assert_drift_refusal(&e);
-            assert!(!merged(&calls) && !head_check(&calls), "{calls:#?}");
+            assert!(e.contains("sensitive path"), "{e}");
+            assert!(!calls.iter().any(|c| c.starts_with("gh pr merge")));
         }
-        // --dry-run goes on, but the result stays a refusal.
-        let more = vec![(
-            "git diff --name-only".to_owned(),
-            format!("{SETTINGS_FILE}\0docs/a.md\0"),
-        )];
-        let (result, calls) = scenario_setup(true, |_| Ok(()), repair_setup(more, vec![]));
-        assert_drift_refusal(&result.unwrap_err());
-        assert!(!merged(&calls));
-        // More than one file announced: refused at step 3-4, before ci-ok and any fetch.
-        let pr = json!({"number": 7, "state": "OPEN", "baseRefName": "main", "headRefOid": SHA,
-            "isDraft": false, "mergeable": "MERGEABLE", "changedFiles": 2,
-            "title": "docs(test): x", "url": "u"});
-        let (result, calls) = repair(vec![("gh pr view 7".to_owned(), pr.to_string())], vec![]);
-        let e = result.unwrap_err();
-        assert!(e.contains("2 files changed"), "{e}");
-        assert_drift_refusal(&e);
-        assert!(
-            !calls
-                .iter()
-                .any(|c| c.contains("pull/7/head") || c.contains("/check-runs")),
-            "{calls:#?}"
-        );
-        // The file deleted at the head: refused, the drift is not recomputed.
-        let tree = format!("git ls-tree -r -z --name-only --full-tree {SHA}");
-        let (result, calls) = repair(vec![(tree, "docs/a.md\0".to_owned())], vec![]);
-        let e = result.unwrap_err();
-        assert!(e.contains("deleted at the head"), "{e}");
-        assert!(!merged(&calls) && !head_check(&calls), "{calls:#?}");
-    }
-
-    /// A `-Check` that could not conclude is no drift: `--dry-run` goes on, but it opens no
-    /// repair path and the result stays a refusal.
-    #[test]
-    fn unconcluded_check_is_no_repair_path() {
-        let codes = vec![("repo-settings.ps1 -Check".to_owned(), 2)];
-        let (result, calls) = scenario_setup(true, |_| Ok(()), repair_setup(vec![], codes));
-        let e = result.unwrap_err();
-        assert!(e.contains("non contrôlés"), "{e}");
-        assert!(!merged(&calls) && !head_check(&calls), "{calls:#?}");
-    }
-
-    #[test]
-    fn repair_only_paths() {
-        let p = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert!(repair_only(1, &p(&[SETTINGS_FILE])).is_ok());
-        assert!(repair_only(2, &p(&[SETTINGS_FILE])).is_err());
-        assert!(repair_only(1, &p(&[])).is_err());
-        for alias in ["TOOLS/ci/repo-settings.json", "tools/ci/REPO-S~1.JSO"] {
-            let e = repair_only(1, &p(&[alias])).unwrap_err();
-            assert!(e.contains("(G8)"), "{e}");
-        }
-    }
-
-    /// AS-38, condition 2: the drift recomputed with the head's file is not empty: refused.
-    #[test]
-    fn repair_refused_if_head_file_drifts() {
-        let code = vec![(format!("repo-settings.ps1 -Check -SourceCommit {SHA}"), 1)];
-        let (result, calls) = repair(vec![], code);
-        let e = result.unwrap_err();
-        assert!(e.contains("is not empty"), "{e}");
-        assert_drift_refusal(&e);
-        assert!(head_check(&calls) && !merged(&calls), "{calls:#?}");
-    }
-
-    /// AS-38, condition 3: a history anomaly, or non-conforming hooks, suspends every merge,
-    /// repair PRs included.
-    #[test]
-    fn repair_refused_if_history_or_hooks_fail() {
-        let x = "9".repeat(40);
-        let more = vec![
-            (
-                "git rev-list --reverse origin/main".to_owned(),
-                format!(
-                    "8ca4088bd38829d6c5aaa9281c4fa32b33a95e35\n\
-                     2b5681461e46cc1cc008e786b8b04ccd22b4993f\n{x}\n"
-                ),
-            ),
-            ("git rev-list --parents".to_owned(), x.clone()),
-        ];
-        let (result, calls) = repair(more, vec![]);
-        assert!(result.unwrap_err().contains("fusions suspendues"));
-        assert!(!merged(&calls) && !head_check(&calls), "{calls:#?}");
-        let mut setup = repair_setup(vec![], vec![]);
-        setup.break_hooks = true;
-        let (result, calls) = scenario_setup(false, |_| Ok(()), setup);
-        assert!(result.unwrap_err().contains("fusions suspendues"));
-        assert!(!merged(&calls) && !head_check(&calls), "{calls:#?}");
-    }
-
-    /// AS-38, condition 4: a missing approval, or no `ci-ok` on the head: refused.
-    #[test]
-    fn repair_refused_without_approval_or_ci_ok() {
-        let comments = json!([owner_item(&format!("review-ok: {SHA}"))]);
-        let more = vec![(
-            "gh api --paginate repos/o/r/issues/7/comments".to_owned(),
-            comments.to_string(),
-        )];
-        let (result, calls) = repair(more, vec![]);
-        let e = result.unwrap_err();
-        assert!(e.contains("archsec-ok"), "{e}");
-        assert!(!merged(&calls), "{calls:#?}");
-        let more = vec![(
-            "gh api --paginate repos/o/r/commits/".to_owned(),
-            json!({"check_runs": []}).to_string(),
-        )];
-        let (result, calls) = repair(more, vec![]);
-        let e = result.unwrap_err();
-        assert!(e.contains(&format!("ci-ok absent sur {SHA}")), "{e}");
-        assert!(!merged(&calls), "{calls:#?}");
     }
 }

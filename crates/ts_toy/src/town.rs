@@ -5,13 +5,15 @@
 //! town.
 
 use bevy_tasks::ComputeTaskPool;
-use ts_kernel::rng::{Stream, StreamKeys, draw};
+use ts_kernel::rng::{DrawSite, SiteDraw, Stream};
 use ts_kernel::{StableId, StateHash, StateWriter};
 
 /// Draw purposes of the generator.
-const KIND: u32 = 1;
-const MEMBERS: u32 = 2;
-const WORKPLACE: u32 = 3;
+/// Draw sites of the generator: kind of each parcel (`CityGen`), size and workplaces of each
+/// household (`PopGen`).
+pub(crate) const KIND: DrawSite = DrawSite::new(Stream::CityGen, 1, "toy.parcel_kind");
+pub(crate) const MEMBERS: DrawSite = DrawSite::new(Stream::PopGen, 2, "toy.household_members");
+pub(crate) const WORKPLACE: DrawSite = DrawSite::new(Stream::PopGen, 3, "toy.workplace");
 
 /// Size of the toy town. **Test parameters**, not game values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,13 +38,15 @@ impl TownSpec {
     };
 }
 
-/// Use of a parcel.
+/// Use of a parcel. The discriminants are part of the state hash (see the `StateHash` impl of
+/// [`Town`]): explicit and frozen, they change only with the golden values (issue #68, m3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum ParcelKind {
     /// Households live there.
-    Home,
+    Home = 0,
     /// Residents work there.
-    Work,
+    Work = 1,
 }
 
 /// A resident: home parcel and work parcel, by index in the grid.
@@ -140,12 +144,10 @@ where
 /// average are workplaces (`CityGen`), each home parcel holds 1 to 4 residents who each
 /// work on a drawn workplace (`PopGen`). Same town for [`Execution::Inline`] and
 /// [`Execution::Pool`], with any number of threads.
-pub fn generate(spec: &TownSpec, keys: &StreamKeys, exec: Execution) -> Town {
-    let city = keys.get(Stream::CityGen);
-    let pop = keys.get(Stream::PopGen);
+pub fn generate<K: SiteDraw + Sync>(spec: &TownSpec, keys: &K, exec: Execution) -> Town {
     let parcels = in_chunks(spec, exec, |a, b| {
         (a..b)
-            .map(|i| match draw(city, parcel_id(i), 0, KIND) % 3 {
+            .map(|i| match keys.draw(KIND, parcel_id(i), 0) % 3 {
                 0 => ParcelKind::Work,
                 _ => ParcelKind::Home,
             })
@@ -164,9 +166,9 @@ pub fn generate(spec: &TownSpec, keys: &StreamKeys, exec: Execution) -> Town {
             let mut out = Vec::new();
             for home in (a..b).filter(|&i| parcels[i as usize] == ParcelKind::Home) {
                 let id = parcel_id(home);
-                let members = 1 + draw(pop, id, 0, MEMBERS) % 4;
+                let members = 1 + keys.draw(MEMBERS, id, 0) % 4;
                 for m in 1..=members {
-                    let pick = draw(pop, id, m, WORKPLACE) % works.len() as u64;
+                    let pick = keys.draw(WORKPLACE, id, m) % works.len() as u64;
                     out.push(Resident {
                         home,
                         work: works[pick as usize],
@@ -181,5 +183,17 @@ pub fn generate(spec: &TownSpec, keys: &StreamKeys, exec: Execution) -> Town {
         width: spec.width,
         parcels,
         residents,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The discriminants of [`ParcelKind`] are hashed: they are frozen (issue #68, m3).
+    #[test]
+    fn parcel_kind_discriminants_are_frozen() {
+        assert_eq!(ParcelKind::Home as u8, 0);
+        assert_eq!(ParcelKind::Work as u8, 1);
     }
 }

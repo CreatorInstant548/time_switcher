@@ -346,12 +346,133 @@ fn forged_manifests_are_refused() {
         decode_parts(&forge_raw(FORMAT_VERSION, 0, &manifest, b"x"), &d),
         Err(DecodeError::TrailingBytes("manifest"))
     );
-    // An announced count far above the bytes present fails cleanly, without allocating it.
+    // An announced count far above the bound is refused before decoding (m4 of #50).
     let huge = [0xff, 0xff, 0xff, 0xff, 0x0f];
     assert_eq!(
         decode_parts(&forge_raw(FORMAT_VERSION, 0, &huge, b""), &d),
+        Err(DecodeError::TooLarge {
+            bound: Bound::Parts,
+            len: u64::from(u32::MAX),
+            max: u64::from(d.max_parts)
+        })
+    );
+}
+
+/// m4 of #50: the count of parts the manifest announces is checked before the manifest is
+/// decoded. The forged manifests below announce more parts than they hold: decoding them
+/// would fail as malformed, so a `TooLarge` proves the count was refused first.
+#[test]
+fn announced_part_count_is_checked_before_decoding() {
+    let limits = Limits::fuzzing();
+    let max = u64::from(limits.max_parts);
+    let varint = |n: u64| postcard::to_allocvec(&n).unwrap();
+    let a = postcard::to_allocvec(&stored("a", b"x")).unwrap();
+    // One entry behind a count of `max + 1`: refused as too many parts.
+    let mut over = varint(max + 1);
+    over.extend_from_slice(&a);
+    assert_eq!(
+        decode_parts(&forge_raw(FORMAT_VERSION, 0, &over, b"x"), &limits),
+        Err(DecodeError::TooLarge {
+            bound: Bound::Parts,
+            len: max + 1,
+            max
+        })
+    );
+    // Same entry behind a count of `max`: the count passes, the decoding finds too few.
+    let mut at = varint(max);
+    at.extend_from_slice(&a);
+    assert_eq!(
+        decode_parts(&forge_raw(FORMAT_VERSION, 0, &at, b"x"), &limits),
         Err(DecodeError::Malformed("manifest"))
     );
+    // The largest count postcard can write, and a varint longer than any count.
+    assert_eq!(
+        decode_parts(
+            &forge_raw(FORMAT_VERSION, 0, &varint(u64::MAX), b""),
+            &limits
+        ),
+        Err(DecodeError::TooLarge {
+            bound: Bound::Parts,
+            len: u64::MAX,
+            max
+        })
+    );
+    let endless = [0xff; 11];
+    assert_eq!(
+        decode_parts(&forge_raw(FORMAT_VERSION, 0, &endless, b""), &limits),
+        Err(DecodeError::Malformed("manifest"))
+    );
+    // An empty manifest has no count at all.
+    assert_eq!(
+        decode_parts(&forge_raw(FORMAT_VERSION, 0, &[], b""), &limits),
+        Err(DecodeError::Malformed("manifest"))
+    );
+    // The count is the first bytes of the manifest: the layout this check relies on.
+    let two = postcard::to_allocvec(&Manifest {
+        parts: ts_persist::Seq(vec![stored("a", b"x"), stored("b", b"y")]),
+    })
+    .unwrap();
+    assert_eq!(postcard::take_from_bytes::<u64>(&two).unwrap().0, 2);
+}
+
+/// m7 of #50: a segment naming a reserved Windows device, with or without an extension, is
+/// refused by the decoder and by the encoder; names that only contain one are accepted.
+#[test]
+fn reserved_windows_names_are_refused() {
+    let d = Limits::default();
+    let mut reserved = vec![
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        "con.txt",
+        "nul.",
+        "aux.x.y",
+        "a/con",
+        "con/a",
+        "x/nul.tar.gz",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    for n in 0..=9 {
+        reserved.push(format!("com{n}"));
+        reserved.push(format!("lpt{n}.bin"));
+    }
+    for name in &reserved {
+        let mut e = stored("a", b"x");
+        e.name = name.clone();
+        assert_eq!(
+            decode_parts(&forge(vec![e], b"x"), &d),
+            Err(DecodeError::InvalidName),
+            "{name:?}"
+        );
+        assert_eq!(
+            encode_parts(&[(name.as_str(), b"x")], Codec::Stored, &d),
+            Err(EncodeError::Invalid(DecodeError::InvalidName)),
+            "{name:?}"
+        );
+    }
+    for name in [
+        "cons",
+        "icon",
+        "nul_",
+        "con-x",
+        "com",
+        "com10",
+        "lpt",
+        "a.con",
+        "auxiliary",
+        "prn0",
+        "x/con1",
+    ] {
+        let parts = decode_parts(
+            &encode_parts(&[(name, b"x")], Codec::Stored, &d).unwrap(),
+            &d,
+        )
+        .unwrap();
+        assert_eq!(parts.get(name), Some(&b"x"[..]), "{name:?}");
+    }
 }
 
 /// A zstd part followed by bytes outside its frame is refused.

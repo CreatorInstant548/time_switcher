@@ -6,7 +6,8 @@
 # Le dimanche, en plus, si main a changé depuis la dernière exécution hebdomadaire réussie :
 # Windows complet, gitleaks sur tout l'historique, fuzzing (sauté tant que fuzz/ n'existe pas),
 # cargo xtask determinism --full (an complet du monde-jouet, Y5).
-# En cas d'échec, le travail report ouvre ou complète une issue nightly-failure.
+# En cas d'échec, le travail report ouvre ou complète une issue nightly-failure ; si verify-main
+# échoue ou est annulé, aussi l'issue d'anomalie qui suspend cargo xtask merge (AS-52).
 # Contrôlé par cargo xtask check --only workflows (SEC0-29 à 31, G7).
 # spec: carnet architecture-securite.md SEC0-17, SEC0-29, SEC0-30, SEC0-33 ; §9.6 G6, G9, G10 ; §9.14 V3 ; §9.15 Y5
 name: nightly
@@ -82,7 +83,9 @@ jobs:
       pull-requests: read
     steps:
       # fetch-depth: 0 brings origin/main and origin/pilotage (J4); verify-main skips git fetch
-      # in CI mode, so the job keeps no Git credentials (m2 of #52).
+      # origin in CI mode, so the job keeps no Git credentials (m2 of #52). Only an approval
+      # carried over by AS-55 fetches pull/<n>/head, anonymously (public repository), never for
+      # a PR from a fork (X4).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -211,6 +214,12 @@ jobs:
       - name: cargo-fuzz épinglé
         if: steps.gate.outputs.changed == 'true'
         run: bash tools/ci/install-tools.sh cargo-fuzz
+      # Initial corpus of every target, fuzz/corpus/<target> (SEC0-24), regenerated on each run,
+      # never committed. --locked also refuses a stale fuzz/Cargo.lock: cargo fuzz has no
+      # --locked option.
+      - name: Initial corpus
+        if: steps.gate.outputs.changed == 'true'
+        run: cargo "+$FUZZ_TOOLCHAIN" run --locked --manifest-path fuzz/seeds/Cargo.toml -- fuzz/corpus
       - name: Fuzzing de toutes les cibles
         if: steps.gate.outputs.changed == 'true'
         run: |
@@ -270,7 +279,37 @@ jobs:
     permissions:
       issues: write
     steps:
+      # AS-52 (AU8): a failed or cancelled verify-main opens (or comments) the issue under the
+      # exact title that cargo xtask merge counts as an anomaly (github::NIGHTLY_ANOMALY_TITLE,
+      # author github-actions[bot]): merges stop at once, without waiting for the daily local
+      # verify-main. Same rules as below: no checkout, no code of the repository is run (G9).
+      # always(): without it, GitHub adds success(), which is false in a cancelled run.
+      # The title stays the French text fixed by AS-52, the same as github::NIGHTLY_ANOMALY_TITLE.
+      - name: Anomaly issue of verify-main (no checkout, G9)
+        if: always() && (needs.verify-main.result == 'failure' || needs.verify-main.result == 'cancelled')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          R_VERIFY_MAIN: ${{ needs.verify-main.result }}
+          NIGHTLY_ANOMALY_TITLE: "verify-main : anomalie détectée par la tâche périodique"
+        run: |
+          body=$(printf 'verify-main %s in the nightly run: cargo xtask merge refuses every merge while this issue is open.\n\n- Run: %s\n- Clear the finding, then close this issue: docs/dev/ci.md section 4.\n' "$R_VERIFY_MAIN" "$RUN_URL")
+          # The open issue of this bot under this exact title, as github::is_anomaly reads it.
+          # A failed lookup opens a new issue: one more anomaly issue only stops merges.
+          nums=$(gh api --paginate "repos/$GH_REPO/issues?state=open&per_page=100" \
+            --jq '.[] | select(.pull_request == null and .title == env.NIGHTLY_ANOMALY_TITLE and .user.login == "github-actions[bot]" and .user.type == "Bot") | .number') \
+            || nums=""
+          num=${nums%%[!0-9]*}
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "$body"
+          else
+            gh label create nightly-failure --color B60205 --description "Échec de nightly.yml" 2>/dev/null || true
+            gh label create role:architecture --color 5319E7 2>/dev/null || true
+            gh issue create --title "$NIGHTLY_ANOMALY_TITLE" --label nightly-failure --label role:architecture --body "$body"
+          fi
       - name: Issue nightly-failure (sans checkout, G9)
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -281,16 +320,20 @@ jobs:
           R_GITLEAKS: ${{ needs.gitleaks-history.result }}
           R_FUZZ: ${{ needs.fuzz.result }}
           R_DETERMINISM: ${{ needs.determinism.result }}
+          FAILURE_TITLE: "Tâche périodique en échec"
         run: |
           failed=""
           for pair in "advisories=$R_ADVISORIES" "verify-main=$R_VERIFY_MAIN" "windows=$R_WINDOWS" "gitleaks-history=$R_GITLEAKS" "fuzz=$R_FUZZ" "determinism=$R_DETERMINISM"; do
             case ${pair#*=} in failure|cancelled) failed="$failed ${pair%%=*} (${pair#*=})" ;; esac
           done
-          body=$(printf 'Échec de la tâche périodique.\n\n- Travaux en échec :%s\n- Exécution : %s\n' "$failed" "$RUN_URL")
+          body=$(printf 'Nightly run failed.\n\n- Failed jobs:%s\n- Run: %s\n' "$failed" "$RUN_URL")
           gh label create nightly-failure --color B60205 --description "Échec de nightly.yml" 2>/dev/null || true
-          num=$(gh issue list --label nightly-failure --state open --limit 1 --json number --jq '.[0].number // empty')
+          # Only the bot's issue under this title, never the anomaly issue (also nightly-failure).
+          nums=$(gh api --paginate "repos/$GH_REPO/issues?state=open&labels=nightly-failure&per_page=100" \
+            --jq '.[] | select(.pull_request == null and .title == env.FAILURE_TITLE and .user.login == "github-actions[bot]" and .user.type == "Bot") | .number')
+          num=${nums%%[!0-9]*}
           if [ -n "$num" ]; then
             gh issue comment "$num" --body "$body"
           else
-            gh issue create --title "Tâche périodique en échec" --label nightly-failure --body "$body"
+            gh issue create --title "$FAILURE_TITLE" --label nightly-failure --body "$body"
           fi

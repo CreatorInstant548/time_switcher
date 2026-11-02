@@ -22,7 +22,8 @@
 //! (the root), the manifest carries the digest of each part (the leaves). A part named
 //! `<part>/<chunk>` is a chunk of a larger part (sector x family, architecture §12.1).
 //!
-//! **Order of checks** (archsec Q3): envelope, then manifest digest, then manifest content
+//! **Order of checks** (archsec Q3): envelope, then manifest digest, then the part count the
+//! manifest announces (before it is decoded, m4 of #50), then manifest content
 //! and bounds, then the stored digest of **every** part, and only then decompression and the
 //! decoded digest of each part. Nothing is decoded by postcard or `zstd` before its bytes
 //! match a digest.

@@ -48,6 +48,10 @@ allow-wildcard-paths = true
 deny = [
     { crate = "hyper", reason = "réseau interdit en phase 0 (SEC0-02)" },
     { crate = "native-tls", reason = "TLS système interdit en phase 0 (SEC0-02)" },
+    # Parquet is an untrusted input path as soon as something reads it (#71): only the two tool
+    # crates may depend on it (ts_runner writes it, ts_viz writes positions), so that a core or
+    # rule crate cannot pull it unnoticed. A reader needs bounds and a fuzz target first.
+    { crate = "parquet", wrappers = ["ts_runner", "ts_viz"], reason = "Parquet is reserved to the tool crates (#71)" },
     { crate = "openssl", reason = "OpenSSL interdit (SEC0-02)" },
     { crate = "openssl-sys", reason = "OpenSSL interdit (SEC0-02, E4)" },
     { crate = "quinn", reason = "réseau interdit en phase 0 (SEC0-02)" },

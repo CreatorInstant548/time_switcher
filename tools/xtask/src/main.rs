@@ -5,19 +5,19 @@
 // Outil en ligne de commande : il écrit sur la console.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-mod build_inputs;
 mod carry;
 mod determinism;
 mod disk;
 mod exemptions;
 mod github;
-mod hooks;
+mod macros;
 mod manifests;
 mod merge;
 mod metadata;
+mod py;
+mod reserved;
 mod scan;
 mod sensitive;
-mod sha256;
 mod slots;
 mod spec_map;
 mod steps;
@@ -29,9 +29,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use steps::{Ctx, Outcome};
-
-/// Empreinte des entrées de construction, inscrite par `build.rs` (J2, AS-23 point 1).
-pub const BUILT_FROM: &str = env!("XTASK_INPUTS_SHA256");
 
 type Step = (&'static str, &'static str, fn(&Ctx) -> Outcome);
 
@@ -77,7 +74,7 @@ const STEPS: [Step; 14] = [
     ),
     (
         "clippy-exemptions",
-        "aucune exemption de clippy dans le cœur",
+        "no clippy exemption in the core, reserved kernel items (#26)",
         steps::clippy_exemptions,
     ),
     (
@@ -89,7 +86,7 @@ const STEPS: [Step; 14] = [
     ("spec-map", "spec-map check", steps::spec_map),
 ];
 
-const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask determinism [--full] [--bless] | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--origin <n>d|all] | cargo xtask hooks install|verify [--dry-run]";
+const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask determinism [--full] [--bless] | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--origin <n>d|all] | cargo xtask py";
 
 struct Options {
     all: bool,
@@ -134,6 +131,24 @@ fn parse(args: &[String]) -> Result<Options, String> {
     Ok(opts)
 }
 
+/// Warning for files modified or new and not committed (m11): every step reads the disk, so the
+/// result is not that of the commit that will be merged. Commit, then run the check again.
+fn dirty_warning(files: &[String]) -> String {
+    let shown: Vec<&str> = files.iter().take(5).map(String::as_str).collect();
+    let more = files.len().saturating_sub(shown.len());
+    let tail = if more > 0 {
+        format!(", … (+{more})")
+    } else {
+        String::new()
+    };
+    format!(
+        "WARNING: {} file(s) modified or new and not committed ({}{tail}). The steps read the disk, \
+         not HEAD: commit, then run again for the result that holds for the PR.",
+        files.len(),
+        shown.join(", ")
+    )
+}
+
 fn main() -> ExitCode {
     let args = sys::args();
     match args.first().map(String::as_str) {
@@ -142,8 +157,8 @@ fn main() -> ExitCode {
         Some("determinism") => return determinism::main(&args[1..]),
         Some("spec-map") => return spec_map::run(&args[1..]),
         Some("merge") => return merge::main(&args[1..]),
-        Some("hooks") => return hooks::main(&args[1..]),
         Some("verify-main") => return verify_main::main(&args[1..]),
+        Some("py") => return py::main(&args[1..]),
         _ => {}
     }
     let opts = match parse(&args) {
@@ -188,6 +203,17 @@ fn main() -> ExitCode {
         "cargo xtask check : {} étape(s), tests sur {scope}",
         selected.len()
     );
+    let dirty = if steps::ci_mode() {
+        Vec::new() // CI reads the extracted tree: nothing to warn about.
+    } else {
+        cx.uncommitted().unwrap_or_else(|e| {
+            println!("WARNING: uncommitted files not listed ({e})");
+            Vec::new()
+        })
+    };
+    if !dirty.is_empty() {
+        println!("{}", dirty_warning(&dirty));
+    }
 
     let mut results: Vec<(&str, String)> = Vec::new();
     let mut failed = false;
@@ -216,6 +242,12 @@ fn main() -> ExitCode {
             .map_or("non lancée", |r| r.1.as_str());
         println!("  {name:<18} {line}");
     }
+    if !dirty.is_empty() {
+        println!(
+            "Reminder: {} file(s) modified or new and not committed.",
+            dirty.len()
+        );
+    }
     if failed {
         println!("Résultat : ÉCHEC");
         return ExitCode::FAILURE;
@@ -242,6 +274,15 @@ mod tests {
         assert!(parse(&args("check --only")).is_err());
         assert!(parse(&args("check --force")).is_err());
         assert!(parse(&args("slots")).is_err());
+    }
+
+    /// m11: the warning names the files and says what to do.
+    #[test]
+    fn warns_about_uncommitted_files() {
+        let files: Vec<String> = (1..=7).map(|n| format!("f{n}.rs")).collect();
+        let text = dirty_warning(&files);
+        assert!(text.contains("7 file(s)") && text.contains("f5.rs") && !text.contains("f6.rs"));
+        assert!(text.contains("(+2)") && text.contains("commit, then run again"));
     }
 
     #[test]

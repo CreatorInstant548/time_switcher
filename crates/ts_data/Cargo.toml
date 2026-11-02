@@ -7,12 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-# No workspace dependency yet: the pack does not need `ts_kernel` or `ts_model` types.
-# No file access either (core crate, no I/O): the host reads the files, see `ts_runner`.
+# No file access (core crate, no I/O): the host reads the files, see `ts_runner`.
+# `ts_kernel` only for `not_public!`, which keeps the fuzzing body (`fuzzing`) out of the
+# `public` profile, as in `ts_persist` (#48); the pack itself uses no kernel type.
 [dependencies]
 blake3.workspace = true
 ron.workspace = true
 serde.workspace = true
+ts_kernel = { path = "../ts_kernel" }
 
 [lints]
 workspace = true

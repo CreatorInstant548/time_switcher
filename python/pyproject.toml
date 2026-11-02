@@ -1,0 +1,49 @@
+# python/pyproject.toml: Python environment of time_switcher (T10). Mode d'emploi :
+# docs/dev/xtask.md §8. Run through `cargo xtask py`: uv sync --locked, maturin develop,
+# then pytest. spec: carnet architecture-securite.md §9.16
+
+# Read by maturin develop only: uv never builds this project (package = false below).
+[build-system]
+requires = ["maturin==1.15.0"]
+build-backend = "maturin"
+
+[project]
+name = "ts-py"
+version = "0.0.0"
+description = "Python bindings of time_switcher (crate ts_py), built by maturin, tested by pytest."
+requires-python = "==3.14.*"
+dependencies = []
+
+# Base group (PY5): only these three, each pinned; the transitive packages are pinned with
+# their hashes in uv.lock.
+# - numpy: the arrays returned by ts_py (crate numpy on the Rust side).
+# - pytest: the tests of python/tests.
+# - maturin: builds the crate ts_py into the environment (maturin develop).
+[dependency-groups]
+base = ["maturin==1.15.0", "numpy==2.5.4", "pytest==9.1.1"]
+# Optional group (AS-48, VZ7): converts positions.parquet to a Rerun recording (python/viz/).
+# Installed by nobody by default: not by `cargo xtask py`, not by the CI (default-groups below).
+# Install it by hand: `uv sync --locked --group viz` (docs/dev/visualisation.md).
+# - rerun-sdk: the only way to write a .rrd. Wheels only (no-build below), hashes in uv.lock.
+#   It brings pyarrow, which reads the Parquet file: nothing else is added for that.
+viz = ["rerun-sdk==0.38.1"]
+
+[tool.uv]
+# uv never builds this project: `cargo xtask py` builds ts_py with maturin develop.
+package = false
+default-groups = ["base"]
+# Wheels only: no third-party package is ever built from its sources.
+no-build = true
+# Resolution limited to releases published at least two weeks before the lock.
+exclude-newer = "2026-10-17T00:00:00Z"
+# The interpreter is the pinned one installed on the machine (.python-version), never a download.
+python-downloads = "never"
+python-preference = "only-system"
+required-version = "==0.11.33"
+
+[tool.maturin]
+manifest-path = "../crates/ts_py/Cargo.toml"
+module-name = "ts_py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
