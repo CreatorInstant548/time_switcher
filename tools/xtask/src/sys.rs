@@ -1,8 +1,10 @@
 //! Accès au système. xtask est une crate d'outil : elle s'exempte des interdictions de clippy
 //! au plus près, ici seulement (E6).
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Variables qui changeraient la configuration de Git ou de gitleaks, vidées comme dans les crochets.
@@ -33,13 +35,75 @@ pub fn env_names() -> Vec<String> {
         .collect()
 }
 
-#[allow(clippy::disallowed_methods)] // outil : xtask lit les fichiers du dépôt.
+/// Root of the repository being checked, set once by `Ctx::new`: messages show paths relative to
+/// it (m6, SEC0-26).
+static ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_root(root: &Path) {
+    let _ = ROOT.set(root.to_path_buf());
+}
+
+/// `path` without the leading `base`, comparing components (so `C:/a` equals `C:`), ignoring
+/// the case on Windows.
+fn strip(path: &Path, base: &Path) -> Option<PathBuf> {
+    let same = |a: Component, b: Component| match cfg!(windows) {
+        true => a.as_os_str().eq_ignore_ascii_case(b.as_os_str()),
+        false => a == b,
+    };
+    let mut rest = path.components();
+    for b in base.components() {
+        if !same(rest.next()?, b) {
+            return None;
+        }
+    }
+    Some(rest.as_path().to_path_buf())
+}
+
+/// A path as shown in a message: relative to `root` with `/`, `$TS_CACHE/…` under the cache,
+/// otherwise its file name only. An absolute path would give the home folder away (m6, SEC0-26).
+fn display_path(path: &Path, root: Option<&Path>, cache: &Path) -> String {
+    let join = |p: &Path| {
+        let parts: Vec<String> = p
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        parts.join("/")
+    };
+    if let Some(rel) = root.and_then(|r| strip(path, r)) {
+        return match rel.as_os_str().is_empty() {
+            true => ".".to_owned(),
+            false => join(&rel),
+        };
+    }
+    if let Some(rel) = strip(path, cache) {
+        return format!("$TS_CACHE/{}", join(&rel));
+    }
+    if !path.is_absolute() {
+        return join(path);
+    }
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    format!("<outside the repository>/{name}")
+}
+
+pub fn shown(path: &Path) -> String {
+    display_path(path, ROOT.get().map(PathBuf::as_path), &ts_cache())
+}
+
+/// A command-line argument as printed: an absolute path is shown by [`shown`].
+fn shown_arg(arg: &str) -> String {
+    match Path::new(arg).is_absolute() {
+        true => shown(Path::new(arg)),
+        false => arg.to_owned(),
+    }
+}
+
+#[allow(clippy::disallowed_methods)] // tool: xtask reads the files of the repository.
 pub fn read(path: &Path) -> Result<Vec<u8>, String> {
-    std::fs::read(path).map_err(|e| format!("lecture impossible de {} : {e}", path.display()))
+    std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", shown(path)))
 }
 
 pub fn read_text(path: &Path) -> Result<String, String> {
-    String::from_utf8(read(path)?).map_err(|_| format!("{} n'est pas en UTF-8", path.display()))
+    String::from_utf8(read(path)?).map_err(|_| format!("{} is not UTF-8", shown(path)))
 }
 
 #[allow(clippy::disallowed_methods)] // outil : âge de la base RustSec (SEC0-03).
@@ -99,7 +163,8 @@ pub fn run_live(root: &Path, prog: &str, args: &[&str]) -> Result<bool, String> 
     let shown = Path::new(prog)
         .file_stem()
         .map_or(prog.into(), |s| s.to_string_lossy());
-    println!("  $ {shown} {}", args.join(" "));
+    let printed: Vec<String> = args.iter().map(|a| shown_arg(a)).collect();
+    println!("  $ {shown} {}", printed.join(" "));
     let status = command(root, prog, args)
         .stdin(Stdio::null())
         .status()
@@ -148,10 +213,71 @@ pub fn outputs(
     ))
 }
 
-#[allow(clippy::disallowed_methods)] // outil : copie épinglée des crochets, corps d'issue.
+#[allow(clippy::disallowed_methods)] // tool: issue bodies, files of the run.
 pub fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    std::fs::write(path, bytes)
-        .map_err(|e| format!("écriture impossible de {} : {e}", path.display()))
+    std::fs::write(path, bytes).map_err(|e| format!("cannot write {}: {e}", shown(path)))
+}
+
+/// Name of the file that marks a [`Scratch`] folder as created by this run.
+const SCRATCH_MARKER: &str = ".xtask-scratch";
+
+/// A folder made for one run under `TS_CACHE/tmp` (m8). It is created exclusively under a name that
+/// no earlier run can have (process id, clock and counter), holds a marker with a token, and is
+/// removed on drop only while the marker still carries that token: a folder this run did not
+/// create is never deleted.
+#[derive(Debug)]
+pub struct Scratch {
+    dir: PathBuf,
+    token: String,
+}
+
+impl Scratch {
+    pub fn new(label: &str) -> Result<Self, String> {
+        Self::new_in(&ts_cache().join("tmp"), label)
+    }
+
+    #[allow(clippy::disallowed_methods)] // tool: the marker is written with `create_new`.
+    pub fn new_in(base: &Path, label: &str) -> Result<Self, String> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let token = format!("{}-{nanos}-{count}", std::process::id());
+        std::fs::create_dir_all(base).map_err(|e| format!("{}: {e}", shown(base)))?;
+        let dir = base.join(format!("xtask-{label}-{token}"));
+        // `create_dir` fails when the folder exists: this run owns the one it creates.
+        std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", shown(&dir)))?;
+        let this = Self { dir, token };
+        let marker = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(this.dir.join(SCRATCH_MARKER));
+        std::io::Write::write_all(
+            &mut marker.map_err(|e| format!("{}: {e}", shown(&this.dir)))?,
+            this.token.as_bytes(),
+        )
+        .map_err(|e| format!("{}: {e}", shown(&this.dir)))?;
+        Ok(this)
+    }
+
+    /// A path inside the folder, not created.
+    pub fn path(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
+
+    fn owned(&self) -> bool {
+        let is_dir = std::fs::symlink_metadata(&self.dir).is_ok_and(|m| m.is_dir());
+        is_dir && read(&self.dir.join(SCRATCH_MARKER)).is_ok_and(|m| m == self.token.as_bytes())
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if self.owned() {
+            let _ = std::fs::remove_dir_all(&self.dir); // marker checked: created by this run
+        }
+    }
 }
 
 /// SHA-256 d'un fichier, par l'outil du système (aucune crate de cryptographie ajoutée).
@@ -164,10 +290,7 @@ pub fn sha256(root: &Path, file: &Path) -> Result<String, String> {
         run_captured(root, "sha256sum", &[&path])?
     };
     if !ok {
-        return Err(format!(
-            "empreinte SHA-256 incalculable pour {}",
-            file.display()
-        ));
+        return Err(format!("SHA-256 cannot be computed for {}", shown(file)));
     }
     let hex: String = if cfg!(windows) {
         text.lines().nth(1).unwrap_or_default().replace(' ', "")
@@ -181,10 +304,7 @@ pub fn sha256(root: &Path, file: &Path) -> Result<String, String> {
     if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         Ok(hex)
     } else {
-        Err(format!(
-            "empreinte SHA-256 illisible pour {}",
-            file.display()
-        ))
+        Err(format!("SHA-256 unreadable for {}", shown(file)))
     }
 }
 
@@ -295,6 +415,60 @@ mod tests {
         assert_eq!(ls.split_whitespace().collect::<Vec<_>>(), ["a", "b"]);
         let blob = repo.blob(&r.lab.dir, &r.blob_commit, "a").unwrap();
         assert_eq!(blob.as_deref(), Some(&b"blob a\n"[..]));
+    }
+
+    /// m6: messages show repository paths relative to the root, the cache as `$TS_CACHE`, and any
+    /// other absolute path by its file name only.
+    #[test]
+    fn paths_are_shown_without_the_home_folder() {
+        let base = std::env::temp_dir();
+        let (root, cache) = (base.join("repo"), base.join("cache"));
+        let show = |p: &Path| display_path(p, Some(&root), &cache);
+        assert_eq!(show(&root.join("a").join("b.rs")), "a/b.rs");
+        let mixed = format!("{}/a{}b.rs", root.display(), std::path::MAIN_SEPARATOR);
+        assert_eq!(show(Path::new(&mixed)), "a/b.rs");
+        assert_eq!(show(&root), ".");
+        assert_eq!(
+            show(&cache.join("tmp").join("x.json")),
+            "$TS_CACHE/tmp/x.json"
+        );
+        assert_eq!(
+            show(&base.join("elsewhere").join("f.txt")),
+            "<outside the repository>/f.txt"
+        );
+        assert_eq!(show(Path::new("rel/x.rs")), "rel/x.rs");
+        assert_eq!(
+            display_path(&root.join("a"), None, &cache),
+            "<outside the repository>/a"
+        );
+    }
+
+    /// m8: a scratch folder is unique, removed by its owner, and never removed once its marker
+    /// is not the owner's.
+    #[test]
+    fn scratch_removes_only_its_own_folder() {
+        let base = std::env::temp_dir().join("xtask-scratch-test");
+        let (a, b) = (
+            Scratch::new_in(&base, "t").unwrap(),
+            Scratch::new_in(&base, "t").unwrap(),
+        );
+        assert_ne!(a.path("."), b.path("."));
+        assert!(a.path(SCRATCH_MARKER).is_file());
+        write(&a.path("x"), b"data").unwrap();
+        let kept = a.path(".");
+        drop(a);
+        assert!(!kept.exists());
+        // A folder whose marker is another run's, or that has none: left alone.
+        let foreign = b.path(".");
+        write(&b.path(SCRATCH_MARKER), b"another run").unwrap();
+        drop(b);
+        assert!(foreign.is_dir());
+        let c = Scratch::new_in(&base, "t").unwrap();
+        std::fs::remove_file(c.path(SCRATCH_MARKER)).unwrap();
+        let bare = c.path(".");
+        drop(c);
+        assert!(bare.is_dir());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// The setting is made by the functions that prepare every child, whatever the program.

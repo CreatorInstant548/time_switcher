@@ -44,6 +44,7 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn new(root: PathBuf, all: bool) -> Self {
+        sys::set_root(&root);
         let (meta, files, changed) = (OnceCell::new(), OnceCell::new(), OnceCell::new());
         Self {
             root,
@@ -343,23 +344,12 @@ pub fn audit(cx: &Ctx) -> Outcome {
     }
 }
 
-/// gitleaks à lancer : binaire, empreinte attendue, configuration et dossier d'exceptions.
+/// gitleaks to run: binary, expected SHA-256, configuration and folder of exceptions.
 struct GitleaksSetup {
     bin: PathBuf,
     sha256: String,
     config: PathBuf,
     ignore_dir: PathBuf,
-    /// Folder written for this run only, removed when the setup is dropped (local mode).
-    _temp: Option<TempDir>,
-}
-
-/// Removes the folder written by [`gitleaks_local`] when the step ends, whatever the outcome.
-struct TempDir(PathBuf);
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0); // folder created by this run only
-    }
 }
 
 /// Mode CI (A2) : `CI=true` et `GITHUB_ACTIONS=true`. Le mode CI n'est pas plus permissif :
@@ -372,28 +362,22 @@ pub fn ci_mode() -> bool {
 /// Local machine (AS-50: no more pinned hook copy): binary and SHA-256 from `tools.lock`, and
 /// configuration from `gitleaks.toml`, both read from `origin/main` by `git show`, never from the
 /// working copy, so a branch cannot point at another binary nor add an exception (F2, G5). The
-/// configuration is written to a folder of this run under `TS_CACHE/tmp`.
-fn gitleaks_local(cx: &Ctx) -> Result<GitleaksSetup, String> {
+/// configuration is written to the `config` folder of this run's scratch folder.
+fn gitleaks_local(cx: &Ctx, scratch: &sys::Scratch) -> Result<GitleaksSetup, String> {
     let lock = cx.git(&["show", "origin/main:tools/dev/tools.lock"])?;
     let config = cx.git(&["show", "origin/main:tools/dev/hooks/gitleaks.toml"])?;
     let (bin, sha256) = (
         PathBuf::from(lock_value(&lock, "gitleaks.path")?),
         lock_value(&lock, "gitleaks.sha256")?,
     );
-    let dir = sys::ts_cache()
-        .join("tmp")
-        .join(format!("xtask-gitleaks-config-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir); // leftover of an earlier run with this process id
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{} : {e}", dir.display()))?;
-    // From here on, the folder is removed whatever happens.
-    let temp = TempDir(dir.clone());
+    let dir = scratch.path("config");
+    std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", sys::shown(&dir)))?;
     sys::write(&dir.join("gitleaks.toml"), config.as_bytes())?;
     Ok(GitleaksSetup {
         bin,
         sha256,
         config: dir.join("gitleaks.toml"),
         ignore_dir: dir,
-        _temp: Some(temp),
     })
 }
 
@@ -437,8 +421,8 @@ fn gitleaks_ci(cx: &Ctx) -> Result<GitleaksSetup, String> {
     let main = cx.git(&["show", "origin/main:tools/dev/hooks/gitleaks.toml"])?;
     if sys::read_text(&config)? != main {
         return Err(format!(
-            "{} diffère de tools/dev/hooks/gitleaks.toml d'origin/main (G5)",
-            config.display()
+            "{} differs from tools/dev/hooks/gitleaks.toml of origin/main (G5)",
+            sys::shown(&config)
         ));
     }
     if dir.join(".gitleaksignore").exists() {
@@ -449,38 +433,110 @@ fn gitleaks_ci(cx: &Ctx) -> Result<GitleaksSetup, String> {
         sha256: lock_value(&lock, "gitleaks.linux.sha256")?,
         config,
         ignore_dir: dir,
-        _temp: None,
     })
 }
 
-/// gitleaks épinglé (SHA-256 vérifié), configuration épinglée, `--redact` (F2, SEC0-08). En CI
-/// (A2), binaire et configuration viennent de [`gitleaks_ci`] ; le reste est identique.
+/// A finding of gitleaks' JSON report. Only these fields are read: `Match` and `Secret` are
+/// redacted by `--redact`, and the author, e-mail and message of a commit are never shown.
+#[derive(serde::Deserialize)]
+struct Finding {
+    #[serde(rename = "RuleID")]
+    rule: String,
+    #[serde(rename = "File")]
+    file: String,
+    #[serde(rename = "StartLine")]
+    line: u64,
+    #[serde(rename = "Commit", default)]
+    commit: String,
+}
+
+/// One line per finding of a gitleaks JSON report: rule, file, line and abbreviated commit, never
+/// the secret (m5). `scan` is the folder that was scanned: the report gives absolute paths for it.
+fn findings(report: &str, scan: Option<&Path>) -> Result<Vec<String>, String> {
+    let list: Vec<Finding> =
+        serde_json::from_str(report).map_err(|e| format!("gitleaks report unreadable: {e}"))?;
+    let base = scan.map(|p| p.to_string_lossy().replace('\\', "/"));
+    let relative = |file: &str| {
+        let file = file.replace('\\', "/");
+        let rest = base
+            .as_deref()
+            .and_then(|b| file.strip_prefix(b))
+            .map(|r| r.trim_start_matches('/').to_owned());
+        rest.unwrap_or(file)
+    };
+    Ok(list
+        .iter()
+        .map(|f| {
+            let commit: String = f.commit.chars().take(12).collect();
+            let at = if commit.is_empty() {
+                String::new()
+            } else {
+                format!(" (commit {commit})")
+            };
+            format!("{} at {}:{}{at}", f.rule, relative(&f.file), f.line)
+        })
+        .collect())
+}
+
+/// Runs `gitleaks <sub> <common> --report-path <report> <tail>`, then reads the JSON report: the
+/// findings, or an error when the tool failed without one (never a silent success).
+fn run_gitleaks(
+    cx: &Ctx,
+    bin: &str,
+    sub: &str,
+    common: &[&str],
+    report: &Path,
+    tail: &[&str],
+) -> Result<Vec<String>, String> {
+    let path = report.to_string_lossy().into_owned();
+    let extra = ["--report-format", "json", "--report-path", path.as_str()];
+    let args = [&[sub][..], common, &extra, tail].concat();
+    let ok = run_live(&cx.root, bin, &args)?;
+    let text = sys::read_text(report).map_err(|_| "gitleaks wrote no report".to_owned())?;
+    let scan = (sub == "dir").then(|| Path::new(tail.last().copied().unwrap_or_default()));
+    let found = findings(&text, scan)?;
+    match (ok, found.is_empty()) {
+        (false, true) => Err("gitleaks failed without reporting a finding".to_owned()),
+        _ => Ok(found),
+    }
+}
+
+fn show_findings(found: &[String]) {
+    found.iter().take(50).for_each(|f| println!("  - {f}"));
+    if found.len() > 50 {
+        println!("  - ... and {} more", found.len() - 50);
+    }
+}
+
+/// Pinned gitleaks (SHA-256 checked), pinned configuration, `--redact` (F2, SEC0-08). In CI
+/// (A2), binary and configuration come from [`gitleaks_ci`]; the rest is the same. Findings are
+/// listed from the JSON report, by rule, file and line.
 pub fn gitleaks(cx: &Ctx) -> Outcome {
+    let scratch = tri!(sys::Scratch::new("gitleaks"));
     let setup = tri!(if ci_mode() {
-        println!("  Mode CI : gitleaks.linux.* de tools.lock, configuration d'origin/main.");
+        println!("  CI mode: gitleaks.linux.* of tools.lock, configuration of origin/main.");
         gitleaks_ci(cx)
     } else {
-        gitleaks_local(cx)
+        gitleaks_local(cx, &scratch)
     });
     let GitleaksSetup {
         bin,
         sha256,
         config,
         ignore_dir: dir,
-        _temp,
     } = setup;
     let expected = sha256.to_ascii_lowercase();
     if !bin.is_file() || tri!(sys::sha256(&cx.root, &bin)) != expected {
         return Outcome::Fail(format!(
-            "gitleaks absent ou d'empreinte inattendue ({})",
-            bin.display()
+            "gitleaks missing or with an unexpected SHA-256 ({})",
+            sys::shown(&bin)
         ));
     }
     if !config.is_file() {
-        return Outcome::Fail("gitleaks.toml d'origin/main absent".to_owned());
+        return Outcome::Fail("gitleaks.toml of origin/main missing".to_owned());
     }
     if cx.root.join(".gitleaksignore").exists() {
-        return Outcome::Fail(".gitleaksignore à la racine refusé (SEC0-08)".to_owned());
+        return Outcome::Fail(".gitleaksignore at the root refused (SEC0-08)".to_owned());
     }
     let (cfg, ign) = (
         config.to_string_lossy().into_owned(),
@@ -499,39 +555,51 @@ pub fn gitleaks(cx: &Ctx) -> Outcome {
     ];
     let bin = bin.to_string_lossy().into_owned();
 
-    let scan = sys::ts_cache()
-        .join("tmp")
-        .join(format!("xtask-gitleaks-{}", std::process::id()));
-    let extracted = extract(cx, &scan);
-    let tree_ok = extracted.and_then(|()| {
-        let target = scan.to_string_lossy().into_owned();
-        run_live(
-            &cx.root,
-            &bin,
-            &[&["dir"][..], &common, &[target.as_str()]].concat(),
-        )
-    });
-    let _ = std::fs::remove_dir_all(&scan); // dossier créé ici, qui ne contient que des copies
-    if !tri!(tree_ok) {
-        return Outcome::Fail("gitleaks a trouvé un secret probable dans l'arbre".to_owned());
+    let scan = scratch.path("tree");
+    tri!(extract(cx, &scan));
+    let target = scan.to_string_lossy().into_owned();
+    let tree_report = scratch.path("tree.json");
+    let tree = tri!(run_gitleaks(
+        cx,
+        &bin,
+        "dir",
+        &common,
+        &tree_report,
+        &[&target]
+    ));
+    if !tree.is_empty() {
+        show_findings(&tree);
+        return Outcome::Fail(format!(
+            "gitleaks found {} probable secret(s) in the tree",
+            tree.len()
+        ));
     }
     tri!(cx.git(&["rev-parse", "--verify", "--quiet", "origin/main"]));
     let range = "--log-opts=--text --no-ext-diff --no-textconv origin/main..HEAD";
-    match tri!(run_live(
-        &cx.root,
+    let git_report = scratch.path("commits.json");
+    let commits = tri!(run_gitleaks(
+        cx,
         &bin,
-        &[&["git"][..], &common, &[range, "."]].concat()
-    )) {
-        true => Outcome::Ok("arbre et commits depuis origin/main".to_owned()),
-        false => Outcome::Fail("gitleaks a trouvé un secret probable dans les commits".to_owned()),
+        "git",
+        &common,
+        &git_report,
+        &[range, "."]
+    ));
+    if !commits.is_empty() {
+        show_findings(&commits);
+        return Outcome::Fail(format!(
+            "gitleaks found {} probable secret(s) in the commits",
+            commits.len()
+        ));
     }
+    Outcome::Ok("tree and commits since origin/main".to_owned())
 }
 
-/// Copie des fichiers ordinaires de l'arbre, comme le `pre-commit` : aucun attribut ne masque
-/// leur contenu ; ni `target/` ni lien. Un `.gitleaksignore` est renommé.
+/// Copy of the ordinary files of the tree, like the old `pre-commit`: no attribute hides their
+/// content; no `target/` and no link. A `.gitleaksignore` is renamed. `scan` is created here,
+/// exclusively, inside the run's scratch folder.
 fn extract(cx: &Ctx, scan: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(scan.parent().unwrap_or(scan)).map_err(|e| e.to_string())?;
-    std::fs::create_dir(scan).map_err(|e| format!("{} : {e}", scan.display()))?;
+    std::fs::create_dir(scan).map_err(|e| format!("{}: {e}", sys::shown(scan)))?;
     for rel in cx.files()?.iter().filter(|f| !f.starts_with("target/")) {
         let src = cx.root.join(rel);
         let mut dst = scan.join(rel);
@@ -542,7 +610,7 @@ fn extract(cx: &Ctx, scan: &Path) -> Result<(), String> {
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|()| std::fs::copy(&src, &dst));
-        copied.map_err(|e| format!("copie de {rel} impossible : {e}"))?;
+        copied.map_err(|e| format!("cannot copy {rel}: {e}"))?;
     }
     Ok(())
 }
@@ -554,7 +622,7 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
         if let Err(e) =
             sys::read_text(Path::new(src)).and_then(|t| manifests::check_unsafe_root(name, &t))
         {
-            errors.push(format!("{name} ({src}) : {e}"));
+            errors.push(format!("{name} ({}) : {e}", sys::shown(Path::new(src))));
         }
     }
     // ts_py : chaque allow ou expect de unsafe_code, dans tout fichier, suit un // SAFETY:.
@@ -629,7 +697,7 @@ pub fn features(cx: &Ctx) -> Outcome {
         errors.extend(
             manifests::patch_sections(&text)
                 .into_iter()
-                .map(|l| format!("{} : {l} interdit (E7)", m.display())),
+                .map(|l| format!("{} : {l} interdit (E7)", sys::shown(&m))),
         );
     }
     for host in HOSTS.iter().filter(|h| meta.package(h).is_some()) {
@@ -772,6 +840,8 @@ pub fn spec_map(cx: &Ctx) -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     #[test]
     fn reads_tools_lock() {
         let lock =
@@ -819,6 +889,34 @@ mod tests {
         }
         assert!(super::is_core("ts_kernel") && super::is_core("ts_rules_x"));
         assert!(!super::is_core("xtask") && !super::is_core("ts_host"));
+    }
+
+    /// m5: a finding is listed by rule, file and line, with a short commit, and nothing else of
+    /// the report (secret, author, e-mail, message) is shown.
+    #[test]
+    fn lists_gitleaks_findings_without_the_secret() {
+        let report = r#"[
+          {"RuleID":"github-pat","Description":"d","StartLine":3,"EndLine":3,"Match":"REDACTED",
+           "Secret":"REDACTED","File":"C:\\scratch\\tree\\src\\a.rs","Commit":"",
+           "Author":"Someone","Email":"a@b.c","Message":"msg"},
+          {"RuleID":"aws-access-token","StartLine":9,"File":"b/c.txt",
+           "Commit":"0123456789abcdef0123","Author":"Someone","Email":"a@b.c"}]"#;
+        let scan = Path::new("C:/scratch/tree");
+        let lines = super::findings(report, Some(scan)).unwrap();
+        assert_eq!(
+            lines,
+            [
+                "github-pat at src/a.rs:3",
+                "aws-access-token at b/c.txt:9 (commit 0123456789ab)"
+            ]
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|l| !l.contains("Someone") && !l.contains('@'))
+        );
+        assert!(super::findings("[]", None).unwrap().is_empty());
+        assert!(super::findings("not json", None).is_err());
     }
 
     #[test]
