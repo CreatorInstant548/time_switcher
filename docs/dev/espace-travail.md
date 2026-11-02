@@ -45,7 +45,7 @@ La chaîne est épinglée par `rust-toolchain.toml` (1.99.1, A14), changée seul
 ## 4. Dépendances
 
 - **Une ligne triée par dépendance** dans `[workspace.dependencies]` du `Cargo.toml` racine ; les crates y renvoient par `workspace = true`.
-- Toute nouvelle dépendance directe est **justifiée dans la PR** (SEC0-05) : besoin, alternative écartée, licence, présence d'un `build.rs` ou d'une macro procédurale. Une crate de cryptographie, de décodage de format externe ou de réseau hors de la liste pré-approuvée demande l'avis d'archi-sécu avant la fusion.
+- Toute nouvelle dépendance directe est **justifiée dans la PR** (SEC0-05) : besoin, alternative écartée, licence, présence d'un `build.rs` ou d'une macro procédurale. Les `build.rs` des dépendances transitives sont aussi du code exécuté à la compilation : par exemple, celui de `proc-macro2` compile des sondes avec `rustc` (m9, SEC0-05 reste respectée : la justification porte sur les dépendances directes). Une crate de cryptographie, de décodage de format externe ou de réseau hors de la liste pré-approuvée demande l'avis d'archi-sécu avant la fusion.
 - `deny.toml` (format v2) : crates.io seulement, aucun dépôt git ; licences en liste blanche, GPL, LGPL et AGPL refusées ; vulnérabilités, versions retirées et crates non maintenues refusées ; crates réseau et TLS refusées en phase 0 ; versions `*` refusées. Une entrée `ignore` porte l'identifiant, la raison et la date, et se revoit chaque semaine.
 - Interdits (E7) : sections `[source]`, `[registries]`, `[patch]` et `[replace]`, `linker`, `rustflags` et `target-dir`, dans `Cargo.toml` comme dans `.cargo/config.toml`.
 
