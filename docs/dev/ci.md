@@ -71,8 +71,8 @@ Déclencheurs : `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_
   - `clé:`, `clé: valeur`, `- clé: valeur`, `- valeur` ;
   - une **clé** est un nom nu de `[A-Za-z0-9_-]` avec au plus un `.`, sans guillemets (`"on":` compris) ; les clés explicites `?` sont refusées ;
   - une **valeur** est un scalaire simple sur une ligne (sans `: ` ni `:` final), un scalaire entre guillemets **ouvert et fermé sur la ligne** (`''` permis à l'intérieur des guillemets simples, aucune barre oblique inverse), ou une liste ou un mapping en flux **ouvert et fermé sur la ligne** (crochets appariés, guillemets sautés) ; seul un commentaire (` #…`) peut suivre ;
-  - un en-tête de bloc est `|`, `|-`, `>` ou `>-` (ni `|2`, ni `+`), et seulement après une clé (`- |` est refusé : son indentation n'est pas lue) ;
-  - refusés aussi : `---`, `...`, les directives `%`, plusieurs documents, les ancres, alias et balises, une continuation de scalaire (une ligne plus indentée sous une clé qui a déjà une valeur, ou sous un élément scalaire).
+  - un en-tête de bloc est `|`, `|-`, `>` ou `>-` (ni `|2`, ni `+`), et seulement après une clé (`- |` est refusé : son indentation n'est pas lue) ; la première ligne non vide du bloc en fixe l'indentation, une ligne suivante moins indentée est refusée, et une ligne faite de blancs avant elle aussi, car YAML en déduirait l'indentation (*issue* #95) ;
+  - refusés aussi : `---`, `...`, les directives `%`, plusieurs documents, les ancres, alias et balises, une continuation de scalaire (une ligne plus indentée sous une clé qui a déjà une valeur, ou sous un élément scalaire), et, dans un flux, tout `#` hors d'un scalaire entre guillemets (YAML peut y lire un commentaire qui laisse le flux ouvert) et tout guillemet qui n'ouvre pas un élément (*issue* #95).
   Les règles précédentes (caractères, déclencheurs, exécuteurs, interpolations, épingles) s'appliquent par-dessus. `ci.yml` et `nightly.yml` sont dans la grammaire sans modification. Les tests `refuses_what_continues_on_the_next_line` (les sept fichiers du relecteur, `p4-*` et `p5-flow`, et d'autres) et `reads_the_closed_grammar` (chaque forme acceptée, un refus par forme hors grammaire) la fixent.
 
 Un test par refus (`refuses_events_outside_the_closed_list`, `refuses_line_breaks_that_hide_yaml`, `refuses_unicode_white_space_that_hides_yaml`, `refuses_what_continues_on_the_next_line`, `reads_the_closed_grammar`, `refuses_pull_request_target_and_workflow_run`, `refuses_self_hosted_and_unlisted_runners`, `refuses_a_job_without_its_own_runner`), et `accepts_the_repository_workflows` vérifie que `ci.yml` et `nightly.yml` restent acceptés. Cela ne remplace pas les réglages du dépôt (par exemple `fork_pr_contributor_approval`), qui relèvent de `tools/ci/repo-settings.json`.
@@ -95,7 +95,7 @@ Les valeurs viennent de `tools/dev/tools.lock` (clés `*.linux.*`, même version
 
   Il ne vérifie que la présence des clés : les autres refus du script à l'exécution (versions Linux et Windows différentes, `FUZZ_TOOLCHAIN` absent) restent à sa charge. Sans ce contrôle, `fuzz/` est arrivé sans `cargo-fuzz.version`, et le fuzzing du dimanche a échoué à l'installation au lieu d'être refusé dans la PR.
 
-**Actions** (liste fermée, épinglées par SHA de 40 caractères, version en commentaire) :
+**Actions** (liste fermée, épinglées par SHA de 40 caractères, version en commentaire). L'étape `workflows` compare le chemin entier avant le `@` (*issue* #17, m1) : une sous-action, `.` ou `..` est une autre action, `actions/cache` seul est refusé (le *ruleset* d'actions du dépôt le permet encore, voir [outillage](outillage.md) : la couche du serveur est plus large), et un `uses:` au niveau d'un travail (workflow réutilisable) aussi. `persist-credentials: false` ne compte que comme enfant direct de `with:`, jamais dans le texte d'un bloc :
 
 | Action | Version | SHA |
 |---|---|---|
