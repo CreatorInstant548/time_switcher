@@ -533,3 +533,12 @@ erun\datanalytics\` ; l'utilisateur en est informé.
   - après #121 : agent neuf sur le noyau (#133, #141, #144, #153) ;
   - après le lot 3A : lot C (#152, reste de #91, #130, #139, #119) ;
   - #19 (Dependabot) et #154.
+
+### 02/11 (suite 6) : AS-59 appliquée, relectures
+
+- **Fusions** : #155 (AS-59).
+- **#19 (Dependabot)** : pas de `review-ok` avant le **03/11 à 13:47 UTC**. Le tag `v2.9.3` a moins de 14 jours, et le reste est propre. Après cette date, relancer la passe sur `2b39beb`. Il faudra aussi mettre à jour `docs/dev/ci.md` §3 (tableau des épinglages et phrase qui suit) dans une PR doc dédiée, au moment de la fusion.
+- **#121** : troisième relecture refusée ; fermeture structurelle confiée à un agent neuf (`consigne-noyau-3.md`).
+- **Revue de #129** : relancée, attend un emplacement.
+- **PR en relecture** : #147, #148, #151, #156.
+- **#150** (termes zstd de M41h) : signalée à la conception.
