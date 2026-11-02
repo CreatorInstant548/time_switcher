@@ -452,6 +452,7 @@ mod tests {
             dry_run: true,
             ci: false,
             cache: r.lab.dir.join(".cache"),
+            ci_workflow: Default::default(),
             runner: Box::new(System),
         };
         let ls = repo

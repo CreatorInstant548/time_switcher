@@ -67,30 +67,6 @@ pub fn carnet_approves(section: &str, sha: &str) -> bool {
         .any(|(i, _)| !section[i + needle.len()..].starts_with(|c: char| c.is_ascii_hexdigit()))
 }
 
-/// La PR dont `sha` est le squash, par l'API (J3) ; `Err(motif)` d'anomalie dans `Ok`.
-fn pull_of(repo: &Repo, sha: &str) -> Result<Result<Value, String>, String> {
-    let s = &repo.slug;
-    let list = repo.api_all(&format!("repos/{s}/commits/{sha}/pulls?per_page=100"))?;
-    let n = match judge_squash(&list, sha) {
-        Ok((n, _)) => n,
-        Err(why) => return Ok(Err(why)),
-    };
-    let pr = repo.api(&format!("repos/{s}/pulls/{n}"))?;
-    let ok = pr["merged"].as_bool() == Some(true)
-        && pr["merge_commit_sha"].as_str() == Some(sha)
-        && pr["base"]["ref"].as_str() == Some("main")
-        && pr["head"]["sha"]
-            .as_str()
-            .is_some_and(|h| is_sha(h) && h != sha);
-    Ok(if ok {
-        Ok(pr)
-    } else {
-        Err(format!(
-            "PR #{n} non fusionnée dans main par ce commit (J3)"
-        ))
-    })
-}
-
 /// Commits checked by `--origin` (AS-42).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
@@ -146,11 +122,17 @@ fn dates(log: &str) -> Result<BTreeMap<&str, i64>, String> {
 
 /// J3: `commits/<sha>/pulls` must list exactly one PR whose `merge_commit_sha` is `sha`, merged
 /// (`merged_at` set) into `main`, and whose head is another commit. Its number and head, or the
-/// anomaly. For a non-sensitive commit with `--origin` (AS-42); [`pull_of`] reads `pulls/<n>`
-/// after it for a sensitive one.
+/// anomaly. For a non-sensitive commit with `--origin` (AS-42), and for every sensitive commit
+/// (V5: read on this run; `merged_at` stands for the `merged` of `pulls/<n>`, no longer read, #55).
 ///
 /// Head != `sha` (AS-44 AA1): a PR head pushed straight to `main`, ruleset off, is marked merged
 /// by GitHub with `merge_commit_sha` set to that very commit; a squash is always a new commit.
+///
+/// A rebase merge of a one-commit PR also gives a new commit (new committer) whose
+/// `merge_commit_sha` is that commit: J3 cannot tell it from a squash. Harmless (review of #73):
+/// `allow_rebase_merge` is `false` and pinned by S2 in `tools/ci/repo-settings.json` (checked by
+/// `-Check`), the ruleset of `main` only allows `squash` (`allowed_merge_methods`), and on the
+/// `<n>d` window G3 still requires `ci-ok` on the PR head.
 pub fn judge_squash(pulls: &[Value], sha: &str) -> Result<(u64, String), String> {
     let found: Vec<&Value> = pulls
         .iter()
@@ -190,8 +172,12 @@ pub fn judge_squash(pulls: &[Value], sha: &str) -> Result<(u64, String), String>
 /// It must still have exactly one parent: sensitivity is computed against that parent, so a commit
 /// with none or several could not be classified (and `required_linear_history` forbids it anyway).
 ///
-/// V5 (AS-39): for a commit that touches a sensitive path, the PR (`pulls/<n>`: head, `merged`,
-/// `merge_commit_sha`), G3, the approvals and then J4 use facts read from GitHub on this run.
+/// V5 (AS-39): for a commit that touches a sensitive path, the PR (`commits/<sha>/pulls`: head,
+/// `merged_at`, `merge_commit_sha`), G3, the approvals and then J4 use facts read from GitHub on
+/// this run. GitHub reads per commit (#55, AS-39): none for a non-sensitive commit without
+/// `--origin`; 1 with `all`; 3 on the `<n>d` window (J3, then the check runs and the workflow runs
+/// of G3; the `ci.yml` id is read once per run); 4 for a sensitive commit (the same 3, plus its
+/// comments), and more only when an approval must be carried over (AS-40).
 fn check_commit(
     repo: &Repo,
     rules: &sensitive::Rules,
@@ -216,15 +202,23 @@ fn check_commit(
         .map(str::to_owned)
         .collect();
     let hits = sensitive::hits(repo, rules, &parent, sha, &files)?;
-    if hits.is_empty() && origin != Extra::Nothing {
-        let pulls = repo.api_all(&format!(
-            "repos/{}/commits/{sha}/pulls?per_page=100",
-            repo.slug
-        ))?;
-        let (n, head) = match judge_squash(&pulls, sha) {
-            Ok(pr) => pr,
-            Err(why) => return Ok((vec![why], String::new())),
-        };
+    if hits.is_empty() && origin == Extra::Nothing {
+        return Ok((
+            Vec::new(),
+            "non sensible, PR et ci-ok imposés par le ruleset".to_owned(),
+        ));
+    }
+    // J3 in one read (#55): for a sensitive commit too, this list read on this run gives the PR,
+    // its head and its merge (V5); `pulls/<n>` is not read again.
+    let pulls = repo.api_all(&format!(
+        "repos/{}/commits/{sha}/pulls?per_page=100",
+        repo.slug
+    ))?;
+    let (n, head) = match judge_squash(&pulls, sha) {
+        Ok(pr) => pr,
+        Err(why) => return Ok((vec![why], String::new())),
+    };
+    if hits.is_empty() {
         let mut note = format!("non sensible, squash de la PR #{n} (AS-42)");
         if origin == Extra::J3G3 {
             if PRE_CI.contains(&(n, sha)) {
@@ -237,18 +231,6 @@ fn check_commit(
         }
         return Ok((Vec::new(), note));
     }
-    if hits.is_empty() {
-        return Ok((
-            Vec::new(),
-            "non sensible, PR et ci-ok imposés par le ruleset".to_owned(),
-        ));
-    }
-    let pr = match pull_of(repo, sha)? {
-        Ok(pr) => pr,
-        Err(why) => return Ok((vec![why], String::new())),
-    };
-    let n = pr["number"].as_u64().unwrap_or_default();
-    let head = pr["head"]["sha"].as_str().unwrap_or_default().to_owned();
     let mut bad = Vec::new();
     let mut note = format!("#{n}, tête {}", &head[..7]);
     if PRE_CI.contains(&(n, sha)) {
@@ -375,15 +357,7 @@ pub fn settings_or_report(repo: &Repo) -> Result<bool, String> {
                    d'administration ; l'orchestrateur le lance chaque jour depuis la copie \
                    principale (AS-50 AU3)";
         println!("  AVERTISSEMENT : {msg}");
-        // Not from the tests, which also run in CI.
-        if let Some(path) = sys::env("GITHUB_STEP_SUMMARY").filter(|_| !cfg!(test)) {
-            let path = std::path::PathBuf::from(path);
-            let mut text = sys::read(&path).unwrap_or_default();
-            text.extend_from_slice(format!("\n> [!WARNING]\n> {msg}\n").as_bytes());
-            if let Err(e) = sys::write(&path, &text) {
-                println!("  (résumé du travail non écrit : {e})");
-            }
-        }
+        summary_warning(msg);
         return Ok(true);
     }
     let (code, out, err) = run_settings_check(repo)?;
@@ -405,6 +379,66 @@ pub fn settings_or_report(repo: &Repo) -> Result<bool, String> {
             "repo-settings.ps1 -Check n'a pas pu conclure (code {code:?}) : {}",
             err.trim()
         )),
+    }
+}
+
+/// Adds `msg` as a warning to the summary of the GitHub Actions job, when there is one (CI).
+fn summary_warning(msg: &str) {
+    // Not from the tests, which also run in CI.
+    if let Some(path) = sys::env("GITHUB_STEP_SUMMARY").filter(|_| !cfg!(test)) {
+        let path = std::path::PathBuf::from(path);
+        let mut text = sys::read(&path).unwrap_or_default();
+        text.extend_from_slice(format!("\n> [!WARNING]\n> {msg}\n").as_bytes());
+        if let Err(e) = sys::write(&path, &text) {
+            println!("  (résumé du travail non écrit : {e})");
+        }
+    }
+}
+
+/// AS-39 (#55): below this share of the GitHub API quota left, `verify-main` warns.
+const QUOTA_ALERT_PERCENT: u64 = 20;
+
+/// The core quota of a `rate_limit` answer: (requests left, limit per hour), and whether what is
+/// left is under [`QUOTA_ALERT_PERCENT`] of the limit.
+fn quota(v: &Value) -> Result<(u64, u64, bool), String> {
+    let core = &v["resources"]["core"];
+    match (core["remaining"].as_u64(), core["limit"].as_u64()) {
+        (Some(left), Some(limit)) if limit > 0 && left <= limit => Ok((
+            left,
+            limit,
+            left.saturating_mul(100) < limit.saturating_mul(QUOTA_ALERT_PERCENT),
+        )),
+        _ => Err("unreadable rate_limit answer".to_owned()),
+    }
+}
+
+/// AS-39 (#55): the GitHub API quota left after the pass, in the log and, when it is low, as a
+/// warning in the job summary. `rate_limit` costs no quota; it is read once, without the V4
+/// retries, since this line never changes the result.
+fn report_quota(repo: &Repo) {
+    let read = repo
+        .runner
+        .run(&repo.main, "gh", &["api", "rate_limit"])
+        .and_then(|(code, out, err)| match code {
+            Some(0) => serde_json::from_slice(&out).map_err(|e| format!("unreadable answer: {e}")),
+            _ => Err(err.trim().to_owned()),
+        });
+    match read.and_then(|v| quota(&v)) {
+        Ok((left, limit, low)) => {
+            println!("  GitHub API quota: {left} of {limit} requests left this hour");
+            if low {
+                let msg = format!(
+                    "GitHub API quota low after verify-main: {left} of {limit} requests left \
+                     (alert under {QUOTA_ALERT_PERCENT} %, AS-39, #55)"
+                );
+                println!("  WARNING: {msg}");
+                if repo.ci {
+                    println!("::warning::{msg}");
+                }
+                summary_warning(&msg);
+            }
+        }
+        Err(e) => println!("  GitHub API quota not read: {e}"),
     }
 }
 
@@ -504,17 +538,21 @@ pub fn main(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     let result = Repo::open(dry_run, true).and_then(|repo| {
-        refresh(&repo)?;
-        match origin {
-            Some(Origin::All) => println!("  --origin all: J3 on every commit (AS-42)"),
-            Some(Origin::Since(t)) => {
-                println!(
-                    "  --origin: J3 and G3 on every commit since Unix time {t} (AS-42, AS-44)"
-                );
+        let result = refresh(&repo).and_then(|()| {
+            match origin {
+                Some(Origin::All) => println!("  --origin all: J3 on every commit (AS-42)"),
+                Some(Origin::Since(t)) => {
+                    println!(
+                        "  --origin: J3 and G3 on every commit since Unix time {t} (AS-42, AS-44)"
+                    );
+                }
+                None => {}
             }
-            None => {}
-        }
-        verify_or_report(&repo, origin)
+            verify_or_report(&repo, origin)
+        });
+        // Whatever the result, a failure included (#55).
+        report_quota(&repo);
+        result
     });
     exit_code(result)
 }
@@ -597,6 +635,7 @@ mod tests {
             dry_run,
             ci,
             cache: std::env::temp_dir(),
+            ci_workflow: Default::default(),
             runner: Box::new(Settings(code, Rc::clone(&calls))),
         };
         let result = settings_or_report(&repo);
@@ -662,6 +701,7 @@ mod tests {
             dry_run: true,
             ci,
             cache: std::env::temp_dir(),
+            ci_workflow: Default::default(),
             runner: Box::new(Refs(present.to_vec(), Rc::clone(&calls))),
         };
         let result = refresh(&repo);
@@ -785,17 +825,11 @@ mod tests {
                 format!("{COMMIT} 2000\n{PARENT} 1000\n"),
             ),
             (
-                "gh api repos/o/r/pulls/7".to_owned(),
-                json!({"number": 7, "merged": true, "merge_commit_sha": COMMIT,
-                       "base": {"ref": "main"}, "head": {"sha": HEAD}})
-                .to_string(),
-            ),
-            (
                 "gh api repos/o/r/actions/workflows/ci.yml".to_owned(),
                 json!({"id": 9}).to_string(),
             ),
             (format!("{s}/commits/{HEAD}/check-runs"), runs.to_string()),
-            ("gh api repos/o/r/actions/runs".to_owned(), wfr.to_string()),
+            (format!("{s}/actions/runs"), wfr.to_string()),
             (
                 format!("{s}/issues/7/comments"),
                 json!([
@@ -819,6 +853,7 @@ mod tests {
             dry_run: true,
             ci,
             cache: std::env::temp_dir(),
+            ci_workflow: Default::default(),
             runner: Box::new(Fake(answers, Rc::clone(&calls))),
         };
         (repo, calls)
@@ -992,7 +1027,7 @@ mod tests {
         let (r, calls) = origin_check("docs/a.md", false, Some(origin), &over);
         let first = |s: &str| s.chars().next().unwrap();
         let bad = r.unwrap().iter().map(|(s, _)| first(s)).collect();
-        let read = commits
+        let read: Vec<char> = commits
             .iter()
             .filter(|c| {
                 calls
@@ -1001,6 +1036,14 @@ mod tests {
             })
             .map(|c| c.0)
             .collect();
+        // #55: the `ci.yml` workflow id is read once per pass when G3 finds a `ci-ok` (a squash
+        // read on the `<n>d` window), however many commits it judges; never otherwise.
+        let g3 = matches!(origin, Origin::Since(_))
+            && commits
+                .iter()
+                .any(|c| matches!(c.2, Via::Squash) && read.contains(&c.0));
+        let ids = calls.iter().filter(|c| c.contains("workflows/ci.yml"));
+        assert_eq!(ids.count(), usize::from(g3), "{calls:#?}");
         (bad, read)
     }
 
@@ -1118,19 +1161,55 @@ mod tests {
     }
 
     /// V5 (AS-39): a sensitive commit reads the PR, G3 and the approvals on GitHub on every run;
-    /// nothing is kept between runs.
+    /// nothing is kept between runs. #55: in 4 reads, plus the `ci.yml` id once per pass; the PR
+    /// comes from `commits/<sha>/pulls`, and `pulls/<n>` is no longer read.
     #[test]
     fn sensitive_commit_reads_github_every_run() {
         for _ in 0..2 {
             let (r, calls) = history_check("tools/xtask/src/x.rs", true, &[]);
             assert_eq!(r, Ok(vec![]));
             for read in [
-                "gh api repos/o/r/pulls/7",
+                &format!("/commits/{COMMIT}/pulls") as &str,
                 "/check-runs",
+                &format!("/actions/runs?head_sha={HEAD}&"),
                 "/issues/7/comments",
+                "/actions/workflows/ci.yml",
             ] {
-                assert!(calls.iter().any(|c| c.contains(read)), "{read}: {calls:#?}");
+                let n = calls.iter().filter(|c| c.contains(read)).count();
+                assert_eq!(n, 1, "{read}: {calls:#?}");
             }
+            assert_eq!(gh_calls(&calls), 5, "{calls:#?}");
+            assert!(!calls.iter().any(|c| c.contains("/pulls/7")), "{calls:#?}");
+        }
+    }
+
+    /// #55, AS-39: on the `<n>d` window, a non-sensitive commit costs 3 reads (J3, then the check
+    /// runs and the workflow runs of G3), plus the `ci.yml` id once per pass.
+    #[test]
+    fn window_commit_costs_three_reads() {
+        let (r, calls) = origin_check("docs/a.md", false, Some(Origin::Since(1000)), &[]);
+        assert_eq!(r, Ok(vec![]), "{calls:#?}");
+        assert_eq!(gh_calls(&calls), 4, "{calls:#?}");
+    }
+
+    /// AS-39 (#55): the quota left is read from `rate_limit`; under 20 % of the limit, an alert.
+    #[test]
+    fn quota_alert_under_a_fifth() {
+        let q = |left: u64, limit: u64| {
+            quota(&json!({"resources": {"core": {"remaining": left, "limit": limit}}}))
+        };
+        assert_eq!(q(1000, 1000), Ok((1000, 1000, false)));
+        assert_eq!(q(200, 1000), Ok((200, 1000, false)));
+        assert_eq!(q(199, 1000), Ok((199, 1000, true)));
+        assert_eq!(q(0, 5000), Ok((0, 5000, true)));
+        for bad in [
+            json!({}),
+            json!({"resources": {"core": {"remaining": 1}}}),
+            json!({"resources": {"core": {"remaining": 1, "limit": 0}}}),
+            json!({"resources": {"core": {"remaining": 9, "limit": 5}}}),
+            json!({"resources": {"core": {"remaining": "1", "limit": 5}}}),
+        ] {
+            assert!(quota(&bad).is_err(), "{bad}");
         }
     }
 
@@ -1197,7 +1276,7 @@ mod tests {
                 json!({"id": 9}).to_string(),
             ),
             (format!("{s}/commits/{h}/check-runs"), runs.to_string()),
-            ("gh api repos/o/r/actions/runs".to_owned(), wfr.to_string()),
+            (format!("{s}/actions/runs"), wfr.to_string()),
             (
                 format!("{s}/issues/7/comments"),
                 json!([
