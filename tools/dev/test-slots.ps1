@@ -1,6 +1,7 @@
 # tools/dev/test-slots.ps1 : essais de session-start.ps1 et vérifications bloquantes de dev-agents §6.3.
 # 1. Logique des baux, dans un TS_CACHE jetable : main automatique, -Acquire, -Release, idempotence,
-#    3 emplacements pris, bail orphelin, bail tenu sans jonction, repli CARGO_TARGET_DIR.
+#    3 emplacements pris, bail orphelin, bail tenu sans jonction, repli CARGO_TARGET_DIR, et invalidation des
+#    empreintes des crates de l'espace de travail quand un emplacement change de worktree (#56).
 # 2. Avec -Real : dans les vrais emplacements (TS_CACHE\target), un worktree jetable d'un dépôt jetable
 #    reçoit un emplacement, compile un projet Cargo jetable à travers la jonction (chemin long), puis
 #    git clean -xdf et git worktree remove ne doivent pas abîmer l'emplacement. Le bail est libéré à la fin.
@@ -59,6 +60,40 @@ try {
   Set-Content "$fc\target\w1\garde.txt" 'x'
   $o = Start-Session $wts[0] $fc -Release
   Check '-Release : bail libéré, jonction retirée, contenu intact' ((-not (Test-Path "$fc\target\w1.lease")) -and -not (Test-Path "$($wts[0])\target") -and (Test-Path "$fc\target\w1\garde.txt")) $o
+  # #56: when a slot changes worktree, the Cargo fingerprints of the workspace crates (and only those) are deleted;
+  # a junction is never followed; the same worktree loses nothing.
+  $fps = @("$fc\target\w1\debug\.fingerprint", "$fc\target\w1\fuzz-ws\x86_64-pc-windows-msvc\debug\.fingerprint")
+  $kept = @('essai_ws_extra-0123456789abcdef', 'essai_ws-short', 'serde-0123456789abcdef')
+  $mine = @('essai_ws-0123456789abcdef', 'essai_ws-fedcba9876543210')
+  function Seed-Fingerprints([string[]]$Names) {
+    foreach ($d in $fps) { foreach ($n in $Names) { New-Item -ItemType Directory -Force "$d\$n" | Out-Null; Set-Content "$d\$n\unit.json" 'x' } }
+  }
+  function Count-Fingerprints([string[]]$Names) { @($fps | ForEach-Object { $d = $_; $Names | Where-Object { Test-Path "$d\$_" } }).Count }
+  New-Item -ItemType Directory -Force "$($wts[0])\crates\a" | Out-Null
+  Set-Content "$($wts[0])\Cargo.toml" "[workspace]`nmembers = [`"crates/a`"]`n"
+  Set-Content "$($wts[0])\crates\a\Cargo.toml" "[package]`nkeywords = [`"x`"]`nname = `"essai_ws`"`nversion = `"0.0.0`"`n[dependencies]`nname = `"pas_un_paquet`"`n"
+  Seed-Fingerprints ($mine + $kept)
+  $outside = Join-Path $tmp 'outside-fingerprints'; New-Item -ItemType Directory -Force $outside | Out-Null; Set-Content "$outside\sentinel.txt" 'x'
+  New-Item -ItemType Junction -Path "$($fps[0])\essai_ws-aaaaaaaaaaaaaaaa" -Target $outside | Out-Null
+  Set-Content "$fc\target\w1\last-worktree.txt" $wts[3] -NoNewline   # the last to build here: another worktree
+  $o = Start-Session $wts[0] $fc -Acquire
+  Check '#56 worktree change: fingerprints of the worktree crates deleted, the rest kept' (
+    (Count-Fingerprints $mine) -eq 0 -and (Count-Fingerprints $kept) -eq $kept.Count * $fps.Count -and -not (Test-Path "$($fps[0])\essai_ws-aaaaaaaaaaaaaaaa")) $o
+  Check '#56 a junction in .fingerprint is removed, not followed' (Test-Path "$outside\sentinel.txt") $o
+  Check '#56 the last worktree is recorded in the slot' ((Get-Content "$fc\target\w1\last-worktree.txt" -Raw) -eq $wts[0]) $o
+  Seed-Fingerprints $mine
+  $o = Start-Session $wts[0] $fc -Release
+  $o = Start-Session $wts[0] $fc -Acquire
+  Check '#56 same worktree: nothing deleted' ((Count-Fingerprints $mine) -eq $mine.Count * $fps.Count -and $o -notmatch 'removed') $o
+  $o = Start-Session $wts[0] $fc -Release
+  $w6 = Join-Path $tmp 'wt6'; & git -C $repo worktree add -q -b claude/w6 $w6 2>&1 | Out-Null
+  Set-Content "$w6\Cargo.toml" "[package]`nname = `"essai_ws6`"`nversion = `"0.0.0`"`n"
+  Seed-Fingerprints @('essai_ws6-0123456789abcdef')
+  $o = Start-Session $w6 $fc -Acquire
+  Check '#56 other worktree: its crates are invalidated, dependencies stay' (
+    (Count-Fingerprints @('essai_ws6-0123456789abcdef')) -eq 0 -and (Count-Fingerprints $kept) -eq $kept.Count * $fps.Count -and (Get-Content "$fc\target\w1\last-worktree.txt" -Raw) -eq $w6) $o
+  $o = Start-Session $w6 $fc -Release
+
   # Repli CARGO_TARGET_DIR (racine > 100 car.) : guillemet simple échappé dans CLAUDE_ENV_FILE.
   $qc = Join-Path $tmp "ca'che"; $long = Join-Path $tmp ('l' * (101 - $tmp.Length))
   & git -C $repo worktree add -q -b claude/long $long 2>&1 | Out-Null
