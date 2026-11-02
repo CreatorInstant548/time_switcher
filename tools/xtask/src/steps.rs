@@ -270,14 +270,26 @@ const STRICT_CRATE_PREFIX: &str = "bevy_";
 /// a dependency upgrade is a warning. The other entries keep the flag. Fails closed: a line that
 /// carries `allow-invalid` in any other layout than [`entry`] (no blanks around `=`,
 /// several lines, single quotes, an escaped crate name, two entries on a line, a flag on a line
-/// of its own) is an error, never skipped. Returns the text and the number of entries made strict.
+/// of its own) is an error, never skipped; so are a backslash outside comments, a multi-line
+/// string and a lenient entry on a bevy crate outside `closure`. Returns the text and the number
+/// of entries made strict.
 fn strict_clippy_config(text: &str, closure: &BTreeSet<String>) -> Result<(String, usize), String> {
     let (mut out, mut strict) = (String::new(), 0);
     for line in text.lines() {
-        // A unicode escape can spell any key (`"allow\\u002dinvalid" = true`): none is read.
-        if !line.trim_start().starts_with('#') && (line.contains("\\u") || line.contains("\\U")) {
+        let comment = line.trim_start().starts_with('#');
+        // In a multi-line string a line starting with `#` is text, not a comment: none may open,
+        // so that every `#` line is a real comment (review of #114).
+        if !comment && (line.contains("\"\"\"") || line.contains("'''")) {
             return Err(format!(
-                "clippy.toml: unicode escape refused: {}",
+                "clippy.toml: multi-line string refused: {}",
+                line.trim()
+            ));
+        }
+        // An escape can spell any key (`"allow\\u002dinvalid"`, `"allow\\x2dinvalid"` in TOML
+        // 1.1): no backslash at all outside comments (review of #114).
+        if !comment && line.contains('\\') {
+            return Err(format!(
+                "clippy.toml: backslash refused outside comments: {}",
                 line.trim()
             ));
         }
@@ -293,7 +305,17 @@ fn strict_clippy_config(text: &str, closure: &BTreeSet<String>) -> Result<(Strin
                 ));
             };
             let krate = e.path.split("::").next().unwrap_or(e.path);
-            if e.lenient && krate.starts_with(STRICT_CRATE_PREFIX) && closure.contains(krate) {
+            let bevy = krate.starts_with(STRICT_CRATE_PREFIX);
+            // A bevy crate the kernel does not depend on (a typo in the name) would keep its
+            // flag, and the ban stay dead without a word (review of #114).
+            if e.lenient && bevy && !closure.contains(krate) {
+                return Err(format!(
+                    "clippy.toml: {krate} is not in the dependency graph of ts_kernel, so its \
+                     ban cannot be checked (a typo, or extend kernel_closure): {}",
+                    line.trim()
+                ));
+            }
+            if e.lenient && bevy {
                 strict += 1;
                 let indent = &line[..line.len() - line.trim_start().len()];
                 format!(
@@ -1273,6 +1295,28 @@ mod tests {
             "{ path = \"bevy_ecs::X\", reason = \"caf\\u00e9\" },",
         ] {
             assert!(super::strict_clippy_config(odd, &closure).is_err(), "{odd}");
+        }
+        // Review of #114: any backslash outside comments (`\x2d` of TOML 1.1 included), a
+        // multi-line string (its `#` lines are text), and a bevy crate outside the closure.
+        for odd in [
+            "{ path = \"bevy_ecs::X\", reason = \"r\", \"allow\\x2dinvalid\" = true },",
+            "{ path = \"rand::rng\", reason = \"a \\\\ b\" },",
+            "x = \"\"\"\n# { path = \"bevy_ecs::X\", reason = \"r\", allow-invalid = true },\n\"\"\"",
+            "x = '''\n# y\n'''",
+            "{ path = \"bevy_ecz::X\", reason = \"r\", allow-invalid = true },",
+        ] {
+            assert!(super::strict_clippy_config(odd, &closure).is_err(), "{odd}");
+        }
+        for fine in [
+            "# a comment with a \\ backslash",
+            "# never write '''raw''' strings here",
+            "{ path = \"bevy_ecz::X\", reason = \"r\" },",
+            "{ path = \"rand::rng\", reason = \"r\", allow-invalid = true },",
+        ] {
+            assert!(
+                super::strict_clippy_config(fine, &closure).is_ok(),
+                "{fine}"
+            );
         }
         // Whatever the crate: a flag in a layout that cannot be read is an error too.
         assert!(
