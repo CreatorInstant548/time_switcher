@@ -55,6 +55,9 @@ pub(crate) struct Src {
     raw: Vec<bool>,
     /// The next identifier is raw (its `r#` has just been removed).
     pending_raw: bool,
+    /// Lines holding a `// SAFETY:` line comment with no code before it (not in a literal nor
+    /// in a block comment), in increasing order.
+    pub(crate) safety_lines: Vec<usize>,
 }
 
 impl Src {
@@ -162,7 +165,7 @@ impl Src {
     /// For each character: inside a region handed to a macro (see [`Src::opens_macro`]), and
     /// inside the body of a `macro_rules!`. Such a region is read strictly: a form that is only
     /// allowed outside it is refused inside.
-    fn macro_regions(&self) -> (Vec<bool>, Vec<bool>) {
+    pub(crate) fn macro_regions(&self) -> (Vec<bool>, Vec<bool>) {
         let ends: BTreeMap<usize, (usize, usize)> =
             self.tokens().into_iter().map(|t| (t.1, t)).collect();
         // One entry per open delimiter: 0 an ordinary one, 1 the arguments of a call, 2 the body
@@ -263,7 +266,7 @@ pub fn code_lines(source: &str) -> Vec<String> {
     lines.into_iter().map(|(_, text)| text).collect()
 }
 
-/// Retire commentaires et blancs, retire `r#` devant un identifiant, marque les littéraux.
+/// Removes comments and blanks, removes `r#` before an identifier, marks the literals.
 pub(crate) fn normalize(source: &str) -> Src {
     let s: Vec<char> = source.chars().collect();
     let mut src = Src::default();
@@ -277,8 +280,15 @@ pub(crate) fn normalize(source: &str) -> Src {
             gap = true;
             i += 1;
         } else if c == '/' && at(i + 1) == Some('/') {
+            let start = i;
             while i < s.len() && s[i] != '\n' {
                 i += 1;
+            }
+            // A real `// SAFETY:` line comment, with no code before it on its line (#91).
+            let alone = src.line.last() != Some(&line);
+            let compact: String = s[start..i].iter().filter(|c| !c.is_whitespace()).collect();
+            if alone && compact.starts_with("//SAFETY:") {
+                src.safety_lines.push(line);
             }
             gap = true;
         } else if c == '/' && at(i + 1) == Some('*') {
@@ -304,13 +314,13 @@ pub(crate) fn normalize(source: &str) -> Src {
             && at(i + 1) == Some('#')
             && at(i + 2).is_some_and(|d| d.is_alphabetic() || d == '_')
         {
-            i += 2; // r#ident : l'identifiant seul compte
+            i += 2; // r#ident: only the identifier counts
             src.pending_raw = true;
         } else if c == 'r'
             && (!prev_ident || (matches!(s[i - 1], 'b' | 'c') && (i < 2 || !is_ident(s[i - 2]))))
             && at(i + 1 + s[i + 1..].iter().take_while(|&&h| h == '#').count()) == Some('"')
         {
-            // Chaîne brute r#"…"# : jusqu'au guillemet suivi du même nombre de #.
+            // Raw string r#"…"#: up to the quote followed by as many #.
             let hashes = s[i + 1..].iter().take_while(|&&h| h == '#').count();
             let start = i;
             i += hashes + 2;
@@ -332,7 +342,7 @@ pub(crate) fn normalize(source: &str) -> Src {
                 gap = false;
             }
         } else if c == '"' || c == '\'' {
-            // Chaîne "…" (échappements compris), ou caractère 'x' / '\…' ; sinon durée de vie.
+            // String "…" (escapes included), or character 'x' / '\…'; else a lifetime.
             let len = if c == '"' {
                 let mut k = i + 1;
                 while k < s.len() && s[k] != '"' {
@@ -377,14 +387,7 @@ pub(crate) fn normalize(source: &str) -> Src {
 pub fn clippy_exemptions(source: &str) -> Vec<usize> {
     let src = normalize(source);
     let mut found = Vec::new();
-    let next = |end: usize, w: &str| {
-        src.text[end..]
-            .iter()
-            .take(w.chars().count())
-            .copied()
-            .eq(w.chars())
-            && !src.string.get(end).copied().unwrap_or(false)
-    };
+    let next = |end: usize, w: &str| next_is(&src, end, w);
     let ((in_macro, rules), in_use) = (src.macro_regions(), src.in_use());
     found.extend(src.metavariable_attributes(&rules));
     for tok in src.tokens() {
@@ -394,11 +397,10 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
         // Inside a region handed to a macro, nothing is exempt: tokens there become whatever the
         // macro makes of them (`m!(x cfg(not(clippy)))` into `#[cfg(not(clippy))]`).
         let strict = in_macro[start];
-        let opens = matches!(prev, Some('[' | ',' | '(')) || strict;
         // Outside such a region, `cfg` after an identifier (`fn cfg(…)`), a `.` or a `::` names
         // something else.
         let named = !strict && prev.is_some_and(|c| is_ident(c) || c == '.' || c == ':');
-        let path = word == "path" && next(end, "=") && opens;
+        let inclusion = includes_code(&src, tok, &in_macro, &in_use);
         let lint = matches!(word.as_str(), "allow" | "expect" | "warn" | "deny")
             && (prev != Some('.') || strict)
             && next(end, "(")
@@ -426,13 +428,51 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
         });
         let disallowed = DISALLOWED_LINTS.contains(&word.as_str())
             || (word.starts_with("disallowed_") && src.follows(start, "clippy::"));
-        let include = INCLUDES.contains(&word.as_str())
-            && (next(end, "!") || prev == Some(':') || in_use[start] || strict);
-        if disallowed || include || path || lint || cfg {
+        if disallowed || inclusion || lint || cfg {
             found.push(src.line[start]);
         }
     }
     found.sort_unstable();
+    found.dedup();
+    found
+}
+
+/// The text after `end` starts with `w`, outside literals.
+fn next_is(src: &Src, end: usize, w: &str) -> bool {
+    src.text[end..]
+        .iter()
+        .take(w.chars().count())
+        .copied()
+        .eq(w.chars())
+        && !src.string.get(end).copied().unwrap_or(false)
+}
+
+/// The token `tok` brings in code or data from another file: `include`, `include_str` or
+/// `include_bytes` called (`!`), in a path, in a `use` or in the arguments of a macro, or
+/// `path = …` in an attribute (`#[path]`, `cfg_attr(…, path = …)`, macro argument).
+fn includes_code(src: &Src, tok: (usize, usize), in_macro: &[bool], in_use: &[bool]) -> bool {
+    let (start, end) = tok;
+    let word = src.word(tok);
+    let prev = start.checked_sub(1).map(|p| src.text[p]);
+    let strict = in_macro[start];
+    let opens = matches!(prev, Some('[' | ',' | '(')) || strict;
+    let path = word == "path" && next_is(src, end, "=") && opens;
+    let include = INCLUDES.contains(&word.as_str())
+        && (next_is(src, end, "!") || prev == Some(':') || in_use[start] || strict);
+    path || include
+}
+
+/// Lines where `source` brings in another file (see [`includes_code`]), whose content a check
+/// reading the `.rs` files of a crate would not see (#91, `ts_py`).
+pub fn file_inclusions(source: &str) -> Vec<usize> {
+    let src = normalize(source);
+    let ((in_macro, _), in_use) = (src.macro_regions(), src.in_use());
+    let mut found: Vec<usize> = src
+        .tokens()
+        .into_iter()
+        .filter(|&tok| includes_code(&src, tok, &in_macro, &in_use))
+        .map(|(start, _)| src.line[start])
+        .collect();
     found.dedup();
     found
 }
@@ -614,6 +654,30 @@ mod tests {
         assert_eq!(hits, 1, "{lines:?}");
         assert!(lines.contains(&"constS:&str=;".to_owned()), "{lines:?}");
         assert!(code_lines("/* /* #![forbid(unsafe_code)] */ */").is_empty());
+    }
+
+    /// #91, review of this PR: a file that brings in another one is reported, so that the
+    /// `unsafe_code` scan of `ts_py` reads all its code.
+    #[test]
+    fn file_inclusions_are_reported() {
+        for (form, line) in [
+            ("fn a() {}\ninclude!(\"evil.in\");", 2),
+            ("#[path = \"../x.rs\"]\nmod x;", 1),
+            ("#[cfg_attr(test, path = \"x.rs\")]\nmod x;", 1),
+            ("const B: &[u8] = std::include_bytes!(\"x\");", 1),
+            (
+                "macro_rules! k { ($i:ident) => { $i!(\"x\"); } }\nk!(include);",
+                2,
+            ),
+        ] {
+            assert_eq!(file_inclusions(form), [line], "{form}");
+        }
+        for ok in [
+            "fn path(include: u8) -> u8 { include }",
+            "// include!(\"x\")\nconst S: &str = \"#[path = \\\"x\\\"]\";",
+        ] {
+            assert!(file_inclusions(ok).is_empty(), "{ok}");
+        }
     }
 
     /// Review of PR #111: inside a macro call or a `macro_rules!` body, tokens are read strictly.
