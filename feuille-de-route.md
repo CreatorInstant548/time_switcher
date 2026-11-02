@@ -32,6 +32,7 @@ Ce sont les *issues* reportées (organisation.md §5, point 5). Seul le travail 
 | *Issue* | Sujet | Rôle | Motif du report | Décidé le |
 |---|---|---|---|---|
 | [#94](https://github.com/CreatorInstant548/time_switcher/issues/94) | Calibrer `PARALLEL_FROM_WORK` et `PAR_ITER_FROM` sur les systèmes de la phase 1 (AS-51) | dev, puis qualité pour les mesures | Les systèmes à mesurer n'existent pas encore. Les valeurs actuelles ne changent pas le résultat. Les marqueurs pointent déjà vers #94 (PR #99). | 02/11 |
+| [#71](https://github.com/CreatorInstant548/time_switcher/issues/71) (suite de la revue d'architecture §19.2) | `ts-sim run` : `--seeds`, `--jobs`, `events.parquet`, `snapshots/`, `report.html` | dev, puis qualité | C'est du travail neuf. La phase 0 n'exige qu'une exécution et `metrics.parquet` (T9b). Plusieurs graines et la trace des événements serviront à la première calibration, en phase 1 (décidé). La dette de #71 est réglée par la PR #106. À l'ouverture de la phase 1, ouvrir une *issue* neuve qui renvoie à #71. | 02/11 |
 
 ### Phase 3
 

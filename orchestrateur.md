@@ -232,3 +232,4 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
   - #93 (architecture) ;
   - #43 à #45 (conception, PR #87) ;
   - #7 et #8, qui dépendent d'AU1 et donc de l'utilisateur.
+- **#71** : la PR #106 règle la dette. Le reste de §19.2 (`--seeds`, `--jobs`, `events.parquet`, `snapshots/`, `report.html`) est du travail neuf : il est reporté au reliquat de la phase 1 (décidé).
