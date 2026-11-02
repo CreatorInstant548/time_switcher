@@ -587,7 +587,8 @@ pub mod lab {
     /// Answer that the fake `gh` turns into a failed read (HTTP 404).
     pub const FAIL: &str = "!fail";
 
-    pub fn git_in(dir: &Path, args: &[&str]) -> Output {
+    /// `git` in `dir` with the lab's settings, outside any caller's repository.
+    fn command(dir: &Path, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.args(CONFIG).args(args).current_dir(dir);
         for v in [
@@ -600,12 +601,29 @@ pub mod lab {
         ] {
             cmd.env_remove(v);
         }
-        let out = cmd.output().expect("git");
+        cmd
+    }
+
+    pub fn git_in(dir: &Path, args: &[&str]) -> Output {
+        let out = command(dir, args).output().expect("git");
         (
             out.status.code(),
             out.stdout,
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
+    }
+
+    /// `git` in `dir` with `input` on its standard input; its standard output.
+    pub fn git_input(dir: &Path, args: &[&str], input: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = command(dir, args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("git");
+        child.stdin.take().expect("stdin").write_all(input).unwrap();
+        child.wait_with_output().expect("git").stdout
     }
 
     pub struct Lab {
@@ -1384,18 +1402,8 @@ mod tests {
         let header = format!("diff --git a/{PR_FILE} b/{PR_FILE}");
         assert_eq!(at.as_deref(), Some(header.as_str()));
         let patch_id = |x: &str| {
-            use std::io::Write;
-            use std::process::{Command, Stdio};
             let (_, diff, _) = super::lab::git_in(&c.lab.dir, &["diff", &c.c0, x]);
-            let mut child = Command::new("git")
-                .args(["patch-id", "--stable"])
-                .current_dir(&c.lab.dir)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap();
-            child.stdin.take().unwrap().write_all(&diff).unwrap();
-            let out = child.wait_with_output().unwrap().stdout;
+            let out = super::lab::git_input(&c.lab.dir, &["patch-id", "--stable"], &diff);
             let out = String::from_utf8(out).unwrap();
             out.split(' ').next().unwrap_or_default().to_owned()
         };
@@ -1470,6 +1478,52 @@ mod tests {
         let h = c.lab.git(&["rev-parse", "HEAD"]);
         let e = resolve55(&c, &h, &[&c.a, &c.h, &h]).unwrap_err();
         assert!(e.contains(&format!("X1: the second parent {side}")), "{e}");
+    }
+
+    /// `verify-main` without the head among the local objects: `pull/<n>/head` is fetched once,
+    /// whatever the number of candidates, and a failed fetch refuses them. `merge`, whose objects
+    /// were fetched, never fetches again.
+    #[test]
+    fn as55_fetches_the_head_once() {
+        let c = overlap("as55-fetch");
+        c.lab.git(&["checkout", "-q", "-b", "two", &c.a]);
+        let a2 = c.lab.commit(&[]);
+        c.lab.git(&["merge", "-q", "--no-edit", &c.m1]);
+        let h2 = c.lab.git(&["rev-parse", "HEAD"]);
+        let bodies = [format!("review-ok: {a2}"), format!("review-ok: {}", c.a)];
+        for local in [false, true] {
+            let mut answers = commits(&[&c.a, &a2, &h2]);
+            let absent = format!("git cat-file -e {h2}^{{commit}}");
+            answers.push((absent, super::lab::FAIL.to_owned()));
+            let (r, calls) = resolve_in(
+                &c.lab,
+                answers,
+                &h2,
+                &c.m1,
+                &h2,
+                local,
+                "review-ok",
+                &bodies,
+            );
+            let e = r.unwrap().unwrap_err();
+            let fetches: Vec<_> = calls.iter().filter(|l| l.contains("fetch")).collect();
+            if local {
+                assert!(fetches.is_empty(), "{fetches:?}");
+            } else {
+                assert_eq!(
+                    fetches,
+                    ["git fetch --quiet --no-tags origin pull/7/head"],
+                    "{calls:#?}"
+                );
+            }
+            assert_eq!(
+                e.matches("unreadable, not carried over (W2: ").count(),
+                2,
+                "{e}"
+            );
+            let absent = e.matches("absent from the local objects").count();
+            assert_eq!(absent, if local { 2 } else { 1 }, "{e}");
+        }
     }
 
     /// A failed local read on the AS-55 path refuses the candidate, W2 kept in the reason.

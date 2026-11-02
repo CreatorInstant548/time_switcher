@@ -9,7 +9,9 @@
 //! `--origin` (AS-42, AS-44, nightly job) adds J3 (one read), plus G3 on `<n>d`, for the non-sensitive
 //! commits of the window ([`Origin`]): a ruleset disabled for a while, then restored, cannot hide a
 //! commit pushed without a PR. An anomaly opens an issue and suspends merges until it is listed in
-//! [`ACKNOWLEDGED`] (J5). In CI mode, no `git fetch`: the refs come from the checkout (`refresh`).
+//! [`ACKNOWLEDGED`] (J5). In CI mode, no `git fetch origin`: the refs come from the checkout
+//! (`refresh`). The one exception is an approval carried over by AS-55, whose check replays the
+//! PR's merges: `carry` then fetches `pull/<n>/head` once, anonymously (public repository).
 //! spec: carnet architecture-securite.md SEC0-17 ; §9.6 G3 ; §9.8 J3, J4, J5
 //! Voir aussi l'issue #6, point 2.
 
