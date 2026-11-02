@@ -1,4 +1,5 @@
-# Programme du corpus initial de la cible `decode` (SEC0-24) : stable, sans libFuzzer.
+# Programme du corpus initial des cibles (SEC0-24) : stable, sans libFuzzer. Il écrit
+# <dossier>/<cible> pour chaque cible de fuzz/ :
 #   cargo run --locked --manifest-path fuzz/seeds/Cargo.toml -- <dossier du corpus>
 
 [package]
@@ -9,5 +10,6 @@ license = "LicenseRef-Proprietary"
 publish = false
 
 [dependencies]
+ts_data = { path = "../../crates/ts_data" }
 ts_kernel = { path = "../../crates/ts_kernel" }
 ts_persist = { path = "../../crates/ts_persist" }

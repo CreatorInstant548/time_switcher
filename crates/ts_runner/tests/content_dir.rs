@@ -251,4 +251,14 @@ fn junctions_are_refused() {
     };
     assert_eq!(first(&dir), Code::SymlinkRefused);
     assert_eq!(first(&link), Code::SymlinkRefused);
+    // A junction named as a content file, in place of a card file (#48).
+    let dir = scratch("junction_as_file");
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(dir.join("cards.ron"))
+        .arg(&outside)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "mklink /J failed");
+    assert_eq!(first(&dir), Code::SymlinkRefused);
 }

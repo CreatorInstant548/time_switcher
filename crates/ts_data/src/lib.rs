@@ -27,6 +27,14 @@ mod pack;
 mod scan;
 mod source;
 
+// Development API (m7 of the review of #47, #48): the fuzzing body and its corpus. As in
+// `ts_persist`, it is absent from the `public` profile (`not_public!`) and hidden from the
+// documentation.
+ts_kernel::not_public! {
+    #[doc(hidden)]
+    pub mod fuzzing;
+}
+
 pub use card::{Card, MAX_ID_BYTES, MAX_NAME_BYTES, is_valid_id, is_valid_name};
 pub use error::{Code, Diagnostic, LoadErrors, MAX_DIAGNOSTICS};
 pub use pack::{ContentPack, FORMAT_VERSION, Fingerprint};

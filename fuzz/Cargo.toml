@@ -2,10 +2,13 @@
 # spec: carnet architecture-securite.md SEC0-24 (révisé), §9.13
 #
 # En CI seulement, avec la nightly datée de nightly.yml (A14 : aucune nightly sur le poste) :
-#   cargo run --locked --manifest-path fuzz/seeds/Cargo.toml -- fuzz/corpus/decode
-#   cargo +<nightly> fuzz run decode fuzz/corpus/decode -- -max_total_time=3600
-# Le corpus initial est régénérable : il n'est jamais commité (.gitignore, TS_CACHE).
-# Le corps de la cible est `ts_persist::fuzzing::decode`, compilé et testé en stable.
+#   cargo run --locked --manifest-path fuzz/seeds/Cargo.toml -- fuzz/corpus
+#   cargo +<nightly> fuzz run <cible> -- -max_total_time=<3600 / nombre de cibles>
+# Le programme du corpus écrit fuzz/corpus/<cible> pour chaque cible ; `cargo fuzz run` le lit
+# par défaut. Le corpus initial est régénérable : il n'est jamais commité (.gitignore, TS_CACHE).
+# Cibles, chacune avec son corps compilé et testé en stable :
+# - `decode` : instantanés, `ts_persist::fuzzing::decode` ;
+# - `content` : paquet de contenu, `ts_data::fuzzing::load` (m7 de la revue de #47, #48).
 
 [package]
 name = "ts_persist_fuzz"
@@ -19,11 +22,19 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "=0.4.13"
+ts_data = { path = "../crates/ts_data" }
 ts_persist = { path = "../crates/ts_persist" }
 
 [[bin]]
 name = "decode"
 path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "content"
+path = "fuzz_targets/content.rs"
 test = false
 doc = false
 bench = false
