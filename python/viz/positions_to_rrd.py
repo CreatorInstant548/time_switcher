@@ -4,28 +4,32 @@
 OPTIONAL TOOL, group `viz` of python/pyproject.toml: installed neither by `cargo xtask py`
 nor by the CI. How to use it: docs/dev/visualisation.md.
 
-    uv run --no-sync python viz/positions_to_rrd.py <positions.parquet> --out <positions.rrd>
+    uv run --no-sync python -I viz/positions_to_rrd.py <positions.parquet> --out <positions.rrd>
 
 What it does, and nothing else (VZ7):
 - reads the Parquet file with pyarrow (a dependency of rerun-sdk, nothing more is installed);
 - writes the recording with `rr.save(<file under TS_CACHE>)`: never `spawn`, `connect_grpc`,
-  `serve` or `show`, and it never starts the Rerun viewer. Open the .rrd in the viewer you
-  installed apart;
-- cuts the telemetry of Rerun first, by the documented way (`rerun analytics disable`), and
-  removes from its environment every variable that could redirect Rerun (`RERUN*`,
-  `FORCE_RERUN_ANALYTICS`, `OTEL_*`, `TELEMETRY_*`) before `rerun` is imported.
+  `serve` or `show`, and it never starts the Rerun viewer or its CLI. Open the .rrd in the
+  viewer you installed apart;
+- requires, before `rerun` is imported, that the Rerun analytics are opted out in the
+  configuration file of the user (`analytics_enabled` is false), and stops otherwise (see
+  `ensure_analytics_disabled`);
+- removes from its environment every variable that could redirect Rerun (`RERUN*`,
+  `FORCE_RERUN_ANALYTICS`, `OTEL_*`, `TELEMETRY_*`) and sets `TELEMETRY_ENABLED=false`.
 
 Input and output are strictly under TS_CACHE (`C:/Dev/ts-cache` on Windows, else
 `~/.cache/time_switcher`), as for `ts-sim` and `ts-viz` (Y3); the output must not exist yet.
-The input is untrusted data: size, schema, row counts and values are checked before use
-(VZ5: at most 3660 days, and the residents of the toy town).
+The input is untrusted data: size, footer, size of each column chunk, schema, row counts,
+dictionary and values are checked before they are decoded or used (VZ5: at most 3660 days, and
+the residents of the toy town).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
-import subprocess
+import secrets
 import sys
 import uuid
 from pathlib import Path
@@ -61,26 +65,132 @@ def scrub_environment(environ: dict[str, str] | None = None) -> list[str]:
     return names
 
 
-def disable_analytics() -> None:
-    """`rerun analytics disable`, the documented opt-out (rerun-io/rerun, crates/utils/re_analytics).
+def harden_environment(environ: dict[str, str] | None = None) -> list[str]:
+    """Scrubs the environment, then sets the SDK's own telemetry switch explicitly.
 
-    It only writes the opt-out into the analytics configuration of the user (the one write of
-    the script outside TS_CACHE); it opens no viewer and sends nothing. Fails closed: the script
-    stops if it cannot cut the telemetry.
+    `TELEMETRY_ENABLED` is the variable the SDK reads for its OpenTelemetry tracing (active only
+    when it is `true` and an OTLP endpoint is set, see `rerun/_tracing.py`): after the scrub it
+    is set to `false`, so that the opt-out of the caller is not silently lost. The analytics of
+    `re_analytics` have no such variable in 0.38.1 (only `FORCE_RERUN_ANALYTICS`, which forces
+    them on in debug builds): they depend on the configuration file, see
+    `ensure_analytics_disabled`.
     """
+    env = os.environ if environ is None else environ
+    names = scrub_environment(env)
+    env["TELEMETRY_ENABLED"] = "false"
+    return names
+
+
+def _roaming_appdata() -> Path:
+    """The Roaming AppData folder: the Windows known folder, not the `APPDATA` variable."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Guid(ctypes.Structure):
+        _fields_ = [
+            ("a", wintypes.DWORD),
+            ("b", wintypes.WORD),
+            ("c", wintypes.WORD),
+            ("d", ctypes.c_ubyte * 8),
+        ]
+
+    tail = (ctypes.c_ubyte * 8)(0xA0, 0x3A, 0xE3, 0xEF, 0x65, 0x72, 0x9F, 0x3D)
+    guid = Guid(0x3EB685DB, 0x65F9, 0x4CF6, tail)  # FOLDERID_RoamingAppData
+    pointer = ctypes.c_void_p()
+    shell32 = ctypes.windll.shell32  # type: ignore[attr-defined]
+    shell32.SHGetKnownFolderPath.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(pointer)) != 0:
+        raise VizError("cannot locate the Rerun analytics configuration")
     try:
-        done = subprocess.run(  # noqa: S603 - fixed arguments, scrubbed environment
-            [sys.executable, "-I", "-m", "rerun_cli", "analytics", "disable"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
+        return Path(ctypes.wstring_at(pointer))
+    finally:
+        ctypes.windll.ole32.CoTaskMemFree(pointer)  # type: ignore[attr-defined]
+
+
+def analytics_config_path() -> Path:
+    """Where Rerun keeps `analytics.json` (layout of the `directories` crate, project `rerun`).
+
+    Verified on Windows only (`rerun analytics config` prints this path there). The macOS and
+    Linux paths follow the documented layout of that crate and have not been run.
+    """
+    if sys.platform.startswith("win"):
+        return _roaming_appdata() / "rerun" / "config" / "analytics.json"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "rerun" / "analytics.json"
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "rerun" / "analytics.json"
+
+
+MAX_CONFIG_BYTES = 64 * 1024
+
+
+def _read_analytics_config(path: Path) -> dict | None:
+    """The configuration as a dict, or `None` if the file does not exist."""
+    try:
+        if path.stat().st_size > MAX_CONFIG_BYTES:
+            raise VizError("the Rerun analytics configuration is unreadable (too large)")
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        raise VizError("the Rerun analytics configuration is unreadable") from None
+    if not isinstance(config, dict):
+        raise VizError("the Rerun analytics configuration is unreadable")
+    return config
+
+
+def analytics_disabled(path: Path | None = None) -> bool:
+    """True only if the configuration exists and says `analytics_enabled: false`."""
+    try:
+        config = _read_analytics_config(path or analytics_config_path())
+    except VizError:
+        return False
+    return config is not None and config.get("analytics_enabled") is False
+
+
+def ensure_analytics_disabled(path: Path | None = None) -> None:
+    """Requires the Rerun analytics to be opted out BEFORE any Rerun code is imported (VZ7).
+
+    The result is checked, not an exit code: the configuration is read and must say
+    `analytics_enabled: false`. No Rerun program is run: the CLI `rerun analytics disable`
+    records a `cli_command_invoked` usage event before it applies the opt-out.
+    - already opted out: nothing is written;
+    - the file exists and says `true`: only that key is changed, atomically (temporary file,
+      then replace), and the file is read again and must say `false`;
+    - no usable file: the script stops. The documented command `rerun analytics disable`, run
+      once by hand, creates it (and queues one usage event: a residual of that command).
+    """
+    path = path or analytics_config_path()
+    config = _read_analytics_config(path)
+    if config is not None and config.get("analytics_enabled") is False:
+        return
+    if config is None or not isinstance(config.get("analytics_enabled"), bool):
+        raise VizError(
+            "the Rerun analytics are not opted out: run `rerun analytics disable` once "
+            "(docs/dev/visualisation.md), then run this script again"
         )
-    except (OSError, subprocess.SubprocessError):
-        raise VizError("cannot disable the Rerun analytics (the command did not run)") from None
-    if done.returncode != 0:
-        raise VizError("cannot disable the Rerun analytics (rerun analytics disable failed)")
+    config["analytics_enabled"] = False
+    temp = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(config, separators=(",", ":")))
+        os.replace(temp, path)
+    except OSError:
+        raise VizError("cannot write the Rerun analytics opt-out") from None
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    again = _read_analytics_config(path)
+    if again is None or again.get("analytics_enabled") is not False:
+        raise VizError("the Rerun analytics opt-out was not applied")
 
 
 def cache_root() -> Path:
@@ -140,11 +250,61 @@ class Positions:
         self.place = place
 
 
+# Room for the headers and the dictionary page of a column chunk, and the most a row can take
+# (8 bytes of an integer, or 4 of length and 7 of the longest place name, plus the index).
+CHUNK_SLACK_BYTES = 4096
+CHUNK_BYTES_PER_ROW = 16
+MAX_DICTIONARY = 64
+
+
+def _footer_in_bounds(footer: object) -> bool:
+    """ts-viz writes no compression, one row group per day, and small column chunks.
+
+    Anything else is not its file. The size of every chunk is bounded BEFORE it is decoded, so
+    neither compression nor a dictionary can expand a file far beyond its size on the disk.
+    """
+    if footer.num_row_groups > MAX_DAYS:
+        return False
+    for g in range(footer.num_row_groups):
+        group = footer.row_group(g)
+        if group.num_rows > MAX_RESIDENTS:
+            return False
+        limit = CHUNK_SLACK_BYTES + CHUNK_BYTES_PER_ROW * group.num_rows
+        for c in range(footer.num_columns):
+            chunk = group.column(c)
+            if chunk.compression != "UNCOMPRESSED" or chunk.total_uncompressed_size > limit:
+                return False
+    return True
+
+
+def _place_codes(column: object) -> object:
+    """Code in PLACES of every row of the dictionary-encoded `place` column (int64 array).
+
+    The dictionary of each chunk is checked first (size, then values), and only then are the
+    indices mapped: a row never becomes a string.
+    """
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    value_set = pa.array(PLACES)
+    parts = []
+    for chunk in column.chunks:
+        if not pa.types.is_dictionary(chunk.type) or chunk.null_count:
+            raise VizError("input refused: unknown place")
+        if len(chunk.dictionary) > MAX_DICTIONARY:
+            raise VizError("input refused: unknown place")
+        mapping = pc.index_in(chunk.dictionary, value_set=value_set)
+        if mapping.null_count:
+            raise VizError("input refused: unknown place")
+        parts.append(pc.take(mapping, chunk.indices).to_numpy())
+    return np.concatenate(parts).astype(np.int64)
+
+
 def read_positions(path: Path) -> Positions:
     """Reads and validates the file. Raises `VizError` for anything not written by ts-viz."""
     import numpy as np
     import pyarrow as pa
-    import pyarrow.compute as pc
     import pyarrow.parquet as pq
 
     if not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
@@ -162,17 +322,8 @@ def read_positions(path: Path) -> Positions:
         raise VizError("input refused: the columns are not those of ts-viz")
     if not 0 < rows <= MAX_ROWS:
         raise VizError(f"input refused: rows must be between 1 and {MAX_ROWS}")
-    # ts-viz writes no compression and one row group per day: anything else is not its file, and
-    # a compressed file could expand far beyond its size on the disk.
-    if footer.num_row_groups > MAX_DAYS or any(
-        footer.row_group(g).num_rows > MAX_RESIDENTS
-        or any(
-            footer.row_group(g).column(c).compression != "UNCOMPRESSED"
-            for c in range(footer.num_columns)
-        )
-        for g in range(footer.num_row_groups)
-    ):
-        raise VizError("input refused: row groups out of bounds or compressed")
+    if not _footer_in_bounds(footer):
+        raise VizError("input refused: row groups or column chunks out of bounds, or compressed")
     try:
         meta = {
             k.decode()[len(META_PREFIX):]: v.decode()
@@ -191,13 +342,17 @@ def read_positions(path: Path) -> Positions:
         raise VizError("input refused: missing or malformed metadata") from None
     if not (1 <= days <= MAX_DAYS and 1 <= width <= 1024 and 1 <= height <= 1024):
         raise VizError("input refused: metadata out of bounds")
-    table = parquet.read()
-    columns = {name: table.column(name).to_numpy() for name in INT_COLUMNS}
-    # Code of each place in PLACES, null for an unknown name (vectorised).
-    codes = pc.index_in(table.column("place"), value_set=pa.array(PLACES))
-    if codes.null_count:
-        raise VizError("input refused: unknown place")
-    place = codes.to_numpy().astype(np.int64)
+    try:
+        # `place` stays dictionary-encoded: its few values are checked before any row is
+        # expanded into a string (a dictionary bomb repeats one long string for every row).
+        data = pq.ParquetFile(path, read_dictionary=["place"])
+        table = data.read()
+        columns = {name: table.column(name).to_numpy() for name in INT_COLUMNS}
+        place = _place_codes(table.column("place"))
+    except VizError:
+        raise
+    except (pa.ArrowException, MemoryError, OSError, ValueError, OverflowError):
+        raise VizError("input refused: the data cannot be read within bounds") from None
     day = columns["day"]
     if not (
         day.min() >= 0
@@ -291,7 +446,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", required=True, help="the .rrd to write, under TS_CACHE, new")
     args = parser.parse_args(argv)
     # Before anything imports rerun (pyarrow does not read these variables).
-    scrub_environment()
+    harden_environment()
     try:
         cache = cache_root()
         source = under_cache(args.parquet, cache, "input")
@@ -300,14 +455,24 @@ def main(argv: list[str] | None = None) -> int:
             raise VizError("output refused: must be a new .rrd file")
         if not out.parent.is_dir():
             raise VizError("output refused: the directory does not exist")
+        ensure_analytics_disabled()
         positions = read_positions(source)
-        disable_analytics()
+        # The recording is written to a file this script creates (`O_EXCL`), then renamed: a
+        # file created by someone else in between is never truncated by `rr.save`.
+        part = out.with_name(f"{out.name}.part")
         try:
-            days = convert(positions, out)
+            os.close(os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        except OSError:
+            raise VizError("output refused: cannot create a new file") from None
+        try:
+            days = convert(positions, part)
+            if out.exists():
+                raise VizError("output refused: must be a new .rrd file")
+            os.replace(part, out)
         except BaseException as error:
-            # `rr.save` created the file, and it did not exist before: no partial recording stays.
-            _remove(out)
-            if isinstance(error, Exception):
+            # No partial recording stays.
+            _remove(part)
+            if isinstance(error, Exception) and not isinstance(error, VizError):
                 # The name of the error only: a traceback would show local paths.
                 raise VizError(f"conversion failed ({type(error).__name__})") from None
             raise

@@ -45,6 +45,7 @@ uv sync --locked --group viz
 - `pyproject.toml` impose les roues seulement (`no-build`), l'interpréteur installé (3.14.0) et les paquets publiés au moins deux semaines avant le verrou ; `uv.lock` porte les empreintes.
 - Le groupe contient `rerun-sdk==0.38.1` seul. Il tire `pyarrow` (qui lit le Parquet : rien d'autre n'est ajouté pour cela), `attrs`, `pillow`, `psutil` et `typing-extensions`.
 - `uv sync` rend l'environnement exact : la commande ci-dessus retire `ts-py` (construit par maturin), et `cargo xtask py`, qui lance `uv sync --locked` sans le groupe, **retire** les paquets de `viz` et reconstruit `ts-py`. Selon l'outil dont on a besoin, refaire l'une ou l'autre commande.
+- **Une fois, avant la première conversion** : refuser la télémétrie de Rerun si ce n'est pas déjà fait (§4, « Télémétrie »). Le script refuse de tourner tant que `analytics.json` ne dit pas `analytics_enabled: false`.
 
 ## 4. Convertir en `.rrd`
 
@@ -53,15 +54,20 @@ cd python
 uv run --no-sync python -I viz/positions_to_rrd.py <TS_CACHE>/viz/toy_short/positions.parquet --out <TS_CACHE>/viz/toy_short/positions.rrd
 ```
 
-Le script ne fait que lire le Parquet et appeler `rr.save(<fichier>)`, hors le refus de la télémétrie ci-dessous (sa seule écriture hors de `TS_CACHE`). Un échec en cours de route supprime le fichier partiel. Détails :
+Le script ne fait que lire le Parquet et appeler `rr.save(<fichier>)`, hors le contrôle de la télémétrie ci-dessous (sa seule écriture éventuelle hors de `TS_CACHE`). Il écrit d'abord `<nom>.rrd.part`, créé par lui en exclusif, puis le renomme ; un échec en cours de route supprime ce fichier. Détails :
 - l'entrée et la sortie sont **strictement sous `TS_CACHE`** (sans `..`, sans lien), la sortie est un nouveau fichier `.rrd` ;
-- l'entrée est traitée comme non fiable : taille (512 Mo), absence de compression, groupes de lignes, schéma exact, nombre de lignes (et par jour), métadonnées et valeurs sont contrôlés avant tout usage ;
+- l'entrée est traitée comme non fiable : taille (512 Mo), absence de compression, groupes de lignes, taille de chaque morceau de colonne (lue dans le pied de fichier, donc avant tout décodage), schéma exact, nombre de lignes (et par jour), métadonnées, valeurs du dictionnaire de `place` (la colonne n'est jamais développée en chaînes) et valeurs sont contrôlés ; toute erreur de lecture, `MemoryError` comprise, devient un refus sans chemin ;
 - jamais `spawn`, `connect_grpc`, `serve` ni `show` : le script n'ouvre pas le visualiseur et n'ouvre aucune connexion (un test lit son code pour le vérifier) ;
 - l'enregistrement a l'identifiant du fichier, deux lignes de temps (`day`, `tick`), les résidents en points 2D colorés par lieu, et les effectifs par lieu en séries. Ni heure murale (`log_time` coupée), ni propriétés d'enregistrement (`send_properties=False`).
 
-**Télémétrie coupée.** La documentation de Rerun (README de `re_analytics`) donne `rerun analytics disable` pour refuser toute collecte, qui ne concerne que les événements du visualiseur. Avant d'importer `rerun`, le script :
-1. retire de son environnement `RERUN*`, `FORCE_RERUN_ANALYTICS`, `OTEL_*` et `TELEMETRY_*` (ils pourraient rediriger le CLI ou les points d'envoi) ;
-2. lance cette commande par le CLI livré dans la roue (`python -I -m rerun_cli analytics disable`) : elle écrit seulement le refus dans la configuration d'analyse de l'utilisateur (`analytics.json`), n'ouvre rien et n'envoie rien. Si elle échoue, le script s'arrête.
+**Télémétrie : refus exigé avant tout import de `rerun`.** La documentation de Rerun (README de `re_analytics`) donne `rerun analytics disable` pour refuser toute collecte, qui ne concerne que les événements du visualiseur. Le SDK 0.38.1 n'a **aucune variable d'environnement** pour les analyses (seule `FORCE_RERUN_ANALYTICS` existe, qui les force en version de débogage) : le refus vit dans `analytics.json`, que le script lit. Le CLI `rerun analytics disable` enregistre lui-même un événement (`cli_command_invoked`) avant d'appliquer le refus, et son code de sortie n'est pas fiable : le script ne lance donc **aucun programme Rerun**. Avant d'importer `rerun`, il :
+1. retire de son environnement `RERUN*`, `FORCE_RERUN_ANALYTICS`, `OTEL_*` et `TELEMETRY_*` (ils pourraient rediriger Rerun ou ses points d'envoi), puis fixe `TELEMETRY_ENABLED=false`, l'interrupteur que le SDK lit pour ses traces OpenTelemetry (`rerun/_tracing.py`) ;
+2. lit `analytics.json` (Windows : `%APPDATA%\rerun\config\`, dossier connu de l'utilisateur ; macOS : `~/Library/Application Support/rerun/` ; Linux : `$XDG_CONFIG_HOME/rerun/`) et **vérifie le résultat** : `analytics_enabled` doit valoir `false`. Si oui, il n'écrit rien. Si le fichier existe et vaut `true`, il ne change que cette clé (fichier temporaire puis remplacement), relit le fichier et exige `false`. S'il n'y a pas de fichier utilisable, il s'arrête et demande de lancer **une fois, à la main**, `uv run --no-sync python -I -m rerun_cli analytics disable` (ou `rerun analytics disable`).
+
+Ce qui reste, honnêtement :
+- cette commande unique à la main enregistre un événement d'usage (en attente dans `<données locales>\rerun\data\analytics\`, envoyé si un processus Rerun dont les analyses sont actives le vide) ; `rerun analytics clear` les efface. Une machine où la commande a déjà été lancée avant ce correctif peut en avoir ;
+- la modification directe d'`analytics.json` suit le format que le CLI écrit (observé en 0.38.1) ; le chemin n'a été vérifié que sous Windows, ceux de macOS et de Linux suivent la disposition documentée de la crate `directories` ;
+- le script n'a pas de preuve que le SDK n'appelle jamais `re_analytics` : il le garde fermé par le refus (la configuration est lue au démarrage des analyses), l'absence de lancement du visualiseur, et l'absence de connexion observée à la conversion.
 
 **Ce qui reste non reproductible dans le `.rrd`** (VZ4) : Rerun donne à chaque lot de données (*chunk*) un identifiant, et à chaque ligne un `RowId`, tous deux fondés sur l'heure et l'aléa. Deux conversions du même Parquet ne donnent donc pas les mêmes octets, mais les **mêmes données décodées**. Le fichier ne contient aucun chemin, nom d'utilisateur ni nom de machine. Les tests du groupe (`uv run --no-sync pytest viz -p no:cacheprovider`, hors de `cargo xtask py` et de la CI) comparent les données décodées.
 

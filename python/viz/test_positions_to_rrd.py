@@ -20,11 +20,18 @@ import pytest
 
 pa = pytest.importorskip("pyarrow")
 pq = pytest.importorskip("pyarrow.parquet")
-rr = pytest.importorskip("rerun")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import positions_to_rrd as conv  # noqa: E402
 
+# Same guard as the script (VZ7): `rerun` is never imported while its analytics are not opted
+# out in the configuration of the user. Nothing here changes that configuration.
+if not conv.analytics_disabled():
+    pytest.skip(
+        "the Rerun analytics are not opted out (see docs/dev/visualisation.md)",
+        allow_module_level=True,
+    )
+rr = pytest.importorskip("rerun")
 from rerun.chunk import RrdReader  # noqa: E402
 
 DAYS = 3
@@ -158,14 +165,16 @@ def test_environment_is_scrubbed_before_rerun_is_imported():
     env = {"RERUN": "off", "RERUN_CLI_PATH": "x", "FORCE_RERUN_ANALYTICS": "1", "OTEL_X": "1",
            "TELEMETRY_ENABLED": "true", "PATH": "p"}  # fmt: skip
     expected = sorted(set(env) - {"PATH"})
-    assert sorted(conv.scrub_environment(env)) == expected
-    assert env == {"PATH": "p"}
+    assert sorted(conv.harden_environment(env)) == expected
+    # The SDK's own switch is set explicitly, not just erased.
+    assert env == {"PATH": "p", "TELEMETRY_ENABLED": "false"}
 
 
 def test_the_script_never_spawns_connects_serves_or_shows():
     source = Path(conv.__file__).read_text(encoding="utf-8")
     forbidden = {"spawn", "connect", "connect_grpc", "connect_grpc_blueprint", "serve",
-                 "serve_grpc", "serve_web", "show", "notebook_show", "web_viewer"}  # fmt: skip
+                 "serve_grpc", "serve_web", "show", "notebook_show", "web_viewer", "run",
+                 "Popen", "call", "check_call", "check_output", "system"}  # fmt: skip
     called = {
         node.func.attr
         for node in ast.walk(ast.parse(source))
@@ -175,12 +184,13 @@ def test_the_script_never_spawns_connects_serves_or_shows():
     # `rr.init` is told not to spawn the viewer, and `rr.save` is the only sink.
     assert "spawn=False" in source.replace(" ", "")
     assert "rr.save(" in source
+    # No program is run: not the Rerun CLI either (its opt-out command records an event).
+    assert "subprocess" not in source
 
 
 def test_a_failed_conversion_leaves_no_partial_recording(cache, monkeypatch):
     source = cache / "a.parquet"
     write_parquet(source)
-    monkeypatch.setattr(conv, "disable_analytics", lambda: None)
 
     def boom(*_args, **_kwargs):
         raise RuntimeError("boom")
@@ -197,3 +207,80 @@ def test_a_compressed_file_is_refused(cache):
     pq.write_table(table, source, compression="zstd")
     with pytest.raises(conv.VizError):
         conv.read_positions(source)
+
+
+def test_a_successful_run_leaves_only_the_recording(cache):
+    source = cache / "a.parquet"
+    write_parquet(source)
+    assert conv.main([str(source), "--out", str(cache / "a.rrd")]) == 0
+    assert sorted(p.name for p in cache.iterdir()) == ["a.parquet", "a.rrd"]
+    assert canonical(cache / "a.rrd")
+
+
+READ_ONLY = """
+import sys
+from pathlib import Path
+import pyarrow as pa
+sys.path.insert(0, sys.argv[1])
+import positions_to_rrd as conv
+
+try:
+    conv.read_positions(Path(sys.argv[2]))
+    print("accepted")
+except conv.VizError as error:
+    print("refused", error)
+print(pa.default_memory_pool().max_memory())
+"""
+
+
+def write_dictionary_bomb(path: Path) -> None:
+    """The file of the review of PR 97: 3 row groups of 1,000 rows, one 100 KiB string."""
+    fields = [pa.field(n, pa.int64(), nullable=False) for n in conv.INT_COLUMNS]
+    fields.append(pa.field("place", pa.string(), nullable=False))
+    meta = {f"ts_viz.{k}": v for k, v in META.items()}
+    schema = pa.schema(fields, metadata=meta)
+    writer = pq.ParquetWriter(path, schema, compression="none", use_dictionary=True)
+    for g in range(3):
+        cols = {n: [g] * 1000 if n == "day" else [0] * 1000 for n in conv.INT_COLUMNS}
+        cols["place"] = ["h" * 102_400] * 1000
+        writer.write_table(pa.table(cols, schema=schema))
+    writer.close()
+
+
+def test_a_dictionary_bomb_is_refused_before_it_is_decoded(tmp_path):
+    # About 312 KB on disk; decoded, 3,000 rows of 100 KiB are 420 MB. It is refused from the
+    # footer (size of the column chunk), and the Arrow pool of the reader stays tiny.
+    import subprocess
+
+    bomb = tmp_path / "bomb.parquet"
+    write_dictionary_bomb(bomb)
+    assert bomb.stat().st_size < 400_000
+    args = [sys.executable, "-I", "-c", READ_ONLY, str(Path(conv.__file__).parent), str(bomb)]
+    out = subprocess.run(args, capture_output=True, text=True, timeout=300, check=True)
+    verdict, peak = out.stdout.splitlines()[-2:]
+    assert verdict.startswith("refused"), verdict
+    assert str(tmp_path) not in out.stdout
+    assert int(peak) < 5 * 1024 * 1024
+
+
+def test_a_dictionary_with_unknown_values_is_refused(cache):
+    # Small enough for the footer bounds: the check of the dictionary values refuses it.
+    source = cache / "dict.parquet"
+    write_parquet(source, place=["office"] * (DAYS * RESIDENTS))
+    with pytest.raises(conv.VizError, match="unknown place"):
+        conv.read_positions(source)
+
+
+@pytest.mark.parametrize("error", [MemoryError(), pa.ArrowInvalid("corrupt"), OSError("disk")])
+def test_read_errors_become_path_free_viz_errors(cache, monkeypatch, error):
+    source = cache / "a.parquet"
+    write_parquet(source)
+
+    def boom(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(pq.ParquetFile, "read", boom)
+    with pytest.raises(conv.VizError) as caught:
+        conv.read_positions(source)
+    assert str(cache) not in str(caught.value)
+    assert conv.main([str(source), "--out", str(cache / "b.rrd")]) == 1
