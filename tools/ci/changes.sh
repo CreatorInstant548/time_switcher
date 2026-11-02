@@ -163,7 +163,7 @@ if [ "$summary" = 1 ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     for z in $ZONES; do v="z_$z"; echo "| $z | ${!v} |"; done
     if [ "${#sensitive_hits[@]}" -gt 0 ]; then
       echo
-      echo "**Chemins sensibles touchés** : /security-review, relecteur neuf et archsec-ok requis."
+      echo "**Sensitive paths touched**: fresh reviewer (security pass, AS-59) and archsec-ok required."
       for f in "${sensitive_hits[@]}"; do printf -- '- `%s`\n' "$f"; done
     fi
   } >> "$GITHUB_STEP_SUMMARY"

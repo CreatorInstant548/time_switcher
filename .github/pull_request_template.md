@@ -23,4 +23,4 @@
 ## Sécurité
 
 <!-- Chemins sensibles touchés (tools/ci/sensitive-paths.txt), ou « aucun ».
-     S'il y en a : /security-review fait, relecteur neuf (session ou sous-agent), avis archsec-ok attendu sur le SHA de tête. -->
+     S'il y en a : relecteur neuf (session ou sous-agent), qui fait la passe de sécurité (AS-59), avis archsec-ok attendu sur le SHA de tête. -->
