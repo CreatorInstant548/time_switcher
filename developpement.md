@@ -445,3 +445,12 @@ erun\datanalytics\` ; l'utilisateur en est informé.
   - Lot xtask : #105 (#82) en cours de fusion ; #115 (#18) et #108 approuvées ; #111 refusée (trois trous rouverts par les macros, correction en cours) ; #114 à revoir après mise à jour.
   - Issues ouvertes : #113 (bornes du compteur `StableId` et de l'horloge) ; le trou de lecture des ticks est noté dans #93.
   - Constat : avec la règle « branche à jour », chaque fusion fait reculer les autres PR. Quand une PR partage un fichier avec `main`, le report AS-40 tombe, et il faut une relecture rapide du commit de fusion, plus un nouvel `archsec-ok`.
+- 02/11 : fusions supplémentaires :
+  - #105 (#82), #115 (#18) et #108 ;
+  - #116, qui met AS-55 en place : quand la PR et `main` partagent un fichier, les avis se reportent automatiquement si les fusions de `main` sont propres et que le diff reste identique. X4 refuse tout `fetch` d'une PR de fork.
+- AS-56 : `clippy-exemptions` devient un filet contre l'erreur. La #111 corrige la régression `r#` et refuse les attributs bâtis à partir de métavariables. Une PR à part donnera la liste fermée des `macro_rules!` des crates de cœur et de règles ; elle est exigée avant la première crate de règles.
+- En cours :
+  - #111 et #114 (lot xtask, en correction) ;
+  - second lot noyau : #113, #58, #59 ;
+  - #93 : question posée à archi-sécu.
+- Restent ensuite : #17, #36, #55, #85, #91 et #95 (second lot xtask) ; #7 et #8, qui attendent la décision de l'utilisateur sur AU1 ; #43, #44 et #45, côté conception (#87).
