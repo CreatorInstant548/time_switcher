@@ -42,7 +42,8 @@ pub struct StableId(u64);
 crate::assert_size!(StableId, 8);
 
 impl StableId {
-    /// Largest index of a namespace: `2^63 − 1`.
+    /// Largest index of a namespace: `2^63 − 1`. The allocator hands out game indices
+    /// below [`StableIdAllocator::MAX_NEXT`] only (2^62, #113).
     pub const MAX_INDEX: u64 = MAP_BIT - 1;
 
     /// Identifier of the map place with index `index`, or `None` if `index` exceeds

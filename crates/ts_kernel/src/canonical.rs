@@ -566,11 +566,8 @@ pub(crate) struct KernelState {
     pub(crate) complete: Vec<StableId>,
 }
 
-/// Largest absolute date of a decoded snapshot, in milliseconds (about 146 million years):
-/// far from `i64` overflow, so that ticks, the scheduler and the time skip never overflow
-/// on a forged date.
-const MAX_ABS_MILLIS: u64 = SimTime::MAX_SAVED_ABS_MILLIS.unsigned_abs();
-/// Largest absolute day origin, in days (about 94 million years, below `MAX_ABS_MILLIS`).
+/// Largest absolute day origin, in days (about 94 million years, below
+/// `SimTime::MAX_SAVED_ABS_MILLIS`).
 const MAX_ABS_DAYS: u64 = 1 << 35;
 /// Largest `StableId` and event counters: 2^62, far below their overflow at 2^64.
 /// `StableIdAllocator::allocate` and `Scheduler::schedule` stop there too (#113, #31).
@@ -586,9 +583,11 @@ fn counter(v: u64, what: &'static str) -> Result<u64, CanonicalError> {
     Ok(v)
 }
 
-/// A date within [`MAX_ABS_MILLIS`].
+/// A date within ±[`SimTime::MAX_SAVED_ABS_MILLIS`] (about 146 million years): far from
+/// `i64` overflow, so that ticks, the scheduler and the time skip never overflow on a forged
+/// date.
 fn date(t: SimTime) -> Result<SimTime, CanonicalError> {
-    if t.as_millis().unsigned_abs() > MAX_ABS_MILLIS {
+    if !t.is_savable() {
         return Err(CanonicalError::Invalid("date out of range"));
     }
     Ok(t)

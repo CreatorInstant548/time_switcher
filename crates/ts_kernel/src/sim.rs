@@ -240,7 +240,8 @@ impl Deref for DueEvents {
 pub struct StableIds(StableIdAllocator);
 
 impl StableIds {
-    /// New identifier, or `None` if the namespace is exhausted.
+    /// New identifier, or `None` once the counter is at [`StableIdAllocator::MAX_NEXT`]
+    /// (2^62, #113): see [`StableIdAllocator::allocate`].
     pub const fn allocate(&mut self) -> Option<StableId> {
         self.0.allocate()
     }
@@ -470,8 +471,9 @@ pub struct RunReport {
 pub struct ClockOutOfRange {
     /// Current date of the world, unchanged.
     pub now: SimTime,
-    /// Date asked for: the end of the tick for [`Sim::step`], the stop date for
-    /// [`Sim::run_until`].
+    /// Date the clock would have reached: the end of the tick for [`Sim::step`]; for
+    /// [`Sim::run_until`], the first tick start at or after the stop date, or the stop date
+    /// itself when it is already beyond the bound.
     pub requested: SimTime,
 }
 
@@ -479,7 +481,7 @@ impl fmt::Display for ClockOutOfRange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "the clock cannot go from {} ms to {} ms: beyond the saved range of ±{} ms",
+            "the clock cannot go from {} ms to {} ms, beyond the saved range of ±{} ms",
             self.now.as_millis(),
             self.requested.as_millis(),
             SimTime::MAX_SAVED_ABS_MILLIS
@@ -488,11 +490,6 @@ impl fmt::Display for ClockOutOfRange {
 }
 
 impl std::error::Error for ClockOutOfRange {}
-
-/// True if the clock may hold `t`: a snapshot can record it and the decoder reads it back.
-const fn savable(t: SimTime) -> bool {
-    t.as_millis().unsigned_abs() <= SimTime::MAX_SAVED_ABS_MILLIS.unsigned_abs()
-}
 
 // spec: revues/architecture.md §7.1, §8.1, §8.2, §9.1
 /// The simulation: a `bevy_ecs` world, one `Schedule` per phase and the clock.
@@ -764,18 +761,24 @@ impl Sim {
     /// savable (#113). Only a world restored within one tick of that bound (about 146
     /// million years) gets there.
     pub fn step(&mut self) -> Result<StepReport, ClockOutOfRange> {
-        let tick_start = self.now();
-        // The clock stays within ±2^62, so this never overflows; `i64::MAX` only names an
-        // overflow in the refusal, the clock itself is never touched.
-        let end = tick_start
-            .checked_add_millis(self.tick_ms)
-            .unwrap_or(SimTime::from_millis(i64::MAX));
-        if !savable(end) {
+        let now = self.now();
+        // The clock is always savable (±2^62), so this cannot overflow.
+        let end = now.add_millis(self.tick_ms);
+        if !end.is_savable() {
             return Err(ClockOutOfRange {
-                now: tick_start,
+                now,
                 requested: end,
             });
         }
+        Ok(self.tick())
+    }
+
+    /// Runs a tick whose end the caller has checked to be savable: [`Sim::step`], or
+    /// [`Sim::run_until`], whose target is savable and on the tick grid.
+    fn tick(&mut self) -> StepReport {
+        let tick_start = self.now();
+        let end = tick_start.add_millis(self.tick_ms);
+        debug_assert!(end.is_savable(), "tick beyond the saved range (#113)");
         let last = end.add_millis(-1);
         self.run_phase(Phase::Input, 0);
         let due = self.world.resource_mut::<EventQueue>().pop_due(last);
@@ -787,10 +790,10 @@ impl Sim {
         self.world.resource_mut::<DueEvents>().0.clear();
         self.world.resource_mut::<SimClock>().now = end;
         self.world.clear_trackers();
-        Ok(StepReport {
+        StepReport {
             tick_start,
             due_events,
-        })
+        }
     }
 
     // spec: revues/architecture.md §9.1, §9.2
@@ -854,19 +857,21 @@ impl Sim {
         if at <= now {
             return Ok(report);
         }
-        let refused = ClockOutOfRange { now, requested: at };
-        if !savable(at) {
-            return Err(refused);
+        if !at.is_savable() {
+            return Err(ClockOutOfRange { now, requested: at });
         }
-        // `at` is within ±2^62, so neither the floor nor the next tick start overflows.
+        // `at` is within ±2^62, so the next tick start cannot overflow.
         let floor = self.tick_floor(at);
         let target = if floor == at {
             at
         } else {
-            floor.checked_add_millis(self.tick_ms).ok_or(refused)?
+            floor.add_millis(self.tick_ms)
         };
-        if !savable(target) {
-            return Err(refused);
+        if !target.is_savable() {
+            return Err(ClockOutOfRange {
+                now,
+                requested: target,
+            });
         }
         while self.now() < target {
             if !self.has_complete_entities() {
@@ -883,8 +888,8 @@ impl Sim {
                     break;
                 }
             }
-            // Cannot fail: the clock moves on the tick grid up to `target`, which is savable.
-            self.step()?;
+            // The clock moves on the tick grid up to `target`, which is savable.
+            self.tick();
             report.ticks += 1;
         }
         Ok(report)

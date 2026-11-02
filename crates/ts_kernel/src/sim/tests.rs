@@ -420,13 +420,18 @@ fn run_until_handles_extreme_dates() {
     let mut sim = build(&[]).unwrap();
     assert_eq!(sim.run_until(at(i64::MIN)), Ok(RunReport::default()));
     let before = sim.state_hash();
-    // `edge + 1` rounds up to `edge + 50`, beyond the bound.
-    for far in [i64::MAX, i64::MAX - 1, max + 1, edge + 1] {
+    // `edge + 1` is savable, but its tick ends at `edge + 50`, beyond the bound.
+    for (far, requested) in [
+        (i64::MAX, i64::MAX),
+        (i64::MAX - 1, i64::MAX - 1),
+        (max + 1, max + 1),
+        (edge + 1, edge + 50),
+    ] {
         assert_eq!(
             sim.run_until(at(far)),
             Err(ClockOutOfRange {
                 now: SimTime::EPOCH,
-                requested: SimTime::from_millis(far),
+                requested: SimTime::from_millis(requested),
             }),
             "{far}"
         );
@@ -442,7 +447,7 @@ fn run_until_handles_extreme_dates() {
         sim.run_until(at(max)),
         Err(ClockOutOfRange {
             now: SimTime::from_millis(edge),
-            requested: SimTime::from_millis(max),
+            requested: SimTime::from_millis(edge + 50),
         })
     );
     assert_eq!(
