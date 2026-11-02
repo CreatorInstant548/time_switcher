@@ -8,7 +8,6 @@
 //! Scenario(name: "toy_year", world: Toy, duration: Days(365))
 //! ```
 
-use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -92,14 +91,10 @@ impl Scenario {
         Ok(scenario)
     }
 
-    /// Reads the scenario file at `path` (a symbolic link or junction is refused, the read is
-    /// bounded as in `load_content_dir`), then parses it. Also returns the bytes read.
+    /// Reads the scenario file at `path` (a symbolic link or junction is refused, also when
+    /// swapped in during the read, and the read is bounded, as in `load_content_dir`), then
+    /// parses it. Also returns the bytes read.
     pub fn load(path: &Path, limits: &Limits) -> Result<(Self, SourceFile), Diagnostic> {
-        let md = fs::symlink_metadata(path)
-            .map_err(|_| Diagnostic::new(Code::ReadFailed, SHOWN, (0, 0), ""))?;
-        if crate::out_dir::is_link(&md) {
-            return Err(Diagnostic::new(Code::SymlinkRefused, SHOWN, (0, 0), ""));
-        }
         let file = crate::read_file(path, SHOWN, limits)?;
         Ok((Self::parse(&file, limits)?, file))
     }
