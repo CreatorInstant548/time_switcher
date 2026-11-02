@@ -498,3 +498,16 @@ erun\datanalytics\` ; l'utilisateur en est informé.
   - lot 3A repris (PR #138 `clippy.toml` en relecture, puis `clippy-checks`, #95, #17) ;
   - lot 3B (#55, #85) ;
   - relecteur Opus sur #121 et #132.
+
+### 02/11 (suite 3) : reprise après coupure de session
+
+- **Coupure** : le jeton a expiré et tous les agents se sont arrêtés. L'utilisateur a demandé la reprise, et je les ai relancés : lot 3A, lot 3B, suites A15, #121, relecture de #143.
+- **Fusions** : #138, #132 (ferme #123), #131 (A16, ferme #125), #140 (A17, ferme #137). Sur #140, j'ai résolu le conflit du README en gardant les deux lignes.
+- **Nouvelles issues** :
+  - #144 : application d'A16 (M41i) ;
+  - #145 : application d'A17 ;
+  - #141 : preuve de privauté et tests de refus ;
+  - #142 : remontée M39e, signalée à la conception.
+- **À lancer** :
+  - après la #121, un agent neuf sur le noyau (#133, #141, #144) ;
+  - après la PR de #136, un agent sur #145.
