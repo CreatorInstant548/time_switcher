@@ -1,7 +1,7 @@
 [package]
 name = "ts_runner"
 version = "0.0.0"
-description = "Tool host of time_switcher: content directories for ts_data, and the ts-sim runner."
+description = "Tool host of time_switcher: content directories for ts_data, ts-data check, and the ts-sim runner."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -10,6 +10,11 @@ publish = false
 [[bin]]
 name = "ts-sim"
 path = "src/main.rs"
+
+# `ts-data check`: checks a content directory and measures its data bounds (A15 M39).
+[[bin]]
+name = "ts-data"
+path = "src/bin/ts_data.rs"
 
 # Tool crate (xtask manifests.rs, TOOLS): it alone may depend on the test crate `ts_toy`, and it
 # is in no public binary. `parquet` without `arrow` and without any compression (Y1).
