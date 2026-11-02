@@ -754,3 +754,151 @@ fn restore_refuses_another_tick_length() {
         }
     );
 }
+
+/// Test plugin that counts its builds, in a counter of its own.
+struct Counted(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Plugin for Counted {
+    fn name(&self) -> &'static str {
+        "counted"
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    fn build(&self, _: &mut SimBuilder) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// #58: loading through a [`RestoreTarget`] builds the rules once, where
+/// [`StateLayout::of`] then [`Sim::restore`] build them twice, and gives the same world,
+/// which then runs on identically.
+#[test]
+fn restore_target_builds_the_rules_once() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let builds = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rules: Vec<Box<dyn Plugin>> = vec![
+        Box::new(Life {
+            version: 1,
+            migrates_from: None,
+            declares_state: true,
+        }),
+        Box::new(Counted(builds.clone())),
+    ];
+    let mut a = build(&rules);
+    steps(&mut a, 30);
+    let snap: MemorySnapshot = a.snapshot(SnapshotScope::Full);
+    let limits = CanonicalLimits { max_len: 1 << 30 };
+    let decode = |layout: &StateLayout| {
+        MemorySnapshot::from_canonical(
+            &snap.header_bytes(),
+            snap.canonical_bytes(),
+            layout,
+            &limits,
+        )
+        .unwrap()
+    };
+
+    builds.store(0, Relaxed);
+    let target = RestoreTarget::build(SimConfig::default(), &rules, &key()).unwrap();
+    let decoded = decode(target.layout());
+    let mut b = target.restore(&decoded).unwrap();
+    assert_eq!(builds.load(Relaxed), 1);
+
+    builds.store(0, Relaxed);
+    let layout = StateLayout::of(&SimConfig::default(), &rules).unwrap();
+    let mut c = restore(&decode(&layout), &rules).unwrap();
+    assert_eq!(builds.load(Relaxed), 2);
+
+    assert_eq!(b.state_hash(), a.state_hash());
+    assert_eq!(c.state_hash(), a.state_hash());
+    steps(&mut a, 30);
+    steps(&mut b, 30);
+    steps(&mut c, 30);
+    assert_eq!(b.state_hash(), a.state_hash());
+    assert_eq!(c.state_hash(), a.state_hash());
+}
+
+/// #58: a [`RestoreTarget`] keeps the checks of [`Snapshot::restore`]: another rule version
+/// is refused, and so is a snapshot decoded against another layout.
+#[test]
+fn restore_target_keeps_the_checks() {
+    let a = build(&life(1));
+    let snap: MemorySnapshot = a.snapshot(SnapshotScope::Full);
+    let target = RestoreTarget::build(SimConfig::default(), &life(2), &key()).unwrap();
+    assert!(matches!(
+        target.restore(&snap),
+        Err(RestoreError::RulesMismatch { .. })
+    ));
+    let silent: Vec<Box<dyn Plugin>> = vec![Box::new(Life {
+        version: 1,
+        migrates_from: None,
+        declares_state: false,
+    })];
+    let target = RestoreTarget::build(SimConfig::default(), &silent, &key()).unwrap();
+    assert_eq!(
+        target.restore(&snap).unwrap_err(),
+        RestoreError::StateLayoutMismatch
+    );
+}
+
+/// `Pos` encoded on 4 bytes: the same state type slot, another encoding.
+#[derive(Component, Clone)]
+struct NarrowPos(i32);
+
+impl StateHash for NarrowPos {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
+        w.u32(self.0.cast_unsigned());
+    }
+}
+
+impl StateDecode for NarrowPos {
+    fn decode_state(r: &mut StateReader<'_>) -> Result<Self, CanonicalError> {
+        r.u32().map(|v| Self(v.cast_signed()))
+    }
+}
+
+/// Version 2 of `life` that declares a migration from 1 but changed the encoding of `Pos`.
+struct NarrowLife;
+
+impl Plugin for NarrowLife {
+    fn name(&self) -> &'static str {
+        "life"
+    }
+    fn version(&self) -> u32 {
+        2
+    }
+    fn build(&self, b: &mut SimBuilder) {
+        b.state_component::<NarrowPos>("life")
+            .state_component::<Heat>("life")
+            .state_resource::<Total>("stats")
+            .migrates_from(1)
+            .insert_resource(Total(0));
+    }
+}
+
+/// #59: a declared migration reads the recorded values with the current decoders, so an
+/// encoding of another length is refused, from bytes and from memory (an encoding read back
+/// identically would not be: see `SimBuilder::migrates_from`).
+#[test]
+fn migration_with_a_changed_encoding_is_refused() {
+    let mut a = build(&life(1));
+    steps(&mut a, 3);
+    let snap: MemorySnapshot = a.snapshot(SnapshotScope::Full);
+    let rules: Vec<Box<dyn Plugin>> = vec![Box::new(NarrowLife)];
+    let target = RestoreTarget::build(SimConfig::default(), &rules, &key()).unwrap();
+    let limits = CanonicalLimits { max_len: 1 << 30 };
+    assert!(
+        MemorySnapshot::from_canonical(
+            &snap.header_bytes(),
+            snap.canonical_bytes(),
+            target.layout(),
+            &limits,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        target.restore(&snap).unwrap_err(),
+        RestoreError::Corrupt("state value")
+    );
+}
