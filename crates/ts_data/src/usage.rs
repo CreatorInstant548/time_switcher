@@ -1,6 +1,6 @@
-// spec: attendus-mesurables.md §10.1 (M39a à M39f) ; attendus-mesurables.md §10 (méthode commune)
+// spec: attendus-mesurables.md §10.1 (M39a to M39f) ; attendus-mesurables.md §10 (common method)
 //! Measure of the data bounds: for each bound of [`Limits`] (M39a to M39f), the largest value
-//! observed in a pack and its share of the bound. The CI warns from half of a bound, and the
+//! observed in a pack and its share of the bound. The CI warns over half of a bound, and the
 //! bound is then raised by a design PR to 4 times the largest measured value.
 //!
 //! Pure functions: the host reads the directory and fills the two values only it knows (entries
@@ -63,12 +63,16 @@ fn wide(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
+fn cap(n: u64) -> usize {
+    usize::try_from(n).unwrap_or(usize::MAX)
+}
+
 impl Usage {
     /// Measures what the files alone give: largest file, total size and deepest RON nesting.
     /// `entries`, `cards` and `dir_depth` stay at zero, for the host to fill.
     ///
     /// The nesting depth of a file is the smallest RON recursion limit under which it parses,
-    /// found by bisection up to [`Limits::max_depth`]: the very quantity the bound refuses. A
+    /// found by bisection up to [`Limits::max_depth`]: the very quantity the bound refuses (A18). A
     /// file that does not parse even at the bound counts as `max_depth + 1`.
     pub fn of_files(files: &[SourceFile], limits: &Limits) -> Self {
         let mut usage = Self::default();
@@ -78,9 +82,12 @@ impl Usage {
             if bytes > usage.file_bytes.0 || usage.file_bytes.1.is_empty() {
                 usage.file_bytes = (bytes, file.path.clone());
             }
-            let depth = wide(nesting_depth(&file.bytes, limits.max_depth));
-            if depth > usage.depth.0 || usage.depth.1.is_empty() {
-                usage.depth = (depth, file.path.clone());
+            // A file that parses at the deepest level so far cannot raise it: no bisection.
+            if !parses_within(&file.bytes, cap(usage.depth.0)) {
+                let depth = wide(nesting_depth(&file.bytes, limits.max_depth));
+                if depth > usage.depth.0 {
+                    usage.depth = (depth, file.path.clone());
+                }
             }
         }
         usage
@@ -120,7 +127,7 @@ impl Usage {
             row("M39d", "cards", self.cards, wide(limits.max_cards), None),
             row(
                 "M39e",
-                "RON nesting depth",
+                "RON recursion levels",
                 self.depth.0,
                 wide(limits.max_depth),
                 Some(&self.depth.1),

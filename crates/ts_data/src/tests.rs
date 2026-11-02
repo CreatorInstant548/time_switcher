@@ -823,7 +823,7 @@ mod usage {
         let values: Vec<u64> = rows.iter().map(|r| r.value).collect();
         assert_eq!(values, [10, 20, 3, 4, 5, 6]);
         let bounds: Vec<u64> = rows.iter().map(|r| r.bound).collect();
-        assert_eq!(bounds, [1 << 20, 64 << 20, 4096, 65_536, 16, 8]);
+        assert_eq!(bounds, [1 << 20, 64 << 20, 4096, 65_536, 32, 8]);
         let at: Vec<Option<&str>> = rows.iter().map(|r| r.at.as_deref()).collect();
         assert_eq!(at, [Some("x.ron"), None, None, None, Some("y.ron"), None]);
         // An empty pack names no file.

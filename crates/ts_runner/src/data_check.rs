@@ -1,4 +1,4 @@
-// spec: attendus-mesurables.md §10.1 (M39a à M39f) ; attendus-mesurables.md §10.2 (M40d)
+// spec: attendus-mesurables.md §10.1 (M39a to M39f) ; attendus-mesurables.md §10.2 (M40d)
 //! `ts-data check <content-dir> [--github]`: loads a content directory, checks it against its
 //! identifier registry, and reports the measure of each data bound (M39a to M39f): the largest
 //! observed value and its share of the bound.
@@ -96,7 +96,15 @@ fn percent(per_mille: u64) -> String {
     format!("{}.{} %", per_mille / 10, per_mille % 10)
 }
 
-/// One report line. The path is escaped: no control character reaches the output.
+/// A relative path as printed: control characters escaped, so it cannot end a line, and every
+/// `#` escaped, so it cannot hold the `##[` or `##vso[` commands that the Actions runner looks
+/// for anywhere in a line. A `::` command only counts at the start of a line, and no path comes
+/// first on a line here.
+fn printable(path: &str) -> String {
+    path.escape_debug().to_string().replace('#', r"\#")
+}
+
+/// One report line.
 fn render(row: &Row) -> String {
     let mut line = format!(
         "{}  {:<22} {:>10} of {:<10} {:>8}",
@@ -107,7 +115,7 @@ fn render(row: &Row) -> String {
         percent(row.per_mille())
     );
     if let Some(at) = &row.at {
-        let _ = write!(line, "  {}", at.escape_debug());
+        let _ = write!(line, "  {}", printable(at));
     }
     if row.over_half() {
         line.push_str("  OVER HALF");
@@ -116,8 +124,7 @@ fn render(row: &Row) -> String {
 }
 
 /// A GitHub Actions warning annotation for a bound used over half. The message is escaped as
-/// the workflow command format requires (`%`, CR and LF), so a path cannot end the command and
-/// start another; the title is a fixed bound number.
+/// the workflow command format requires (`%`, CR and LF); the title is a fixed bound number.
 fn annotation(row: &Row) -> String {
     let mut message = format!(
         "{} {}: {} of {} ({}), over half of the bound",
@@ -128,7 +135,7 @@ fn annotation(row: &Row) -> String {
         percent(row.per_mille())
     );
     if let Some(at) = &row.at {
-        let _ = write!(message, ", in {at}");
+        let _ = write!(message, ", in {}", printable(at));
     }
     message.push_str(": raise it by a design PR (attendus-mesurables.md §10)");
     let message: String = message
@@ -185,8 +192,15 @@ mod tests {
             note.starts_with("::warning title=M39a data bound::M39a "),
             "{note}"
         );
-        assert!(note.contains("a%0A::error::forged%250A.ron"), "{note}");
+        assert!(note.contains(r"a\n::error::forged%250A.ron"), "{note}");
         assert!(note.contains("(100.0 %25)"), "{note}");
+        // The legacy commands of the runner match anywhere in a line.
+        for text in [
+            render(&row(1, 2, Some("##[error]x"))),
+            annotation(&row(2, 2, Some("##vso[x"))),
+        ] {
+            assert!(!text.contains("##"), "{text}");
+        }
     }
 
     #[test]

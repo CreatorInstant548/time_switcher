@@ -60,7 +60,7 @@ pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, Loa
     ContentPack::build(files, limits)
 }
 
-// spec: attendus-mesurables.md §10.1 (M39a à M39f)
+// spec: attendus-mesurables.md §10.1 (M39a to M39f)
 /// Loads `root` as [`load_content_dir`] does, and measures the largest value of each data
 /// bound ([`Usage`]): the files give their sizes and nesting depth, the walk its entry count
 /// and sub-directory depth, the pack its card count. Measured only when the pack loads.

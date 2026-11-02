@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+default-run = "ts-sim"
 
 [[bin]]
 name = "ts-sim"
@@ -15,6 +16,8 @@ path = "src/main.rs"
 [[bin]]
 name = "ts-data"
 path = "src/bin/ts_data.rs"
+# Its crate name is that of the `ts_data` library: rustdoc would write both to the same place.
+doc = false
 
 # Tool crate (xtask manifests.rs, TOOLS): it alone may depend on the test crate `ts_toy`, and it
 # is in no public binary. `parquet` without `arrow` and without any compression (Y1).

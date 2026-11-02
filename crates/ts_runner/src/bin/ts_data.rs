@@ -1,4 +1,4 @@
-// spec: attendus-mesurables.md §10.1 (M39a à M39f)
+// spec: attendus-mesurables.md §10.1 (M39a to M39f)
 //! `ts-data`, the content tool (phase 0: `check` only).
 //!
 //! ```text

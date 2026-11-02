@@ -19,7 +19,7 @@ pub struct Limits {
     pub max_files: usize,
     /// Most cards in a pack.
     pub max_cards: usize,
-    /// RON recursion limit (nesting depth).
+    /// RON recursion limit: nesting depth in RON recursion levels, about two per visible level.
     pub max_depth: usize,
     /// Deepest sub-directory level a host reads.
     pub max_dir_depth: usize,
@@ -37,8 +37,7 @@ impl Default for Limits {
             // spec: attendus-mesurables.md §10.1 (M39d)
             max_cards: 65_536,
             // spec: attendus-mesurables.md §10.1 (M39e)
-            // PROVISIONAL(design #142): 16 RON recursion levels, about two per visible level.
-            max_depth: 16,
+            max_depth: 32,
             // spec: attendus-mesurables.md §10.1 (M39f)
             max_dir_depth: 8,
         }
