@@ -655,8 +655,8 @@ impl Sim {
                 return Err(BuildError::Schedule { phase, message });
             }
         }
-        // After `initialize`, so that the count includes the sync points that `bevy_ecs`
-        // inserted: an upper bound of the systems that can run together (speed only).
+        // After `initialize`: the count of the phase's own systems, since no sync point is
+        // inserted (AS-57); an upper bound of the systems that can run together (speed only).
         let switches = switches
             .into_iter()
             .zip(&phases)

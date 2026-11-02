@@ -3,9 +3,10 @@
 //! which reads `Foo`; `c` inserts `Foo` through `Commands`, unordered with both. With an
 //! automatic sync point after `a`, `c`'s commands could be applied there or at the end of the
 //! phase depending on timing, so `b` might see `Foo` on one run and not on the next. With
-//! none (K-a), `b` never sees it within the phase, and the next phase always does.
+//! none (K-a), `b` never sees the `Foo` of the current tick within the phase, and the next
+//! phase always does. `Foo` stays on the entities, so the fingerprint covers its values.
 
-use bevy_ecs::prelude::{Commands, Component, Entity, Has, Query, Res, ResMut, Resource, With};
+use bevy_ecs::prelude::{Commands, Component, Entity, Query, Res, ResMut, Resource, With};
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use ts_kernel::{
     CanonicalError, ParallelPhases, Phase, Plugin, Sim, SimBuilder, SimClock, SimConfig,
@@ -21,9 +22,9 @@ const TICKS: usize = 20;
 /// Runs per thread count (AS-57: at least 200).
 pub const RUNS: usize = 200;
 /// Fingerprint of every run, whatever the number of threads.
-pub const EXPECTED: &str = "ba5fa73ea7352b20e7c7b0aa9c80beb70d6e3564ab0e21bc52ff6bf589d950fd";
+pub const EXPECTED: &str = "411003425a6ccdad3cd8021621d583358c789025dc17369e47b3fb49dde7955d";
 
-/// Inserted by `c` in `Act`, removed in `Output`.
+/// Inserted by `c` in `Act` on every tick, with the date of the tick: part of the state.
 #[derive(Component, Clone)]
 struct Foo(i64);
 
@@ -44,8 +45,8 @@ impl StateDecode for Foo {
 #[derive(Component)]
 struct Bar;
 
-/// What the readers saw: `Foo` within the phase of its insertion (`b`), and in the next
-/// phase (`e`).
+/// What the readers saw of the `Foo` of the current tick: within the phase of its insertion
+/// (`b`), and in the next phase (`e`).
 #[derive(Resource, Clone, Default)]
 struct Seen {
     in_phase: u64,
@@ -74,8 +75,13 @@ fn a(mut commands: Commands, q: Query<Entity, With<StableEntity>>) {
     }
 }
 
-fn b(q: Query<Has<Foo>, With<StableEntity>>, mut seen: ResMut<Seen>) {
-    seen.in_phase += q.iter().filter(|&has| has).count() as u64;
+/// `Foo` of the current tick, among `q`.
+fn current(q: &Query<&Foo>, clock: &SimClock) -> u64 {
+    q.iter().filter(|f| f.0 == clock.now().as_millis()).count() as u64
+}
+
+fn b(q: Query<&Foo>, clock: Res<SimClock>, mut seen: ResMut<Seen>) {
+    seen.in_phase += current(&q, &clock);
 }
 
 fn c(mut commands: Commands, clock: Res<SimClock>, q: Query<Entity, With<StableEntity>>) {
@@ -84,14 +90,8 @@ fn c(mut commands: Commands, clock: Res<SimClock>, q: Query<Entity, With<StableE
     }
 }
 
-fn e(q: Query<&Foo>, mut seen: ResMut<Seen>) {
-    seen.next_phase += q.iter().count() as u64;
-}
-
-fn d(mut commands: Commands, q: Query<Entity, With<Foo>>) {
-    for e in &q {
-        commands.entity(e).remove::<Foo>();
-    }
+fn e(q: Query<&Foo>, clock: Res<SimClock>, mut seen: ResMut<Seen>) {
+    seen.next_phase += current(&q, &clock);
 }
 
 struct DeferredWorld;
@@ -118,7 +118,6 @@ impl Plugin for DeferredWorld {
         }
         builder.add_systems(Phase::Act, (a, b.after(a), c));
         builder.add_systems(Phase::Consequences, e);
-        builder.add_systems(Phase::Output, d);
     }
 }
 

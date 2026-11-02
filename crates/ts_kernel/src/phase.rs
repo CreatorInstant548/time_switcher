@@ -74,8 +74,10 @@ impl Phase {
 /// system, unordered with both, could have its commands applied at that point or at the end
 /// of the phase depending on timing: a result that differs between two parallel runs. With
 /// none, the commands of a phase are applied once, at the end of the phase, in the order of
-/// the schedule's systems, which depends on the build only. Manual points (`ApplyDeferred`)
-/// are banned by `clippy.toml` (K-b).
+/// the schedule's systems, which depends on the build only. (The `Entity` that
+/// `Commands::spawn` reserves may still differ between parallel runs: it is not state, and
+/// durable references use `StableId`.) Manual points (`ApplyDeferred`) are banned by
+/// `clippy.toml` and by `cargo xtask check` (K-b).
 pub(crate) fn phase_schedule(phase: Phase, threads: Threads) -> (Schedule, Option<ExecutorSwitch>) {
     let mut schedule = Schedule::new(phase);
     schedule.set_build_settings(ScheduleBuildSettings {
