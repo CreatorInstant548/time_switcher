@@ -197,12 +197,13 @@ impl Src {
         (any, rules)
     }
 
-    /// Lines of the attributes assembled from a metavariable in a `macro_rules!` body: `#[` or
-    /// `#![` then `$name` followed by anything but `]` (`#[$a(not($b))]`, `#[$k = $v]`,
-    /// `#[$l($t::$g)]`, `#[$($t)*]`), or `$name(` / `$name =` anywhere inside the attribute
-    /// (`#[cfg_attr(all(), $a(not($b)))]`, `#[cfg_attr(test, $k = $v)]`, review of PR #111).
-    /// `$(#[$m])*` forwards an attribute whole and stays allowed, and so does the matcher
-    /// `#[$m:meta]`; a metavariable used as a value (`#[doc = $d]`) stays allowed too.
+    /// Lines of the attributes assembled from a metavariable in a `macro_rules!` body. Inside
+    /// `#[…]` or `#![…]`, every `$` is refused except three shapes that cannot name an
+    /// attribute or a lint: the attribute forwarded whole, `#[$m]` (as in `$(#[$m])*`); the
+    /// matcher `#[$m:meta]`; and a metavariable used as a value right after `=`, ending its
+    /// item (`#[doc = $d]`). So `#[$a(not($b))]`, `#[$k = $v]`, `#[$($t)*]`,
+    /// `#[cfg_attr(all(), $a(not($b)))]`, `#[cfg_attr(all(), $a $b)]` and
+    /// `#[cfg_attr(all(), $($a)*)]` are all refused (reviews of PRs #111 and #114).
     fn metavariable_attributes(&self, rules: &[bool]) -> Vec<usize> {
         let t = &self.text;
         let mut lines = Vec::new();
@@ -214,51 +215,75 @@ impl Src {
             if t.get(j) != Some(&'[') {
                 continue;
             }
-            if self.assembles_inside(j) {
-                lines.push(self.line[k]);
-                continue;
-            }
-            if t.get(j + 1) != Some(&'$') {
-                continue;
-            }
-            j += 2;
-            let name = t[j..].iter().take_while(|&&c| is_ident(c)).count();
-            j += name;
-            let whole = name > 0 && t.get(j) == Some(&']');
-            let matcher = name > 0 && t.get(j) == Some(&':') && {
-                let frag = t[j + 1..].iter().take_while(|&&c| is_ident(c)).count();
-                frag > 0 && t.get(j + 1 + frag) == Some(&']')
-            };
-            if !(whole || matcher) {
+            let close = self.attribute_end(j);
+            let refused = (j + 1..close)
+                .filter(|&d| t[d] == '$' && !self.string[d])
+                .any(|d| !self.inert_metavariable(j, d, close));
+            if refused {
                 lines.push(self.line[k]);
             }
         }
         lines
     }
 
-    /// Inside the attribute whose `[` is at `open`, up to its matching `]` (literals skipped),
-    /// a metavariable is followed by `(` or `=`: it would become the attribute or lint name.
-    fn assembles_inside(&self, open: usize) -> bool {
-        let t = &self.text;
+    /// Index of the `]` that closes the attribute whose `[` is at `open` (literals skipped), or
+    /// the end of the text.
+    fn attribute_end(&self, open: usize) -> usize {
         let mut depth = 0_usize;
-        for k in open..t.len() {
+        for k in open..self.text.len() {
             if self.string[k] {
                 continue;
             }
-            match t[k] {
+            match self.text[k] {
                 '[' => depth += 1,
-                ']' if depth <= 1 => return false,
+                ']' if depth <= 1 => return k,
                 ']' => depth -= 1,
-                '$' => {
-                    let name = t[k + 1..].iter().take_while(|&&c| is_ident(c)).count();
-                    if name > 0 && matches!(t.get(k + 1 + name), Some('(' | '=')) {
-                        return true;
-                    }
-                }
                 _ => {}
             }
         }
-        false
+        self.text.len()
+    }
+
+    /// The `$` at `d`, inside the attribute `[open..close]`, is one of the three allowed shapes
+    /// (see [`Src::metavariable_attributes`]).
+    fn inert_metavariable(&self, open: usize, d: usize, close: usize) -> bool {
+        let t = &self.text;
+        let name = t[d + 1..close].iter().take_while(|&&c| is_ident(c)).count();
+        if name == 0 {
+            return false; // `$(` repetition, `$$`, `$` alone
+        }
+        let after = d + 1 + name;
+        let whole = d == open + 1 && after == close;
+        let matcher = d == open + 1 && t.get(after) == Some(&':') && {
+            let frag = t[after + 1..close]
+                .iter()
+                .take_while(|&&c| is_ident(c))
+                .count();
+            frag > 0 && after + 1 + frag == close
+        };
+        let value =
+            d > open + 1 && t[d - 1] == '=' && matches!(t.get(after), Some(']' | ',' | ')'));
+        whole || matcher || value
+    }
+
+    /// For each character: inside an attribute `#[…]` or `#![…]`, up to its closing `]`.
+    fn in_attribute(&self) -> Vec<bool> {
+        let t = &self.text;
+        let mut out = vec![false; t.len()];
+        let mut k = 0;
+        while k < t.len() {
+            if t[k] == '#' && !self.string[k] {
+                let open = k + 1 + usize::from(t.get(k + 1) == Some(&'!'));
+                if t.get(open) == Some(&'[') && !self.string[open] {
+                    let close = self.attribute_end(open);
+                    out[open..close.min(t.len())].fill(true);
+                    k = open + 1;
+                    continue;
+                }
+            }
+            k += 1;
+        }
+        out
     }
 
     /// For each character: inside a `use` declaration, up to its closing `;`.
@@ -412,23 +437,27 @@ pub(crate) fn normalize(source: &str) -> Src {
     src
 }
 
-/// Numéros de ligne des formes refusées dans une crate de cœur :
-/// - le nom d'un lint d'interdiction (`DISALLOWED_LINTS`, anciens noms compris), quel que soit le
-///   contexte, et tout `clippy::disallowed_*` ;
-/// - `include`, `include_str` ou `include_bytes` appelé (`!`), dans un chemin, dans un `use` ou
-///   dans les arguments d'une macro ;
-/// - `path = …` dans un attribut (`#[path]`, `cfg_attr(…, path = …)`, argument de macro) ;
-/// - `allow(…)` ou `expect(…)` de `clippy::all`, `clippy::style` ou `warnings`, et tout `$` dans
-///   les arguments d'un `allow`, `expect`, `warn` ou `deny` ;
-/// - un prédicat de `cfg(…)` (sauf après un identifiant ou un `.`, comme `fn cfg(level)`),
-///   `cfg!(…)` ou `cfg_attr(…)` hors de `test`, `feature = "…"`, `all`, `any` et `not`.
+/// Line numbers of the forms refused in a core crate:
+/// - the name of a ban lint (`DISALLOWED_LINTS`, old names included), whatever the context, and
+///   any `clippy::disallowed_*`;
+/// - `include`, `include_str` or `include_bytes` called (`!`), in a path, in a `use` or in the
+///   arguments of a macro;
+/// - `path = …` in an attribute (`#[path]`, `cfg_attr(…, path = …)`, macro argument);
+/// - `allow(…)` or `expect(…)` of `clippy::all`, `clippy::style` or `warnings`, and any `$` in
+///   the arguments of an `allow`, `expect`, `warn` or `deny`;
+/// - a predicate of `cfg(…)` (except after an identifier or a `.`, as in `fn cfg(level)`, or
+///   after `::` outside an attribute), `cfg!(…)` or `cfg_attr(…)` other than `test`,
+///   `feature = "…"`, `all`, `any` and `not`;
+/// - an attribute assembled from a metavariable in a `macro_rules!` body.
 pub fn clippy_exemptions(source: &str) -> Vec<usize> {
     let src = normalize(source);
     let mut found = Vec::new();
     let next = |end: usize, w: &str| next_is(&src, end, w);
     let ((in_macro, rules), in_use) = (src.macro_regions(), src.in_use());
+    let in_attribute = src.in_attribute();
     found.extend(src.metavariable_attributes(&rules));
-    for tok in src.tokens() {
+    let tokens = src.tokens();
+    for &tok in &tokens {
         let (start, end) = tok;
         let word = src.word(tok);
         let prev = start.checked_sub(1).map(|p| src.text[p]);
@@ -436,9 +465,10 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
         // macro makes of them (`m!(x cfg(not(clippy)))` into `#[cfg(not(clippy))]`).
         let strict = in_macro[start];
         // Outside such a region, `cfg` after an identifier (`fn cfg(…)`) or a `.` names something
-        // else. After `::` it is refused: this reader cannot rule out a qualified path to the
-        // built-in attribute (review of PR #111).
-        let named = !strict && prev.is_some_and(|c| is_ident(c) || c == '.');
+        // else, and so does `cfg` after `::` outside an attribute (`Self::cfg(level)`). Inside
+        // an attribute, `core::cfg(…)` may be a path to the built-in one (review of PR #111).
+        let qualified = prev == Some(':') && !in_attribute[start];
+        let named = !strict && prev.is_some_and(|c| is_ident(c) || c == '.' || qualified);
         let inclusion = includes_code(&src, tok, &in_macro, &in_use);
         let lint = matches!(word.as_str(), "allow" | "expect" | "warn" | "deny")
             && (prev != Some('.') || strict)
@@ -460,10 +490,10 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
             _ => None,
         };
         let cfg = cfg.is_some_and(|(open, close)| {
-            src.tokens()
-                .into_iter()
-                .filter(|&(s, _)| s >= open && s < close)
-                .any(|t| !CFG_IDENTS.contains(&src.word(t).as_str()))
+            tokens
+                .iter()
+                .filter(|&&(s, _)| s >= open && s < close)
+                .any(|&t| !CFG_IDENTS.contains(&src.word(t).as_str()))
         });
         let disallowed = DISALLOWED_LINTS.contains(&word.as_str())
             || (word.starts_with("disallowed_") && src.follows(start, "clippy::"));
@@ -816,6 +846,9 @@ mod tests {
             "#[cfg_attr(test, x, $a (y))] fn f() {}",
             "#![cfg_attr(all(), $a(x))]",
             "#[cfg_attr(all(), inline, $k=\"c.rs\")] mod c;",
+            "#[cfg_attr(all(), $a $b)] fn f() {}",
+            "#[cfg_attr(all(), $($a)* $($b)*)] fn f() {}",
+            "#[doc = $d $e] fn f() {}",
         ] {
             assert!(flagged(&body(bad)), "{bad}");
         }
@@ -834,10 +867,13 @@ mod tests {
         for bad in [
             "#[core::cfg(not(clippy))] fn a() {}",
             "#[::core::cfg(debug_assertions)] fn a() {}",
-            "fn f() -> u8 { m::cfg(level) }",
+            "#[cfg_attr(all(), core::cfg(not(clippy)))] fn a() {}",
         ] {
             assert!(flagged(bad), "{bad}");
         }
+        assert!(!flagged(
+            "fn f() -> u8 { m::cfg(level) + Self::cfg(level) }"
+        ));
         assert!(!flagged("fn g(x: &T) -> u8 { x.cfg(level) }"));
         assert!(!flagged("fn cfg(level: u8) -> u8 { level }"));
     }
@@ -847,8 +883,7 @@ mod tests {
     fn raw_identifier_ends_at_a_blank() {
         for source in ["r#a if", "r#a\nif", "r#a/* c */if", "r#a// c\nif"] {
             let src = normalize(source);
-            let raw: Vec<bool> = src.raw.clone();
-            assert_eq!(raw, [true, false, false], "{source}");
+            assert_eq!(src.raw, [true, false, false], "{source}");
         }
         // `if !(…)` after a raw identifier is a negation, not a macro call.
         assert!(!flagged(
