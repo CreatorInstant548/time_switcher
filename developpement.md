@@ -426,3 +426,10 @@ erun\datanalytics\` ; l'utilisateur en est informé.
   - dette : 24 issues `role:dev` à traiter par lots ;
   - AU1, sur décision de l'utilisateur ;
   - #87, quand la conception aura corrigé.
+- 02/11 : PR fusionnées :
+  - #100 (#50 m4/m7, `6c7c7bd`) ; #50 close, la signature part au reliquat de la phase 5 et m5 passe dans #45 ;
+  - #102 (AU8, `ffd15dd`), qui ferme #98 ;
+  - #103 (#48, `c9266c6`) ; #48 close, son dernier point part au reliquat avec `ts_host`.
+- #6 close avec sa justification point par point.
+- En cours : #101 (#77 + liste fermée de déclencheurs AS-53 + sauts de ligne ``/U+2028) et #63 (`--no-replace-objects`).
+- Leçon : après chaque fusion qui touche `.github/` ou `docs/dev/`, les PR qui partagent ces fichiers perdent le report AS-40. Il faut alors relire le commit de fusion, ce qui reste rapide avec Sonnet.
