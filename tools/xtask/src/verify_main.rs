@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use serde_json::Value;
 
 use crate::carry::{Carry, Pr};
-use crate::github::{Repo, approved, is_sha};
+use crate::github::{ANOMALY_TITLE, DRIFT_TITLE, Repo, approved, is_sha};
 use crate::{sensitive, sys};
 
 /// Commits d'avant l'outillage, sans PR : la base, liste fermée.
@@ -368,7 +368,8 @@ pub fn settings_or_report(repo: &Repo) -> Result<bool, String> {
     println!("  réglages GitHub : repo-settings.ps1 -Check");
     if repo.ci {
         let msg = "repo-settings.ps1 -Check sauté en CI : GITHUB_TOKEN n'a pas les droits \
-                   d'administration ; il tourne à chaque cargo xtask merge (AS-30 R5)";
+                   d'administration ; l'orchestrateur le lance chaque jour depuis la copie \
+                   principale (AS-50 AU3)";
         println!("  AVERTISSEMENT : {msg}");
         // Not from the tests, which also run in CI.
         if let Some(path) = sys::env("GITHUB_STEP_SUMMARY").filter(|_| !cfg!(test)) {
@@ -381,22 +382,19 @@ pub fn settings_or_report(repo: &Repo) -> Result<bool, String> {
         }
         return Ok(true);
     }
-    let (code, out, err) = run_settings_check(repo, None)?;
+    let (code, out, err) = run_settings_check(repo)?;
     match code {
         Some(0) => Ok(true),
         Some(1) => {
             let body = format!(
                 "`repo-settings.ps1 -Check` : les réglages GitHub du dépôt diffèrent de \
-                 `tools/ci/repo-settings.json` d'`origin/main`, et les fusions sont suspendues.\n\n\
+                 `tools/ci/repo-settings.json` d'`origin/main`, et les fusions sont suspendues \
+                 tant que cette issue est ouverte (AS-50 AU2, AU3).\n\n\
                  ```\n{}\n```\n\nPour lever l'écart : corriger le fichier par une PR de chemin \
                  sensible, ou relancer `-Apply` depuis la copie principale (orchestrateur).",
                 out.chars().take(4000).collect::<String>().trim_end()
             );
-            repo.open_issue(
-                "repo-settings-drift",
-                "verify-main : réglages GitHub différents de tools/ci/repo-settings.json",
-                &body,
-            )?;
+            repo.open_issue("repo-settings-drift", DRIFT_TITLE, &body)?;
             Ok(false)
         }
         _ => Err(format!(
@@ -406,74 +404,26 @@ pub fn settings_or_report(repo: &Repo) -> Result<bool, String> {
     }
 }
 
-/// `pwsh -NoProfile -NonInteractive -File <main copy>\tools\dev\repo-settings.ps1 -Check`, plus
-/// `-SourceCommit <sha>` when `source` is given; its output is shown.
-fn run_settings_check(
-    repo: &Repo,
-    source: Option<&str>,
-) -> Result<(Option<i32>, String, String), String> {
+/// `pwsh -NoProfile -NonInteractive -File <main copy>\tools\dev\repo-settings.ps1 -Check`; its
+/// output is shown.
+fn run_settings_check(repo: &Repo) -> Result<(Option<i32>, String, String), String> {
     let script = repo
         .main
         .join("tools")
         .join("dev")
         .join("repo-settings.ps1");
     let script = script.to_string_lossy();
-    let mut args = vec!["-NoProfile", "-NonInteractive", "-File", &script, "-Check"];
-    if let Some(sha) = source {
-        args.extend(["-SourceCommit", sha]);
-    }
+    let args = ["-NoProfile", "-NonInteractive", "-File", &script, "-Check"];
     let (code, out, err) = repo.runner.run(&repo.main, "pwsh", &args)?;
     let out = String::from_utf8_lossy(&out).into_owned();
     print!("{out}");
     Ok((code, out, err))
 }
 
-/// AS-38, condition 2: drift recomputed with `tools/ci/repo-settings.json` of commit `sha` (the
-/// head of a repair PR), which the script reads by `git show <sha>:…`, never from the disk.
-/// `Ok(true)` if there is none. Opens no issue; never skipped, so an error in CI mode.
-pub fn settings_at(repo: &Repo, sha: &str) -> Result<bool, String> {
-    if repo.ci {
-        return Err(
-            "repo-settings.ps1 -Check -SourceCommit is never skipped: not in CI mode".into(),
-        );
-    }
-    if !is_sha(sha) {
-        return Err(format!("-SourceCommit: « {sha} » is not a full SHA"));
-    }
-    println!("  GitHub settings against tools/ci/repo-settings.json of {sha}");
-    let (code, _, err) = run_settings_check(repo, Some(sha))?;
-    match code {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => Err(format!(
-            "repo-settings.ps1 -Check -SourceCommit {sha} could not conclude (code {code:?}): {}",
-            err.trim()
-        )),
-    }
-}
-
-/// History and GitHub settings, judged apart: `merge` lets a settings drift alone through for a
-/// repair PR (AS-38).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Health {
-    pub history: bool,
-    /// `Some(false)` on a drift; `None` when `-Check` could not conclude (`--dry-run` only).
-    pub settings: Option<bool>,
-}
-
 /// `verify-main`, avec une *issue* par anomalie ; vrai si l'historique et les réglages GitHub sont
 /// conformes. L'historique passe d'abord : un `-Check` qui échoue ne le cache pas. En `--dry-run`,
 /// un `-Check` qui n'a pas pu conclure compte comme un écart.
 pub fn verify_or_report(repo: &Repo, origin: Option<Origin>) -> Result<bool, String> {
-    health(repo, origin).map(|h| h.history && h.settings == Some(true))
-}
-
-/// [`verify_or_report`] without `--origin`, with the history and the settings verdicts apart.
-pub fn verify_parts(repo: &Repo) -> Result<Health, String> {
-    health(repo, None)
-}
-
-fn health(repo: &Repo, origin: Option<Origin>) -> Result<Health, String> {
     let anomalies = check(repo, origin)?;
     for (sha, bad) in &anomalies {
         let body = format!(
@@ -483,24 +433,17 @@ fn health(repo: &Repo, origin: Option<Origin>) -> Result<Health, String> {
              (`tools/xtask/src/verify_main.rs`) par une PR de chemin sensible, avec `archsec-ok` (J5).",
             bad.join("\n- ")
         );
-        repo.open_issue(
-            sha,
-            &format!("verify-main : anomalie sur le commit {}", &sha[..7]),
-            &body,
-        )?;
+        repo.open_issue(sha, &format!("{ANOMALY_TITLE} {}", &sha[..7]), &body)?;
     }
     let settings = match settings_or_report(repo) {
-        Ok(ok) => Some(ok),
+        Ok(ok) => ok,
         Err(e) if repo.dry_run => {
             println!("  AVERTISSEMENT (--dry-run) : {e}");
-            None
+            false
         }
         Err(e) => return Err(e),
     };
-    Ok(Health {
-        history: anomalies.is_empty(),
-        settings,
-    })
+    Ok(anomalies.is_empty() && settings)
 }
 
 /// Remote refs read by `check`: the history, and the architecture lead's log for J4.
@@ -650,7 +593,6 @@ mod tests {
             dry_run,
             ci,
             cache: std::env::temp_dir(),
-            home: None,
             runner: Box::new(Settings(code, Rc::clone(&calls))),
         };
         let result = settings_or_report(&repo);
@@ -681,45 +623,6 @@ mod tests {
         let (r, calls) = settings(Some(1), true, false);
         assert_eq!(r, Ok(true));
         assert!(calls.is_empty(), "{calls:?}");
-    }
-
-    /// AS-38: the drift recomputed with the file of a given commit runs `-Check -SourceCommit
-    /// <sha>` and opens no issue; a bad SHA or the CI mode runs nothing and is an error.
-    #[test]
-    fn settings_at_source_commit() {
-        let repo = |code: Option<i32>, ci: bool, calls: &Rc<RefCell<Vec<String>>>| Repo {
-            main: PathBuf::from("main"),
-            here: PathBuf::from("main"),
-            slug: "o/r".to_owned(),
-            dry_run: false,
-            ci,
-            cache: std::env::temp_dir(),
-            home: None,
-            runner: Box::new(Settings(code, Rc::clone(calls))),
-        };
-        for (code, want) in [(Some(0), Ok(true)), (Some(1), Ok(false))] {
-            let calls = Rc::new(RefCell::new(Vec::new()));
-            assert_eq!(settings_at(&repo(code, false, &calls), SHA), want);
-            let calls = calls.borrow().clone();
-            assert_eq!(calls.len(), 1, "{calls:?}");
-            assert!(
-                calls[0].ends_with(&format!("repo-settings.ps1 -Check -SourceCommit {SHA}")),
-                "{calls:?}"
-            );
-        }
-        for (sha, ci, code) in [
-            (&SHA[..39], false, Some(0)),
-            (&SHA.to_uppercase()[..], false, Some(0)),
-            (SHA, true, Some(0)),
-            (SHA, false, Some(2)),
-        ] {
-            let calls = Rc::new(RefCell::new(Vec::new()));
-            assert!(
-                settings_at(&repo(code, ci, &calls), sha).is_err(),
-                "{sha} {ci} {code:?}"
-            );
-            assert_eq!(calls.borrow().len(), usize::from(code == Some(2)));
-        }
     }
 
     /// Answers `git fetch` and `git rev-parse` of the refs in `.0` with 0, any other
@@ -755,7 +658,6 @@ mod tests {
             dry_run: true,
             ci,
             cache: std::env::temp_dir(),
-            home: None,
             runner: Box::new(Refs(present.to_vec(), Rc::clone(&calls))),
         };
         let result = refresh(&repo);
@@ -913,7 +815,6 @@ mod tests {
             dry_run: true,
             ci,
             cache: std::env::temp_dir(),
-            home: None,
             runner: Box::new(Fake(answers, Rc::clone(&calls))),
         };
         (repo, calls)

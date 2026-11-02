@@ -36,13 +36,15 @@ impl TownSpec {
     };
 }
 
-/// Use of a parcel.
+/// Use of a parcel. The discriminants are part of the state hash (see the `StateHash` impl of
+/// [`Town`]): explicit and frozen, they change only with the golden values (issue #68, m3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum ParcelKind {
     /// Households live there.
-    Home,
+    Home = 0,
     /// Residents work there.
-    Work,
+    Work = 1,
 }
 
 /// A resident: home parcel and work parcel, by index in the grid.
@@ -181,5 +183,17 @@ pub fn generate(spec: &TownSpec, keys: &StreamKeys, exec: Execution) -> Town {
         width: spec.width,
         parcels,
         residents,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The discriminants of [`ParcelKind`] are hashed: they are frozen (issue #68, m3).
+    #[test]
+    fn parcel_kind_discriminants_are_frozen() {
+        assert_eq!(ParcelKind::Home as u8, 0);
+        assert_eq!(ParcelKind::Work as u8, 1);
     }
 }

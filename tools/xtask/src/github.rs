@@ -1,4 +1,4 @@
-//! Accès à Git et à GitHub pour `merge`, `verify-main` et `hooks`. Tout est en lecture, sauf
+//! Accès à Git et à GitHub pour `merge` et `verify-main`. Tout est en lecture, sauf
 //! [`Repo::open_issue`] ; la fusion elle-même reste dans `merge`. Un appel qui échoue ou une
 //! réponse illisible est une erreur, jamais une réussite.
 //! spec: carnet architecture-securite.md SEC0-15, SEC0-17 ; §9.6 G3 ; §9.8 J3, J5
@@ -74,9 +74,8 @@ pub struct Repo {
     /// Mode CI (A2) : les réglages GitHub n'y sont pas lisibles (`GITHUB_TOKEN` sans droits
     /// d'administration), `verify-main` saute leur contrôle avec un avertissement (AS-30 R5).
     pub ci: bool,
-    /// `TS_CACHE` et dossier personnel (réglages de Claude Code), remplaçables en test.
+    /// `TS_CACHE`, remplaçable en test.
     pub cache: PathBuf,
-    pub home: Option<PathBuf>,
     pub runner: Box<dyn Run>,
 }
 
@@ -119,7 +118,7 @@ pub fn pages(text: &str) -> Result<Vec<Value>, String> {
 }
 
 impl Repo {
-    /// `github` faux : distant hors de GitHub permis (`hooks`, essais dans un dépôt jetable) ; le
+    /// `github` faux : distant hors de GitHub permis (essais dans un dépôt jetable) ; le
     /// `slug` reste vide et toute *issue* échoue.
     pub fn open(dry_run: bool, github: bool) -> Result<Self, String> {
         let cwd =
@@ -148,7 +147,6 @@ impl Repo {
             dry_run,
             ci: crate::steps::ci_mode(),
             cache: sys::ts_cache(),
-            home: sys::home(),
             runner: Box::new(System),
         })
     }
@@ -315,36 +313,36 @@ impl Repo {
         Ok(judge_ci(&runs, &suites, sha, wid, s).err())
     }
 
-    /// Ouvre une *issue* `role:architecture`, ou réutilise celle, ouverte, qui porte déjà `key`
-    /// (J5). Avec `--dry-run`, affiche seulement celle qu'il ouvrirait.
+    /// Ouvre une *issue* d'anomalie `role:architecture`, ou réutilise celle, ouverte, qui porte
+    /// déjà `key` (J5). Avec `--dry-run`, affiche seulement celle qu'il ouvrirait. `title` must
+    /// start with one of [`ANOMALY_TITLES`]; only an issue that [`tracks`] `key` is reused, so a
+    /// reused issue always stops `merge` (AS-50 AU2): another issue that merely quotes the key
+    /// (a remontée, a note) never absorbs the anomaly.
     pub fn open_issue(&self, key: &str, title: &str, body: &str) -> Result<(), String> {
         if self.slug.is_empty() {
             return Err(format!(
                 "distant hors de GitHub : issue « {title} » impossible"
             ));
         }
-        // Read through the API, which gives the author association that `gh issue list` lacks:
-        // only an issue of the owner can stand for the anomaly (AS-45 P3); pull requests are skipped.
-        let list = self.api_all(&issues_path(&self.slug))?;
-        for i in list
-            .iter()
-            .filter(|i| i.get("pull_request").is_none() && by_owner(i, &self.slug))
-        {
-            let text = format!(
-                "{} {}",
-                i["title"].as_str().unwrap_or(""),
-                i["body"].as_str().unwrap_or("")
-            );
-            if text.contains(key) {
-                println!(
-                    "  issue #{} déjà ouverte pour {key} : réutilisée",
-                    i["number"]
-                );
-                return Ok(());
-            }
+        if !ANOMALY_TITLES.iter().any(|a| title.starts_with(a)) {
+            return Err(format!(
+                "issue « {title} » : not an anomaly title (AS-50 AU2)"
+            ));
         }
-        let body =
-            format!("{body}\n\nClé : `{key}`\n\nOuverte par `cargo xtask` (SEC0-17, SEC0-35).");
+        // Read through the API, which gives the author association that `gh issue list` lacks:
+        // only an issue of the owner can stand for the anomaly (AS-45 P3).
+        let list = self.api_all(&issues_path(&self.slug))?;
+        if let Some(i) = list.iter().find(|i| tracks(i, &self.slug, key)) {
+            println!(
+                "  issue #{} déjà ouverte pour {key} : réutilisée",
+                i["number"]
+            );
+            return Ok(());
+        }
+        let body = format!(
+            "{body}\n\n{}\n\nOuverte par `cargo xtask` (SEC0-17, SEC0-35).",
+            key_marker(key)
+        );
         if self.dry_run {
             println!("  --dry-run : ouvrirait l'issue « {title} » ({ISSUE_LABEL}) :\n{body}");
             return Ok(());
@@ -423,6 +421,40 @@ pub fn judge_ci(
         0 => Err(format!("aucun ci-ok de {CI_WORKFLOW} sur {sha} (G3)")),
         _ => Ok(()),
     }
+}
+
+/// Title of the issue that `verify-main` opens for an anomalous commit of `main`, followed by
+/// its short SHA.
+pub const ANOMALY_TITLE: &str = "verify-main : anomalie sur le commit";
+/// Title of the issue that `verify-main` opens for a drift of the GitHub settings (`-Check`).
+pub const DRIFT_TITLE: &str =
+    "verify-main : réglages GitHub différents de tools/ci/repo-settings.json";
+/// Title prefixes of the anomaly issues (AS-50 AU2, AU3).
+pub const ANOMALY_TITLES: [&str; 2] = [ANOMALY_TITLE, DRIFT_TITLE];
+
+/// AS-50 AU2, the one definition of an anomaly issue: an issue (not a pull request) written by
+/// the owner (P3), whose title starts with one of [`ANOMALY_TITLES`]. An open one stops
+/// `cargo xtask merge`; [`Repo::open_issue`] only reuses such an issue.
+pub fn is_anomaly(item: &Value, slug: &str) -> bool {
+    item.get("pull_request").is_none()
+        && by_owner(item, slug)
+        && item["title"]
+            .as_str()
+            .is_some_and(|t| ANOMALY_TITLES.iter().any(|a| t.starts_with(a)))
+}
+
+/// Line written by [`Repo::open_issue`] in the body of the issue for `key`.
+fn key_marker(key: &str) -> String {
+    format!("Clé : `{key}`")
+}
+
+/// The anomaly issue ([`is_anomaly`]) whose body carries the marker of `key`: the only kind of
+/// issue [`Repo::open_issue`] reuses for `key`.
+pub fn tracks(item: &Value, slug: &str, key: &str) -> bool {
+    is_anomaly(item, slug)
+        && item["body"]
+            .as_str()
+            .is_some_and(|b| b.lines().any(|l| l.trim_end() == key_marker(key)))
 }
 
 /// API path of the open anomaly issues (`role:architecture`), all pages.
@@ -593,7 +625,6 @@ mod tests {
             dry_run: false,
             ci: false,
             cache: std::env::temp_dir().join(format!("xtask-retry-{}", std::process::id())),
-            home: None,
             runner: Box::new(Script {
                 outs,
                 log: std::rc::Rc::clone(&log),
@@ -655,7 +686,7 @@ mod tests {
             assert!(!is_get(w), "{w:?}");
         }
         let (repo, pauses) = scripted(vec![ok("[]"), http(502), ok("u")]);
-        assert!(repo.open_issue("k", "t", "b").is_err());
+        assert!(repo.open_issue("k", DRIFT_TITLE, "b").is_err());
         assert!(pauses.borrow().1.is_empty());
         let calls = pauses.borrow().0.clone();
         let creates = calls
@@ -713,30 +744,86 @@ mod tests {
         assert_eq!(repo.comments(7).unwrap(), std::slice::from_ref(&text));
         assert!(approved(&repo.comments(7).unwrap(), "review-ok", SHA));
         // An issue carrying the anomaly key counts only from the owner, and never a PR.
-        let issue = |mut v: Value| {
-            v["title"] = json!("anomaly k");
-            v["number"] = json!(3);
-            v
-        };
-        let mut pr = issue(owner.clone());
+        let mut pr = anomaly_issue(owner.clone(), DRIFT_TITLE, "k");
         pr["pull_request"] = json!({});
-        let mut listed: Vec<Value> = others.iter().cloned().map(issue).collect();
+        let mut listed: Vec<Value> = others
+            .iter()
+            .cloned()
+            .map(|v| anomaly_issue(v, DRIFT_TITLE, "k"))
+            .collect();
         listed.push(pr);
         // The strangers' issues and the PR do not count: the issue is opened.
+        assert_eq!(opens(&listed, "k", DRIFT_TITLE), Ok(true));
+        // The owner's issue is reused: nothing is created.
+        let mine = anomaly_issue(owner, DRIFT_TITLE, "k");
+        assert_eq!(opens(&[mine], "k", DRIFT_TITLE), Ok(false));
+    }
+
+    /// An open issue of the owner, number 3, with `title` and the marker of `key` in its body.
+    fn anomaly_issue(mut v: Value, title: &str, key: &str) -> Value {
+        v["title"] = json!(title);
+        v["body"] = json!(format!(
+            "Constat.\n\n{}\n\nOuverte par `cargo xtask`.",
+            key_marker(key)
+        ));
+        v["number"] = json!(3);
+        v
+    }
+
+    /// `open_issue(key, title)` with `listed` as the open issues: `Ok(true)` if it creates an
+    /// issue, `Ok(false)` if it reuses one.
+    fn opens(listed: &[Value], key: &str, title: &str) -> Result<bool, String> {
         let (mut repo, log) = scripted(vec![ok(&json!(listed).to_string()), ok("u")]);
-        repo.cache = std::env::temp_dir().join(format!("xtask-owner-{}", std::process::id()));
-        repo.open_issue("k", "t", "b").unwrap();
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        repo.cache = std::env::temp_dir().join(format!("xtask-owner-{}-{n}", std::process::id()));
+        let r = repo.open_issue(key, title, "b");
+        let _ = std::fs::remove_dir_all(&repo.cache); // temporary issue body of this test only
+        r?;
         let calls = log.borrow().0.clone();
         assert_eq!(
             calls[0],
             format!("gh api --paginate {}", issues_path("o/r"))
         );
-        assert!(calls[1].starts_with("gh issue create"), "{calls:?}");
-        let _ = std::fs::remove_dir_all(&repo.cache); // temporary issue body of this test only
-        // The owner's issue is reused: nothing is created.
-        let (repo, log) = scripted(vec![ok(&json!([issue(owner)]).to_string())]);
-        repo.open_issue("k", "t", "b").unwrap();
-        assert_eq!(log.borrow().0.len(), 1);
+        Ok(calls.iter().any(|c| c.starts_with("gh issue create")))
+    }
+
+    /// Review of #96 (AS-50 AU2): an open owner issue `role:architecture` that only quotes the key
+    /// (a remontée, a note), under another title or without the key marker, never absorbs the
+    /// anomaly: a new anomaly issue is opened, which stops `merge`. Every reused issue is an
+    /// anomaly issue by [`is_anomaly`], the same definition as `merge` step [2].
+    #[test]
+    fn only_an_anomaly_issue_is_reused() {
+        let sha = "1111111111111111111111111111111111111111";
+        let title = format!("{ANOMALY_TITLE} 1111111");
+        let owner = owner_item("x");
+        let mut quoting = owner.clone();
+        quoting["title"] = json!("Remontée : écart repo-settings-drift et commit 1111111");
+        quoting["body"] = json!(format!("Voir {sha} et repo-settings-drift.\nClé : `{sha}`"));
+        quoting["number"] = json!(5);
+        for key in [sha, "repo-settings-drift"] {
+            let t = if key == sha {
+                title.as_str()
+            } else {
+                DRIFT_TITLE
+            };
+            assert!(!is_anomaly(&quoting, "o/r") && !tracks(&quoting, "o/r", key));
+            assert_eq!(opens(std::slice::from_ref(&quoting), key, t), Ok(true));
+        }
+        // An anomaly title without the marker of this key (another commit): not reused either.
+        let other = anomaly_issue(owner.clone(), &title, &"2".repeat(40));
+        assert!(is_anomaly(&other, "o/r") && !tracks(&other, "o/r", sha));
+        assert_eq!(opens(&[other], sha, &title), Ok(true));
+        // The marker must be a whole line: a quoted marker inside a sentence does not count.
+        let mut inline = anomaly_issue(owner.clone(), &title, sha);
+        inline["body"] = json!(format!("Voir la {} plus haut.", key_marker(sha)));
+        assert_eq!(opens(&[inline], sha, &title), Ok(true));
+        // The anomaly issue of this very key is reused, and it is one that stops merge.
+        let same = anomaly_issue(owner, &title, sha);
+        assert!(is_anomaly(&same, "o/r") && tracks(&same, "o/r", sha));
+        assert_eq!(opens(&[same], sha, &title), Ok(false));
+        // Only anomaly issues are opened.
+        assert!(opens(&[], "k", "Remontée").is_err());
     }
 
     #[test]
