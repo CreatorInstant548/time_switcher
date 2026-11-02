@@ -1446,6 +1446,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ts_viz"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "parquet",
+ "ts_data",
+ "ts_kernel",
+ "ts_runner",
+ "ts_toy",
+]
+
+[[package]]
 name = "ts_world_model"
 version = "0.0.0"
 dependencies = [
