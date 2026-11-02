@@ -192,3 +192,20 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
     - `verify-main` chaque nuit ;
     - le ruleset côté serveur.
   - **Conséquence pour l'orchestrateur** : `-Check` se lance désormais à la main, chaque jour. `organisation.md` n'a pas à changer.
+
+## 02/11
+
+- **`-Check` du jour** : conforme à `tools/ci/repo-settings.json` d'origin/main.
+- **Qualité, verdict 2 (qualite.md, 3f71c04)** : le point 2 de §5 est validé pour la phase 0.
+  - La #92 lève #67 : 4 et 8 fils vont aussi vite qu'un seul fil, soit 7 µs par tick au banc `time_skip`.
+  - Le déterminisme est vert : 25 processus et 605 allers-retours d'instantané.
+  - `ts-sim` donne des sorties identiques à l'octet près.
+  - Tous les budgets de la phase 0 sont tenus.
+  - Le point 4 est sans objet, puisque la phase 0 n'est pas jouable.
+- **Arbitrages §5, point 5** :
+  - **#68** (durcissements des tests de ts_toy) : c'est une dette, à corriger en phase 0 par le dev (décidé).
+  - **#94** (calibrage `PARALLEL_FROM_WORK` et `PAR_ITER_FROM`) : c'est du travail de phase 1, puisque les systèmes à mesurer n'existent pas. Les valeurs actuelles ne changent pas le résultat (AS-51). Report au reliquat de la phase 1 (décidé).
+    - Le repointage des marqueurs `PROVISIONAL(design #88)` vers #94 est une dette, qui se fait en phase 0.
+    - Ensuite, fermer #94 avec le lien du reliquat, et la rouvrir à l'ouverture de la phase 1.
+- **Gardes Claude Code (`.claude/settings.json`)** : le dev attend un feu vert pour remplacer `guard-git` et `guard-main` par des règles de refus natives. Je ne l'ai pas donné. Un changement de réglages de permission doit venir de l'utilisateur lui-même, pas d'une session. La question lui est transmise.
+- **Copie principale** : la qualité a trouvé un `target/` de 156 Mo hors emplacement (un `cargo xtask` lancé sans `-Acquire`), et l'a supprimé. Le dev est prévenu.
