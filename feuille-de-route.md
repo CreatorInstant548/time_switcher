@@ -1,14 +1,14 @@
 # Feuille de route
 
 > Tenue par l'orchestrateur seul ([organisation.md](../time_switcher/docs/pilotage/organisation.md)). Le contenu détaillé de chaque phase et ses critères de fin sont dans [05-architecture.md](../time_switcher/docs/conception/05-architecture.md) §5 et dans la [revue d'architecture](../time_switcher/docs/conception/revues/architecture.md) §22 : ce fichier ne les recopie pas, il dit **où on en est, ce qui vient ensuite et qui s'en charge**. Le plan détaillé à l'intérieur d'une phase (tâches, dépendances, ordre) appartient au responsable développement, dans son carnet puis dans le tableau GitHub Project.
-> Mis à jour le 29/10/2026.
+> Mis à jour le 02/11/2026.
 
 ## Jalons
 
 | Phase | Contenu (résumé) | Rôles qui démarrent | Ce que tu pourras voir | État |
 |---|---|---|---|---|
 | Conception | Socle, 8 domaines, revues | Responsable conception | Les documents | **Terminée le 30/10** |
-| 0. Fondations | Dépôt GitHub, règles des agents, noyau déterministe, CI, outils | Architecture et sécurité, puis développement | Un rapport : un monde-jouet de 1 000 entités tourne un an simulé, identique à chaque exécution | **En cours depuis le 30/10**, en mode local |
+| 0. Fondations | Dépôt GitHub, règles des agents, noyau déterministe, CI, outils | Architecture et sécurité, puis développement | Un rapport : un monde-jouet de 1 000 entités tourne un an simulé, identique à chaque exécution | **En cours depuis le 30/10**, sur un dépôt public depuis le 01/11 ; critère de sortie prouvé (#64), point 2 de §5 validé par la qualité le 02/11 |
 | 1. Prototype du cœur | Quelques centaines d'habitants pilotés par l'IA dans un morceau de ville ; économie minimale ; combat à mains nues | Qualité et essais | Une visualisation de la simulation, sans jeu | — |
 | 2. Échange de pilote | Prendre et rendre un personnage, synchronisation, garde hors fiction, chasse aux exploits | — | Des rapports de robots joueurs | — |
 | 3. Client Godot 2.5D solo | Se déplacer, incarner, sauvegarder, avancer le temps ; premiers assets et environ 40 animations | Contenus (au début de la phase) | **Première version jouable**, mise à ta disposition (sans obligation d'essai) | — |
@@ -17,13 +17,21 @@
 
 ## Prochaines étapes
 
-1. Le responsable conception finit le domaine direction artistique et sonore. Il intègre aussi :
-   - le passage à GitHub gratuit ;
-   - le nouveau document sur le contenu des signatures.
-2. Phase 0, lancée par l'orchestrateur dès que le responsable conception annonce la conception terminée, direction artistique comprise (décidé : les fondations ne dépendent pas de la direction artistique, mais un seul front de travail à la fois garde la consommation et la cohérence sous contrôle) :
-   - création du dépôt privé et premier envoi ;
-   - lancement du responsable architecture et sécurité, qui valide le découpage ;
-   - lancement du responsable développement.
+Fermeture de la phase 0, selon [organisation.md](../time_switcher/docs/pilotage/organisation.md) §5 :
+
+1. **Audit de sécurité** de fin de phase, par le responsable architecture et sécurité.
+2. **Contrôle de conformité** à la conception, par le responsable conception, une fois les lots du développement fusionnés.
+3. **Zéro *issue* ouverte** : chaque *issue* est soit corrigée, soit close avec motif, soit reportée ci-dessous.
+
+## Reliquat par phase
+
+Ce sont les *issues* reportées (organisation.md §5, point 5). Seul le travail neuf que 05 §5 place dans une phase plus tardive peut être reporté, et c'est l'orchestrateur qui le décide. Chaque *issue* reportée est close avec un lien vers cette section. Elle est rouverte à l'ouverture de sa phase.
+
+### Phase 1
+
+| *Issue* | Sujet | Rôle | Motif du report | Décidé le |
+|---|---|---|---|---|
+| [#94](https://github.com/CreatorInstant548/time_switcher/issues/94) | Calibrer `PARALLEL_FROM_WORK` et `PAR_ITER_FROM` sur les systèmes de la phase 1 (AS-51) | dev, puis qualité pour les mesures | Les systèmes à mesurer n'existent pas encore. Les valeurs actuelles ne changent pas le résultat. Les marqueurs pointent déjà vers #94 (PR #99). | 02/11 |
 
 ## Outils déjà installés
 

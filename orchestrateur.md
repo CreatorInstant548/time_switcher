@@ -209,3 +209,7 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
     - Ensuite, fermer #94 avec le lien du reliquat, et la rouvrir à l'ouverture de la phase 1.
 - **Gardes Claude Code (`.claude/settings.json`)** : le dev attend un feu vert pour remplacer `guard-git` et `guard-main` par des règles de refus natives. Je ne l'ai pas donné. Un changement de réglages de permission doit venir de l'utilisateur lui-même, pas d'une session. La question lui est transmise.
 - **Copie principale** : la qualité a trouvé un `target/` de 156 Mo hors emplacement (un `cargo xtask` lancé sans `-Acquire`), et l'a supprimé. Le dev est prévenu.
+- **Fusions annoncées par le dev, à vérifier sur main** : #89, #92, #96 (AS-50), #90 (#75), #99 (#68, close), #97 (T11). Une fusion prend maintenant environ 1 minute, contre plus de 11 avant.
+- **#94 reportée** au reliquat de la phase 1 (`feuille-de-route.md`, section « Reliquat par phase », créée aujourd'hui). Les marqueurs pointent déjà vers #94, depuis #99. Feuille de route remise à jour.
+- **Restent ouvertes** : 28 issues avant la clôture de #94, dont 24 `role:dev` traitées par lots, #87 (A15, conception), et #98 (AU8, anomalie de la nuit).
+- **AU1** (refus natifs dans `.claude/settings.json`) : en attente de la décision de l'utilisateur. La branche `claude/outillage-remove-guards` est prête.
