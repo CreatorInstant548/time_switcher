@@ -1119,10 +1119,20 @@ pub fn local_paths(cx: &Ctx) -> Outcome {
                 .map(|l| format!("{rel}:{l} : chemin, utilisateur ou machine locale")),
         );
     }
-    from_errors(
-        errors,
-        format!("{} nom(s) local(aux) recherchés", names.len()),
-    )
+    local_paths_outcome(errors, names.len())
+}
+
+/// A deviation fails whatever the machine. With no local name to look for (CI on Linux has neither
+/// `USERNAME` nor `COMPUTERNAME`), only the fixed patterns ran: the step says so instead of
+/// reporting a success on names it did not search (#17, m4).
+fn local_paths_outcome(errors: Vec<String>, names: usize) -> Outcome {
+    if names == 0 && errors.is_empty() {
+        return Outcome::Skipped(
+            "no local name known on this machine, fixed patterns only (personal folders)"
+                .to_owned(),
+        );
+    }
+    from_errors(errors, format!("{names} local name(s) searched"))
 }
 
 pub fn workflows(cx: &Ctx) -> Outcome {
@@ -1257,6 +1267,24 @@ mod tests {
         );
         assert!(super::findings("[]", None).unwrap().is_empty());
         assert!(super::findings("not json", None).is_err());
+    }
+
+    /// #17 m4: without a local name the step is not reported as a success, and a deviation
+    /// still fails.
+    #[test]
+    fn local_paths_without_a_name_is_not_a_success() {
+        assert!(matches!(
+            super::local_paths_outcome(Vec::new(), 0),
+            super::Outcome::Skipped(_)
+        ));
+        assert!(matches!(
+            super::local_paths_outcome(vec!["a:1".to_owned()], 0),
+            super::Outcome::Fail(_)
+        ));
+        assert!(matches!(
+            super::local_paths_outcome(Vec::new(), 2),
+            super::Outcome::Ok(_)
+        ));
     }
 
     /// m1 (PR #33): `allow-invalid` is removed only from the entries of crates in the closure.
