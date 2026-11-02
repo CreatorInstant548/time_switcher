@@ -1381,6 +1381,7 @@ version = "0.0.0"
 dependencies = [
  "ts_kernel",
  "ts_model",
+ "ts_toy",
 ]
 
 [[package]]

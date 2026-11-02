@@ -101,9 +101,10 @@ impl Plugin for FuzzRules {
                 subject: id,
                 arg: u64::from(i),
             };
-            world
+            let scheduled = world
                 .resource_mut::<EventQueue>()
                 .schedule(SimTime::from_millis(1000), event);
+            debug_assert!(scheduled.is_ok(), "a fixed date within the saved range");
         }
     }
 }

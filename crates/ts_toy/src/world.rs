@@ -236,14 +236,13 @@ fn on_events(
             continue;
         };
         let mut next = |when: SimTime, kind: u32, day: u64| {
-            queue.schedule(
-                when,
-                TimedEvent {
-                    kind,
-                    subject,
-                    arg: day,
-                },
-            );
+            let event = TimedEvent {
+                kind,
+                subject,
+                arg: day,
+            };
+            let scheduled = queue.schedule(when, event);
+            debug_assert!(scheduled.is_ok(), "toy dates stay within the saved range");
         };
         let moved = |place: Place, at: &mut Whereabouts| {
             at.place = place;
@@ -385,7 +384,8 @@ impl Plugin for ToyWorld {
         }
         let mut queue = world.resource_mut::<EventQueue>();
         for (at, event) in first {
-            queue.schedule(at, event);
+            let scheduled = queue.schedule(at, event);
+            debug_assert!(scheduled.is_ok(), "toy dates stay within the saved range");
         }
         b.add_systems(Phase::Scheduled, on_events);
         b.add_systems(Phase::Act, stroll);

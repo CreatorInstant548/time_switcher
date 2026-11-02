@@ -18,9 +18,11 @@ use ts_kernel::Plugin;
 /// resource or entity. A rebuildable cache is declared transient, and rebuilding it changes
 /// no result.
 ///
-/// **Blocking before the first rule plugin (phase 1), issue #31:** the generic resume test
-/// (snapshot at tick k, restore, N ticks, same state hash as k + N ticks in a row, for
-/// several k > 0) and the `clippy.toml` bans on `Local`, `Added` and `Changed` in rule crates.
+/// **Enforced (#31):** the generic resume test `ts_toy::resume::check_resume` runs on this
+/// list (test below): a snapshot at several checkpoints after the first tick, through the
+/// bytes of a save, then restored, must give the uninterrupted run at every later
+/// checkpoint. Each rule crate also runs it on its own plugins. The draw sites of the list
+/// are unique, or the build fails (#26 m1).
 #[must_use]
 pub fn standard_rules() -> Vec<Box<dyn Plugin>> {
     Vec::new()
@@ -30,6 +32,7 @@ pub fn standard_rules() -> Vec<Box<dyn Plugin>> {
 mod tests {
     use ts_kernel::rng::WorldKey;
     use ts_kernel::{Sim, SimConfig, SimTime};
+    use ts_toy::resume::check_resume;
 
     use super::*;
 
@@ -43,5 +46,20 @@ mod tests {
         assert_eq!(sim.now(), SimTime::EPOCH);
         sim.step();
         assert_eq!(sim.now(), SimTime::from_millis(50));
+    }
+
+    /// AS-27, #31: every rule plugin resumes from a save at any checkpoint after the first
+    /// tick. Test dates: the first ticks, then one simulated day.
+    #[test]
+    fn standard_rules_resume_after_a_restore() {
+        let checkpoints =
+            [50, 100, 1_000, 60_000, SimTime::MILLIS_PER_DAY].map(SimTime::from_millis);
+        let resumes = check_resume(
+            &SimConfig::default(),
+            &standard_rules(),
+            &WorldKey::from_bytes([7; 16]),
+            &checkpoints,
+        );
+        assert_eq!(resumes.unwrap(), checkpoints.len() - 1);
     }
 }
