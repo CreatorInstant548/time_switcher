@@ -511,3 +511,12 @@ erun\datanalytics\` ; l'utilisateur en est informé.
 - **À lancer** :
   - après la #121, un agent neuf sur le noyau (#133, #141, #144) ;
   - après la PR de #136, un agent sur #145.
+
+### 02/11 (suite 4) : limite d'usage atteinte
+
+- **Fusionnée** : #146 (A18, M39e à 32, ferme #142). Le code passe par le lot #136.
+- **À la reprise** (agents peut-être coupés, le travail reste dans leurs worktrees) :
+  - relancer le lot 3A (`install-tools-check`), le lot 3B (PR #147 à faire relire), les suites A15 (`m39-measure`), #121 (`kernel-deferred-commands`, local à `a997efc` ou plus) et la relecture de #143 ;
+  - lancer ensuite les agents sur #133, #141, #144, puis #145 ;
+  - traiter #19 (Dependabot, `.github/`), #130, #139, #119 et le lot C de #91 ;
+  - fin de phase : T12 et l'audit SEC0-28.
