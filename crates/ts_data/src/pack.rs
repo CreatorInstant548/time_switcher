@@ -180,22 +180,32 @@ fn parse_file(file: &SourceFile, limits: &Limits) -> Result<Vec<Card>, Diagnosti
             u32::try_from(e.span.start.col).unwrap_or(u32::MAX),
         )
     };
-    // A byte order mark (some editors write one) is not part of the RON text.
+    parse_cards(&file.bytes, limits.max_depth).map_err(|e| {
+        use ron::error::Error as E;
+        let (code, detail) = match &e.code {
+            E::ExceededRecursionLimit => (Code::RecursionLimit, String::new()),
+            E::Utf8Error(_) => (Code::NotUtf8, String::new()),
+            E::MissingStructField { field, .. } => (Code::MissingField, (*field).to_owned()),
+            E::NoSuchStructField { found, .. } => (Code::UnknownField, found.clone()),
+            E::NoSuchEnumVariant { found, .. } => (Code::UnknownKind, found.clone()),
+            _ => (Code::RonSyntax, String::new()),
+        };
+        Diagnostic::new(code, &file.path, at(&e), &detail)
+    })
+}
+
+/// Parses a card file under the RON recursion limit `depth`. A byte order mark (some editors
+/// write one) is not part of the RON text.
+fn parse_cards(bytes: &[u8], depth: usize) -> Result<Vec<Card>, ron::error::SpannedError> {
     ron::Options::default()
-        .with_recursion_limit(limits.max_depth)
-        .from_bytes::<Vec<Card>>(strip_bom(&file.bytes))
-        .map_err(|e| {
-            use ron::error::Error as E;
-            let (code, detail) = match &e.code {
-                E::ExceededRecursionLimit => (Code::RecursionLimit, String::new()),
-                E::Utf8Error(_) => (Code::NotUtf8, String::new()),
-                E::MissingStructField { field, .. } => (Code::MissingField, (*field).to_owned()),
-                E::NoSuchStructField { found, .. } => (Code::UnknownField, found.clone()),
-                E::NoSuchEnumVariant { found, .. } => (Code::UnknownKind, found.clone()),
-                _ => (Code::RonSyntax, String::new()),
-            };
-            Diagnostic::new(code, &file.path, at(&e), &detail)
-        })
+        .with_recursion_limit(depth)
+        .from_bytes::<Vec<Card>>(strip_bom(bytes))
+}
+
+/// Whether `bytes` parses as a card file under the RON recursion limit `depth` (measure of
+/// M39e, [`crate::Usage`]).
+pub(crate) fn parses_within(bytes: &[u8], depth: usize) -> bool {
+    parse_cards(bytes, depth).is_ok()
 }
 
 /// Field rules (identifier grammar, namespace of the kind, name), identifier uniqueness

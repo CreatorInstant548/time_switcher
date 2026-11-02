@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 // spec: carnet architecture-securite.md SEC0-25, SEC0-26
-use ts_data::{Code, ContentPack, Diagnostic, Limits, LoadErrors, SourceFile, read_bounded};
+use ts_data::{Code, ContentPack, Diagnostic, Limits, LoadErrors, SourceFile, Usage, read_bounded};
 
 use crate::out_dir::is_link;
 
@@ -56,14 +56,47 @@ fn fail(code: Code, file: &str) -> LoadErrors {
 /// All of them need write access to the content directory, which already allows changing the
 /// content itself.
 pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, LoadErrors> {
+    let (files, _) = read_content_dir(root, limits)?;
+    ContentPack::build(files, limits)
+}
+
+// spec: attendus-mesurables.md §10.1 (M39a to M39f)
+/// Loads `root` as [`load_content_dir`] does, and measures the largest value of each data
+/// bound ([`Usage`]): the files give their sizes and nesting depth, the walk its entry count
+/// and sub-directory depth, the pack its card count. Measured only when the pack loads.
+pub fn measure_content_dir(
+    root: &Path,
+    limits: &Limits,
+) -> Result<(ContentPack, Usage), LoadErrors> {
+    let (files, walk) = read_content_dir(root, limits)?;
+    let mut usage = Usage::of_files(&files, limits);
+    let pack = ContentPack::build(files, limits)?;
+    usage.entries = u64::try_from(walk.entries).unwrap_or(u64::MAX);
+    usage.dir_depth = u64::try_from(walk.dir_depth).unwrap_or(u64::MAX);
+    usage.cards = u64::try_from(pack.cards().len()).unwrap_or(u64::MAX);
+    Ok((pack, usage))
+}
+
+/// What the walk of a content directory saw, for the measure of M39c and M39f.
+struct Walk {
+    /// Entries listed, as counted against `max_files`.
+    entries: usize,
+    /// Deepest sub-directory level read (the root is 0).
+    dir_depth: usize,
+}
+
+/// The walk of [`load_content_dir`]: every bounded `*.ron` file under `root`, unsorted.
+fn read_content_dir(root: &Path, limits: &Limits) -> Result<(Vec<SourceFile>, Walk), LoadErrors> {
     if is_link(&fs::symlink_metadata(root).map_err(|_| fail(Code::ReadFailed, ""))?) {
         return Err(fail(Code::SymlinkRefused, ""));
     }
     let mut files = Vec::new();
     let mut visited: usize = 0;
     let mut total_bytes: u64 = 0;
+    let mut deepest: usize = 0;
     let mut pending = vec![(root.to_path_buf(), String::new(), 0_usize)];
     while let Some((dir, rel, depth)) = pending.pop() {
+        deepest = deepest.max(depth);
         let room = limits.max_files.saturating_sub(visited);
         let entries = read_dir_sorted(&dir, room).map_err(|e| match e {
             DirError::Io => fail(Code::ReadFailed, &rel),
@@ -107,7 +140,11 @@ pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, Loa
             }
         }
     }
-    ContentPack::build(files, limits)
+    let walk = Walk {
+        entries: visited,
+        dir_depth: deepest,
+    };
+    Ok((files, walk))
 }
 
 enum DirError {

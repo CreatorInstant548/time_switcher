@@ -27,6 +27,7 @@ mod pack;
 mod registry;
 mod scan;
 mod source;
+mod usage;
 
 // Development API (m7 of the review of #47, #48): the fuzzing body and its corpus. As in
 // `ts_persist`, it is absent from the `public` profile (`not_public!`) and hidden from the
@@ -43,6 +44,7 @@ pub use error::{Code, Diagnostic, LoadErrors, MAX_DIAGNOSTICS};
 pub use pack::{ContentPack, FORMAT_VERSION, Fingerprint};
 pub use registry::{IdState, REGISTRY_FILE, Registry};
 pub use source::{Limits, SourceFile, is_relative_path, read_bounded};
+pub use usage::{Row, Usage};
 
 #[cfg(test)]
 mod tests;
