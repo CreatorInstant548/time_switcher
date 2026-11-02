@@ -635,3 +635,209 @@ fn undeclared_sites_are_refused_on_every_path() {
     }
     assert!(catch_unwind(AssertUnwindSafe(|| sim.step())).is_err());
 }
+
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md AS-57
+/// No phase gets an automatic sync point (#93): a system with `Commands` ordered before
+/// another adds none, so the phase holds exactly its own systems, whereas a schedule with the
+/// default settings of `bevy_ecs` holds one more.
+#[test]
+fn phases_insert_no_sync_point() {
+    use bevy_ecs::system::Commands;
+
+    fn writes(mut commands: Commands) {
+        commands.insert_resource(PhaseLog::default());
+    }
+    fn reads(_: Res<Counter>) {}
+    fn writes_too(mut commands: Commands) {
+        commands.insert_resource(PhaseLog::default());
+    }
+    let rules = [plugin("sync", |b| {
+        b.insert_resource(Counter::default());
+        b.add_systems(Phase::Act, (writes, reads.after(writes), writes_too));
+    })];
+    let sim = build(&rules).unwrap();
+    assert_eq!(sim.phases[Phase::Act.index()].systems_len(), 3);
+    let mut default = Schedule::new(Phase::Act);
+    default.add_systems((writes, reads.after(writes), writes_too));
+    default.initialize(&mut World::new()).unwrap();
+    assert_eq!(
+        default.systems_len(),
+        4,
+        "the default settings insert a sync point"
+    );
+}
+
+/// State of the executor probe: ticks on which `Counter` was seen.
+#[derive(Resource, Clone, Default)]
+struct SeenCounter(u64);
+
+impl StateHash for SeenCounter {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
+        w.u64(self.0);
+    }
+}
+
+impl crate::StateDecode for SeenCounter {
+    fn decode_state(r: &mut crate::StateReader<'_>) -> Result<Self, crate::CanonicalError> {
+        r.u64().map(Self)
+    }
+}
+
+/// Buffer of the `Deferred<T>` form below: inserts `Counter` when applied.
+#[derive(Default)]
+struct InsertCounter;
+
+impl bevy_ecs::system::SystemBuffer for InsertCounter {
+    fn apply(&mut self, _: &bevy_ecs::system::SystemMeta, world: &mut World) {
+        world.insert_resource(Counter(1));
+    }
+
+    fn queue(&mut self, _: &bevy_ecs::system::SystemMeta, _: bevy_ecs::world::DeferredWorld) {}
+}
+
+/// Builds `setup` under the single-threaded executor and under the parallel one (one thread,
+/// every phase parallel): both results.
+fn under_both_executors(setup: fn(&mut SimBuilder)) -> [Result<StateHashes, BuildError>; 2] {
+    let one = NonZeroU16::new(1).unwrap();
+    [
+        (Threads::Single, ParallelPhases::default()),
+        (Threads::Fixed(one), ParallelPhases::Always),
+    ]
+    .map(|(threads, parallel_phases)| {
+        let cfg = SimConfig {
+            threads,
+            parallel_phases,
+            ..SimConfig::default()
+        };
+        let mut sim = Sim::build(cfg, &[plugin("deferred_probe", setup)], &key())?;
+        for _ in 0..5 {
+            sim.step().unwrap();
+        }
+        Ok(sim.state_hash())
+    })
+}
+
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md AS-57
+/// Review of #93: an exclusive system with deferred buffers, through `pipe` with `Commands`
+/// or with `Deferred<T>`, is refused at build time, identically under both executors (the
+/// parallel one would apply its buffers mid-phase, the single-threaded one at the end).
+/// Without the exclusive half, both executors give the same world.
+#[test]
+fn exclusive_systems_with_deferred_buffers_are_refused() {
+    use bevy_ecs::system::{Commands, Deferred, In, IntoSystem};
+
+    fn commands(mut c: Commands) {
+        c.insert_resource(Counter(1));
+    }
+    fn deferred(mut d: Deferred<InsertCounter>) {
+        let _ = &mut *d;
+    }
+    fn exclusive(_: In<()>, _: &mut World) {}
+    fn reads(c: Option<Res<Counter>>, mut seen: ResMut<SeenCounter>) {
+        seen.0 += u64::from(c.is_some());
+    }
+    let refused = Err(BuildError::DeferredExclusive { phase: Phase::Act });
+    let piped: fn(&mut SimBuilder) = |b| {
+        b.state_resource::<SeenCounter>("probe")
+            .insert_resource(SeenCounter::default());
+        b.add_systems(Phase::Act, (commands.pipe(exclusive), reads).chain());
+    };
+    assert_eq!(
+        under_both_executors(piped),
+        [refused.clone(), refused.clone()]
+    );
+    let buffered: fn(&mut SimBuilder) = |b| {
+        b.state_resource::<SeenCounter>("probe")
+            .insert_resource(SeenCounter::default());
+        b.add_systems(Phase::Act, (deferred.pipe(exclusive), reads).chain());
+    };
+    assert_eq!(under_both_executors(buffered), [refused.clone(), refused]);
+    let plain: fn(&mut SimBuilder) = |b| {
+        b.state_resource::<SeenCounter>("probe")
+            .insert_resource(SeenCounter::default());
+        b.add_systems(Phase::Act, (commands, reads).chain());
+    };
+    let [single, parallel] = under_both_executors(plain);
+    assert_eq!(single.unwrap(), parallel.unwrap());
+}
+
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md AS-57
+/// Second review of #93: a run condition with deferred buffers (`Commands` or `Deferred<T>`,
+/// on a system or on a set) is refused at build time, identically under both executors: the
+/// single-threaded one would apply its buffers when it evaluates it, the parallel one never.
+/// A condition without buffers gives the same world under both executors.
+#[test]
+fn run_conditions_with_deferred_buffers_are_refused() {
+    use bevy_ecs::schedule::common_conditions::not;
+    use bevy_ecs::system::{Commands, Deferred};
+
+    fn with_commands(mut c: Commands) -> bool {
+        c.insert_resource(Counter(1));
+        true
+    }
+    fn with_deferred(mut d: Deferred<InsertCounter>) -> bool {
+        let _ = &mut *d;
+        true
+    }
+    fn plain() -> bool {
+        true
+    }
+    fn never() -> bool {
+        false
+    }
+    fn noop() {}
+    fn reads(mut seen: ResMut<SeenCounter>) {
+        seen.0 += 1;
+    }
+    fn probe(b: &mut SimBuilder) {
+        b.state_resource::<SeenCounter>("probe")
+            .insert_resource(SeenCounter::default());
+    }
+    let refused = Err(BuildError::DeferredCondition { phase: Phase::Act });
+    let forms: [fn(&mut SimBuilder); 6] = [
+        |b| {
+            probe(b);
+            b.add_systems(Phase::Act, reads.run_if(with_commands));
+        },
+        |b| {
+            probe(b);
+            b.add_systems(Phase::Act, reads.run_if(with_deferred));
+        },
+        |b| {
+            probe(b);
+            b.add_systems(Phase::Act, (reads, noop).run_if(with_commands));
+        },
+        |b| {
+            probe(b);
+            b.add_systems(Phase::Act, (reads, noop).run_if(with_deferred));
+        },
+        |b| {
+            probe(b);
+            b.add_systems(Phase::Act, (reads, noop).distributive_run_if(with_commands));
+        },
+        |b| {
+            probe(b);
+            b.add_systems(Phase::Act, reads.run_if(not(with_commands)));
+        },
+    ];
+    for (i, form) in forms.into_iter().enumerate() {
+        assert_eq!(
+            under_both_executors(form),
+            [refused.clone(), refused.clone()],
+            "form {i}"
+        );
+    }
+    let on: fn(&mut SimBuilder) = |b| {
+        probe(b);
+        b.add_systems(Phase::Act, (reads, noop).run_if(plain));
+    };
+    let off: fn(&mut SimBuilder) = |b| {
+        probe(b);
+        b.add_systems(Phase::Act, (reads, noop).run_if(never));
+    };
+    let [on_single, on_parallel] = under_both_executors(on).map(Result::unwrap);
+    let [off_single, off_parallel] = under_both_executors(off).map(Result::unwrap);
+    assert_eq!(on_single, on_parallel);
+    assert_eq!(off_single, off_parallel);
+    assert_ne!(on_single, off_single, "the guarded system must have run");
+}

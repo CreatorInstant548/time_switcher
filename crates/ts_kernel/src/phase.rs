@@ -63,14 +63,33 @@ impl Phase {
     }
 }
 
-// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md §9.10 L7
-/// `Schedule` of a phase: ordering ambiguities **as errors**; a single-threaded executor
-/// for [`Threads::Single`], an [`AdaptiveExecutor`] for [`Threads::Fixed`], whose switch is
-/// returned with the schedule.
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md §9.10 L7, AS-57
+/// `Schedule` of a phase: ordering ambiguities **as errors**, **no automatic sync point**;
+/// a single-threaded executor for [`Threads::Single`], an [`AdaptiveExecutor`] for
+/// [`Threads::Fixed`], whose switch is returned with the schedule.
+///
+/// No automatic sync point (AS-57 K-a, #93): `bevy_ecs` would otherwise insert an
+/// `ApplyDeferred` after a system with `Commands` that is ordered before another one. Those
+/// points are outside ambiguity detection and `Commands` declares no access, so a third
+/// system, unordered with both, could have its commands applied at that point or at the end
+/// of the phase depending on timing: a result that differs between two parallel runs. With
+/// none, the commands of a phase are applied once, at the end of the phase, in the order of
+/// the schedule's systems, which depends on the build only. Three things would break this:
+/// - an `ApplyDeferred` system, which applies them in the middle of the phase (banned, K-b);
+/// - an exclusive system with deferred buffers, which the parallel executor runs with
+///   `System::run`, so they apply as soon as it ends (refused by `Sim::build`,
+///   `BuildError::DeferredExclusive`);
+/// - a run condition with deferred buffers, which the single-threaded executor applies when
+///   it evaluates it and the parallel one never (refused, `BuildError::DeferredCondition`).
+///
+/// (The `Entity` that `Commands::spawn` reserves may still differ between parallel runs: it is not state, and
+/// durable references use `StableId`.) Manual points (`ApplyDeferred`) are banned by
+/// `clippy.toml` and by `cargo xtask check` (K-b).
 pub(crate) fn phase_schedule(phase: Phase, threads: Threads) -> (Schedule, Option<ExecutorSwitch>) {
     let mut schedule = Schedule::new(phase);
     schedule.set_build_settings(ScheduleBuildSettings {
         ambiguity_detection: LogLevel::Error,
+        auto_insert_apply_deferred: false,
         ..ScheduleBuildSettings::default()
     });
     match threads {
@@ -114,11 +133,13 @@ impl ExecutorSwitch {
 /// before each run by the [`ExecutorSwitch`].
 ///
 /// **The choice changes the speed only** (R1). Every pair of systems whose accesses conflict
-/// is explicitly ordered (ambiguities are errors, L7), and both executors apply deferred
-/// commands in the topological order of the schedule; the toy world and the L6 tests already
-/// prove that both give the same fingerprint. Neither keeps anything from one run to the next:
-/// with `apply_final_deferred` left at its default (`true`; the kernel never changes it), each
-/// run ends with every buffer applied and its run state cleared.
+/// is explicitly ordered (ambiguities are errors, L7), and with no sync point inside a phase
+/// (AS-57), no exclusive system and no run condition with deferred buffers (both refused by
+/// `Sim::build`), both executors apply the deferred commands once, at the end of the phase,
+/// in the topological order of the schedule; the toy world and the L6 tests already prove
+/// that both give the same fingerprint. Neither keeps anything from one run to the next: with
+/// `apply_final_deferred` left at its default (`true`; the kernel never changes it), each run
+/// ends with every buffer applied and its run state cleared.
 ///
 /// Why (issue #67): each run of the parallel executor sends every system to a pool thread and
 /// waits for it: two thread wake-ups, measured at 50 to 60 µs per phase that has systems,

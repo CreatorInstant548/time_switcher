@@ -9,7 +9,8 @@ use bevy_ecs::component::{Component, ComponentId};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::{QueryState, With};
 use bevy_ecs::resource::Resource;
-use bevy_ecs::schedule::{Schedule, Schedules};
+use bevy_ecs::schedule::{ConditionWithAccess, Schedule, Schedules};
+use bevy_ecs::system::System;
 use bevy_ecs::world::World;
 use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 
@@ -380,6 +381,22 @@ pub enum BuildError {
         /// Phase concerned, or `None` for a world-wide opt-out.
         phase: Option<Phase>,
     },
+    /// A system of `phase` has exclusive access to the world (`&mut World`) **and** deferred
+    /// buffers (`Commands`, `Deferred<T>`, for example through `pipe`): the parallel
+    /// executor applies them as soon as the system ends, the single-threaded one at the end
+    /// of the phase, so the result would depend on the executor (AS-57, #93).
+    DeferredExclusive {
+        /// Phase concerned.
+        phase: Phase,
+    },
+    /// A run condition of `phase` (`run_if`, on a system or on a set) has deferred buffers
+    /// (`Commands`, `Deferred<T>`): the single-threaded executor applies them as soon as the
+    /// condition is evaluated, the parallel one never does, so the result would depend on
+    /// the executor (AS-57, #93).
+    DeferredCondition {
+        /// Phase concerned.
+        phase: Phase,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -430,6 +447,13 @@ impl fmt::Display for BuildError {
                     "a system of phase {phase:?} opts out of ambiguity detection"
                 )
             }
+            Self::DeferredCondition { phase } => {
+                write!(f, "a run condition of phase {phase:?} has deferred buffers")
+            }
+            Self::DeferredExclusive { phase } => write!(
+                f,
+                "a system of phase {phase:?} has exclusive world access and deferred buffers"
+            ),
             Self::AmbiguityOptOut { phase: None } => {
                 f.write_str("the world opts components or resources out of ambiguity detection")
             }
@@ -681,13 +705,32 @@ impl Sim {
             if !schedule.graph().ambiguous_with_all.is_empty() {
                 return Err(BuildError::AmbiguityOptOut { phase: Some(phase) });
             }
+            // AS-57 (#93 review): conditions move into the executable schedule when it is
+            // built, so they are initialized (which sets their flags) and checked before.
+            schedule.graph_mut().initialize(&mut world);
+            let graph = schedule.graph();
+            let deferred = |cs: &[ConditionWithAccess]| cs.iter().any(|c| c.has_deferred());
+            if graph.systems.iter().any(|(_, _, cs)| deferred(cs))
+                || graph.system_sets.iter().any(|(_, _, cs)| deferred(cs))
+            {
+                return Err(BuildError::DeferredCondition { phase });
+            }
             if let Err(e) = schedule.initialize(&mut world) {
                 let message = e.to_string(schedule.graph(), &world);
                 return Err(BuildError::Schedule { phase, message });
             }
+            // AS-57 (#93 review): the exact criterion of the parallel executor, which runs an
+            // exclusive system with `System::run` and so applies its buffers at once.
+            // Fails closed: a schedule that cannot list its systems is refused too.
+            let deferred_exclusive = schedule.systems_with_access().map_or(true, |mut systems| {
+                systems.any(|(_, s)| s.access().is_exclusive() && s.system().has_deferred())
+            });
+            if deferred_exclusive {
+                return Err(BuildError::DeferredExclusive { phase });
+            }
         }
-        // After `initialize`, so that the count includes the sync points that `bevy_ecs`
-        // inserted: an upper bound of the systems that can run together (speed only).
+        // After `initialize`: the count of the phase's own systems, since no sync point is
+        // inserted (AS-57); an upper bound of the systems that can run together (speed only).
         let switches = switches
             .into_iter()
             .zip(&phases)

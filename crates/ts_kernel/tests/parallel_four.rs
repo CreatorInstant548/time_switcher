@@ -54,3 +54,10 @@ fn four_threads_round_trip() {
         assert_eq!(straight, restored);
     }
 }
+
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md AS-57
+/// Issue #93: commands applied at the end of the phase only, same fingerprint on every run.
+#[test]
+fn deferred_commands_apply_at_the_end_of_the_phase() {
+    common::deferred::check(Threads::Fixed(NonZeroU16::new(4).unwrap())).unwrap();
+}

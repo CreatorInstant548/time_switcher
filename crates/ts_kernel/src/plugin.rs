@@ -42,6 +42,26 @@ use crate::{Phase, StateDecode, StateHash};
 /// - a cache that can be rebuilt from the state is declared with
 ///   [`SimBuilder::transient_component`].
 ///
+/// **Deferred commands** (AS-57, #93): the `Commands` of a phase are applied **once, at the
+/// end of the phase**, in the order of the phase's systems as the build fixes it, never in
+/// the middle of the phase. A command is therefore visible from the **next phase** on, never
+/// to another system of the same phase, whatever their order and the number of threads. The
+/// kernel inserts no sync point inside a phase, and `clippy.toml` bans the manual ones
+/// (`ApplyDeferred`, `apply_deferred`). A system that must see an insertion goes in a later
+/// phase. An exclusive system (`&mut World`) carries no deferred buffer (`Commands`,
+/// `Deferred<T>`, also through `pipe` or another combinator): the parallel executor would
+/// apply them as soon as it ends, the single-threaded one at the end of the phase, and
+/// [`crate::Sim::build`] refuses it ([`crate::BuildError::DeferredExclusive`]). Nor does a run
+/// condition (`run_if`, on a system or a set): the single-threaded executor applies its
+/// buffers when it evaluates it, the parallel one never, and [`crate::Sim::build`] refuses
+/// it ([`crate::BuildError::DeferredCondition`]).
+///
+/// **Ticks** (AS-27, AS-57 K-d): a rule never reads a change tick; `clippy.toml` bans the
+/// safe methods that yield one and the ready-made run conditions that keep one or a `Local`
+/// inside bevy (`run_once`, `resource_changed`, ...). Known limit, accepted (AS-57): `Tick` values can still be
+/// compared, hashed or printed through its `Eq`, `Hash` and `Debug`, which clippy cannot
+/// ban; the safety net is the generic resume test (#110), since ticks restart on restore.
+///
 /// Enforced (#31, AS-27) by the generic resume test `ts_toy::resume::check_resume`, which
 /// `ts_game` runs on `standard_rules()` and each rule crate on its plugins, and by the
 /// `clippy.toml` bans on `Local`, `Added`, `Changed` and the other change-detection reads
