@@ -280,7 +280,8 @@ fn check_commit(
         let in_section = |s: &str| tag != "archsec-ok" || carnet_approves(section, s);
         match carry.resolve(tag, &bodies, &in_section)? {
             Ok(from) => {
-                note.push_str(&format!(", {tag} carried over from {}", &from[..7]));
+                let rule = if carry.by_as55(&from) { " (AS-55)" } else { "" };
+                note.push_str(&format!(", {tag} carried over from {}{rule}", &from[..7]));
                 if tag == "archsec-ok" {
                     j4 = from;
                 }

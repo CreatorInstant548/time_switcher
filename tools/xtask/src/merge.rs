@@ -463,9 +463,7 @@ fn run(repo: &Repo, pr: u64) -> Result<bool, String> {
             // W6: the same function as verify-main; W7: ci-ok was checked on the head (step 5).
             match carry.resolve(tag, &bodies, &|_| true)? {
                 Ok(from) if from == sha => println!("  {tag}: {sha}"),
-                Ok(from) => println!(
-                    "  {tag} carried over from {from} to the head {sha} (AS-40, W1 to W5 hold)"
-                ),
+                Ok(from) => println!("  {tag} {}", carry.describe(&from)),
                 Err(why) => {
                     return Err(refuse(
                         format!("sensitive path: {why}"),

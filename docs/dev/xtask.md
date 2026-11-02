@@ -149,10 +149,23 @@ Si une seule condition échoue, l'approbation doit être **reposée sur `H`**. C
 - d'un fichier de la PR modifié sur `main`, même si la fusion a gardé la version de la PR : W3 échoue ;
 - d'un rebasage : W1 échoue.
 
+Les deux premiers cas (résolution de conflit, fichier de la PR modifié sur `main`) peuvent encore être reportés par AS-55 (§6.2).
+
+### 6.2 Report malgré un fichier commun avec `main` (AS-55)
+
+Quand W2 (même blob, même mode) ou la moitié « fichiers » de W3 échoue, typiquement parce que `main` a aussi modifié un fichier de la PR, l'avis est quand même reporté si **X1, X2 et X3** sont réunies, sur les objets locaux :
+- **X1, rien que des fusions de `main`** : sur la chaîne des premiers parents de `H` jusqu'à `A`, il n'y a que des commits de fusion à deux parents, dont le second est un ancêtre du `main` de référence. Aucun commit ordinaire. Au plus 20 fusions.
+- **X2, fusions propres** : l'arbre de chaque fusion est celui que calcule `git merge-tree --write-tree <p1> <p2>`. Un conflit, même résolu, échoue, comme une ligne ajoutée dans le commit de fusion (fusion « maléfique »).
+- **X3, même diff octet pour octet** : le diff de PR de `A` contre sa base et celui de `H` contre la sienne gardent les mêmes lignes, octet pour octet : en-têtes de fichier (`diff --git`, modes, `---`, `+++`, correctifs binaires complets), lignes `+` et `-`, `\ No newline at end of file`. Seules les lignes `index`, `@@` et de contexte peuvent différer. Le diff est tiré sans renommage (comme W2), sans pilote externe ni conversion, avec des préfixes fixes. Pas de `git patch-id` : il ignore les espaces, qui comptent en YAML, en Python et dans les blocs `run:`.
+
+W1, l'ascendance de W3, W4 à W7 restent exigées, dont `ci-ok` sur `H`, et J1 et J8 si la PR modifie `.github/` (étapes 8 et 9 de `merge`). Toute lecture en échec fait refuser le candidat.
+
+**Objets locaux.** `merge` a déjà les commits de la PR (`git fetch origin pull/<n>/head`). `verify-main` les lit en local s'ils y sont ; sinon il fait, une fois et seulement sur ce chemin, `git fetch --quiet --no-tags origin pull/<n>/head`, en CI compris : sur un dépôt public, ce *fetch* est anonyme, et le travail de nuit ne garde toujours aucun identifiant (m2 de #52). `git merge-tree --write-tree` demande **git 2.38 ou plus** ; une version plus ancienne fait refuser le report. `merge-tree` écrit l'arbre fusionné dans les objets du dépôt, sans toucher aux références.
+
 **Affichage.**
-- `merge` affiche, pour chaque avis : `<avis>: <tête>`, ou `<avis> carried over from <A> to the head <tête> (AS-40, W1 to W5 hold)`.
-- Un refus dit, pour chaque SHA candidat, la condition qui a échoué, par exemple `W2: <fichier> has another blob or mode at the head than at <A> (conflict resolution?)`.
-- `verify-main` note `<avis> carried over from <A>` sur la ligne du commit.
+- `merge` affiche, pour chaque avis : `<avis>: <tête>`, ou `<avis> carried over from <A> to the head <tête> (AS-40, W1 to W5 hold)`, ou `<avis> carried over from <A> to <tête> (AS-55: clean merges of main, identical diff)`.
+- Un refus dit, pour chaque SHA candidat, la condition qui a échoué, par exemple `W2: <fichier> has another blob or mode at the head than at <A> (conflict resolution?)`, suivie de celle d'AS-55 (`; AS-55: X2: merging <p2> into <p1> conflicts: <fusion> was resolved by hand`).
+- `verify-main` note `<avis> carried over from <A>` sur la ligne du commit, suivi de `(AS-55)` pour ce report.
 
 **Lectures.**
 - Les arbres de `A` et de `H` :
