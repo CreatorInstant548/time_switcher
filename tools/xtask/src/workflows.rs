@@ -84,7 +84,7 @@ fn parse(line: &str) -> Option<Line<'_>> {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || "_-".contains(c));
             let key = Some(key.to_ascii_lowercase());
-            let value = value.trim();
+            let value = value.trim_matches(' ');
             valid.then_some(Line {
                 item,
                 dash,
@@ -94,7 +94,7 @@ fn parse(line: &str) -> Option<Line<'_>> {
             })
         }
         None if item && !rest.is_empty() && !rest.starts_with(|c| ODD_SCALAR_START.contains(c)) => {
-            let value = rest.trim();
+            let value = rest.trim_matches(' ');
             Some(Line {
                 item,
                 dash,
@@ -108,7 +108,10 @@ fn parse(line: &str) -> Option<Line<'_>> {
 }
 
 fn strip_comment(value: &str) -> &str {
-    value.find(" #").map_or(value, |i| &value[..i]).trim()
+    value
+        .find(" #")
+        .map_or(value, |i| &value[..i])
+        .trim_matches(' ')
 }
 
 /// The text of a scalar written bare, `"…"` or `'…'` with no quote inside; `None` for anything
@@ -152,7 +155,7 @@ fn event_refusal(name: &str) -> Option<String> {
         .is_some_and(|n| ALLOWED_EVENTS.contains(&n.as_str()));
     (!allowed).then(|| {
         format!(
-            "event {name:?} is not one of the allowed triggers {ALLOWED_EVENTS:?}              (public repository: other events run in the base repository's context, #77)"
+            "event {name:?} is not one of the allowed triggers {ALLOWED_EVENTS:?} \n             (public repository: other events run in the base repository's context, #77)"
         )
     })
 }
@@ -210,11 +213,11 @@ fn place(stack: &mut Vec<Level>, l: &Line) -> bool {
 
 /// Lignes de l'élément de liste (étape) qui contient la ligne `i`, de clé à l'indentation `col`.
 fn step_block<'b, 'a>(lines: &'b [&'a str], i: usize, col: usize) -> &'b [&'a str] {
-    let blank = |l: &str| l.trim().is_empty();
+    let blank = |l: &str| l.trim_matches(' ').is_empty();
     let mut start = i;
-    while !lines[start].trim_start().starts_with('-') && start > 0 {
+    while !lines[start].trim_start_matches(' ').starts_with('-') && start > 0 {
         let prev = lines[start - 1];
-        if !blank(prev) && indent(prev) < col && !prev.trim_start().starts_with('-') {
+        if !blank(prev) && indent(prev) < col && !prev.trim_start_matches(' ').starts_with('-') {
             break;
         }
         start -= 1;
@@ -289,7 +292,7 @@ pub fn pinned_uses(text: &str) -> Vec<Pin> {
         let tag = l
             .value
             .find(" #")
-            .and_then(|c| l.value[c + 2..].split_whitespace().next());
+            .and_then(|c| l.value[c + 2..].split(' ').find(|w| !w.is_empty()));
         out.push(Pin {
             line: i + 1,
             repo,
@@ -300,28 +303,46 @@ pub fn pinned_uses(text: &str) -> Vec<Pin> {
     out
 }
 
-/// Line breaks that `str::lines` does not split on: YAML breaks lines on a lone CR too, and
-/// YAML 1.1 parsers on NEL, LS and PS, so the text after one would be read here as a comment of
-/// the same line while the parser reads it as YAML of its own (#77).
-const HIDDEN_BREAKS: [char; 4] = ['\r', '\u{85}', '\u{2028}', '\u{2029}'];
+/// Characters that YAML does not read as this check does (#77). YAML knows two white spaces,
+/// the space and the tab, and breaks lines on LF, CR and, for YAML 1.1, NEL, LS and PS; `lines()`
+/// and `trim()` know more or fewer of them. Text hidden behind such a character was read as a
+/// comment, an empty line or a longer line here, and as YAML there (a lone CR, or a no-break
+/// space before `#`, which makes the line a continuation of the previous `run:`).
+fn unreadable_char(c: char) -> bool {
+    c.is_whitespace()
+        || c.is_control()
+        || matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')
+}
+
+/// One report per line that holds a character other than the ASCII space, the LF and the CR of
+/// a CRLF which is white space, a control or an invisible format character: tab, VT, FF, NEL,
+/// NBSP, U+2000..U+200A, LS, PS, U+3000, zero-width characters, any BOM. Accented letters and
+/// other printable text stay accepted. This is the one place that decides it, on the raw text,
+/// before it is split into lines.
+fn unreadable_chars(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut line = 1;
+    let mut last = 0;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let crlf = c == '\r' && chars.peek() == Some(&'\n');
+        if c != ' ' && c != '\n' && !crlf && unreadable_char(c) && last != line {
+            last = line;
+            found.push(format!(
+                "ligne {line} : character U+{:04X} refused: only the space, LF and CRLF are \
+                 accepted as white space, YAML would not read the line as this check does (#77)",
+                u32::from(c)
+            ));
+        }
+        line += usize::from(c == '\n');
+    }
+    found
+}
 
 /// Écarts d'un workflow, chacun avec son numéro de ligne.
 pub fn check_workflow(text: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
-    let mut errors = Vec::new();
-    // `lines()` has already removed the CR of a CRLF: a CRLF file stays accepted. Any other kind
-    // of line break makes the file unreadable for this check, so it is refused (fail closed).
-    let why = "line break other than LF or CRLF (CR, NEL, LS, PS) refused: YAML would read the \
-               rest of the line as a new line (#77)";
-    for (i, line) in lines.iter().enumerate() {
-        if line.contains(HIDDEN_BREAKS) {
-            errors.push(format!("ligne {} : {why}", i + 1));
-        }
-    }
-    // A break at the very end of the file is no line of `lines()`: check the whole text as well.
-    if errors.is_empty() && text.replace("\r\n", "\n").contains(HIDDEN_BREAKS) {
-        errors.push(format!("fin du fichier : {why}"));
-    }
+    let mut errors = unreadable_chars(text);
     let mut top_permissions = false;
     let mut stack: Vec<Level> = Vec::new();
     // Bloc `|` ou `>` ouvert : (colonne de sa clé, interpolations non sûres permises).
@@ -333,11 +354,8 @@ pub fn check_workflow(text: &str) -> Vec<String> {
     let mut event_count = 0;
     for (i, &raw) in lines.iter().enumerate() {
         let n = i + 1;
-        let compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+        let compact: String = raw.chars().filter(|c| *c != ' ').collect();
         let compact = compact.to_ascii_lowercase();
-        if raw.contains('\t') {
-            errors.push(format!("ligne {n} : tabulation refusée"));
-        }
         for bad in [
             "pull_request_target",
             "workflow_run",
@@ -349,7 +367,7 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             }
         }
         if let Some((col, data)) = block {
-            if raw.trim().is_empty() || indent(raw) > col {
+            if raw.trim_matches(' ').is_empty() || indent(raw) > col {
                 if unsafe_interpolation(raw) && !data {
                     errors.push(format!(
                         "ligne {n} : interpolation non sûre hors de env:, with: et if: (SEC0-31)"
@@ -359,7 +377,7 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             }
             block = None;
         }
-        let trimmed = raw.trim();
+        let trimmed = raw.trim_matches(' ');
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
@@ -472,7 +490,7 @@ pub fn check_workflow(text: &str) -> Vec<String> {
     }
     if on_keys != 1 || event_count == 0 {
         errors.push(format!(
-            "exactly one top-level `on:` with at least one readable event expected, found              {on_keys} `on:` and {event_count} event(s) (#77)"
+            "exactly one top-level `on:` with at least one readable event expected, found \n             {on_keys} `on:` and {event_count} event(s) (#77)"
         ));
     }
     // A job without a readable `runs-on:` is refused rather than assumed to be hosted (#77).
@@ -836,7 +854,7 @@ fn installer_calls(line: &str) -> Vec<Vec<&str>> {
 fn path_filter_entry(lines: &[&str], i: usize) -> bool {
     const FILTERS: [&str; 2] = ["paths", "paths-ignore"];
     let glob = |s: &str| {
-        let s = s.trim().trim_matches(['"', '\'']);
+        let s = s.trim_matches(' ').trim_matches(['"', '\'']);
         !s.is_empty()
             && s.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"_./*!-".contains(&b))
@@ -853,7 +871,7 @@ fn path_filter_entry(lines: &[&str], i: usize) -> bool {
         return false;
     }
     for prev in lines[..i].iter().rev() {
-        let t = prev.trim();
+        let t = prev.trim_matches(' ');
         if t.is_empty() || t.starts_with('#') {
             continue;
         }
@@ -890,7 +908,7 @@ pub fn tool_lock_errors(workflows: &[(String, String)], script: &str, lock: &str
         let lines: Vec<&str> = text.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if !line.contains(SCRIPT_NAME)
-                || line.trim_start().starts_with('#') // YAML or shell comment: nothing runs
+                || line.trim_start_matches(' ').starts_with('#') // YAML or shell comment: nothing runs
                 || path_filter_entry(&lines, i)
             {
                 continue;
@@ -1400,7 +1418,7 @@ mod tests {
             for text in [appended, duplicate, trigger, end, start] {
                 let errors = check_workflow(&text);
                 assert!(
-                    errors.iter().any(|e| e.contains("line break other than")),
+                    errors.iter().any(|e| e.contains("character U+")),
                     "{br:?}: {errors:?}"
                 );
             }
@@ -1408,11 +1426,77 @@ mod tests {
         // A trailing lone CR is no line of `lines()`: the whole text is checked as well.
         let tail = format!("{}\r", good());
         assert!(!check_workflow(&tail).is_empty());
+        // A tab, VT or FF is refused too, by the same rule (the tab had a rule of its own).
+        for c in ['\t', '\u{b}', '\u{c}'] {
+            let text = good().replacen("jobs:", &format!("jobs:{c}"), 1);
+            let errors = check_workflow(&text);
+            assert!(errors.iter().any(|e| e.contains("character U+")), "{c:?}");
+        }
         // A CRLF file stays accepted, a CR before the CRLF does not.
         let crlf = good().replace('\n', "\r\n");
         assert_eq!(check_workflow(&crlf), Vec::<String>::new());
         let double = good().replacen("jobs:\n", "jobs:\r\r\n", 1);
         assert!(!check_workflow(&double).is_empty());
+    }
+
+    /// Review of #101 (third): `trim()` removes every Unicode white space, YAML only the space
+    /// and the tab. A line made of a no-break space and `# ...` was an empty comment for this
+    /// check and the continuation of the previous `run:` for YAML, which expanded the PR title
+    /// in the shell (SEC0-31). Every white space, control and invisible character is refused in
+    /// the whole file, by one rule.
+    #[test]
+    fn refuses_unicode_white_space_that_hides_yaml() {
+        let title = "# ${{ github.event.pull_request.title }}";
+        let spaces = [
+            '\u{a0}', '\u{1680}', '\u{2000}', '\u{2001}', '\u{2005}', '\u{200a}', '\u{202f}',
+            '\u{205f}', '\u{3000}', '\u{85}', '\u{2028}', '\u{2029}',
+        ];
+        let invisible = [
+            '\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}', '\u{feff}', '\0',
+        ];
+        for c in spaces.into_iter().chain(invisible) {
+            let run = good().replacen(
+                "          cargo xtask check --only workflows\n",
+                &format!("          cargo xtask check --only workflows\n          {c}{title}\n"),
+                1,
+            );
+            let inline = good().replacen(
+                "run: |",
+                &format!("run: echo hello\n          {c}{title}\n        x: |"),
+                1,
+            );
+            let trigger = good().replacen(
+                "  pull_request:\n",
+                &format!("  pull_request:\n  {c}# issue_comment\n"),
+                1,
+            );
+            let on = good().replacen(
+                "on:\n  pull_request:\n",
+                &format!("on: push\n{c}# issue_comment\n"),
+                1,
+            );
+            let blank = good().replacen("jobs:\n", &format!("{c}\njobs:\n"), 1);
+            let inside = good().replacen("echo", &format!("echo{c}"), 1);
+            let start = format!("{c}{}", good());
+            for text in [run, inline, trigger, on, blank, inside, start] {
+                assert_ne!(text, good());
+                let errors = check_workflow(&text);
+                let code = format!("U+{:04X}", u32::from(c));
+                assert!(
+                    errors.iter().any(|e| e.contains(&code)),
+                    "{c:?}: {errors:?}"
+                );
+            }
+        }
+        // Printable non-ASCII text stays accepted, in values and in comments.
+        let french = good().replacen(
+            "echo \"$TITLE\"",
+            "echo \"anomalie détectée\" # été à Noël, « ok » \u{2014} \u{20ac}",
+            1,
+        );
+        assert_eq!(check_workflow(&french), Vec::<String>::new());
+        let comment = good().replacen("  a:\n", "  # Contrôle détecté\n  a:\n", 1);
+        assert_eq!(check_workflow(&comment), Vec::<String>::new());
     }
 
     const SCRIPT: &str = include_str!("../../ci/install-tools.sh");
