@@ -4,8 +4,8 @@
 use super::tests::{Pos, Total, build, restore};
 use super::*;
 use crate::{
-    CanonicalError, CanonicalLimits, Phase, ScheduleError, SimBuilder, StateDecode, StateLayout,
-    StateReader,
+    CanonicalError, CanonicalLimits, ClockOutOfRange, Phase, ScheduleError, SimBuilder,
+    StateDecode, StateLayout, StateReader,
 };
 
 /// One stable entity with `Pos(-2)`, a resource `Total(7)`, one pending event.
@@ -477,13 +477,35 @@ fn dates_are_bounded() {
         decode(&small_header(), &s).unwrap_err(),
         CanonicalError::Invalid("day origin out of range")
     );
-    // At the bound, the date is accepted and the world still ticks.
+    // At the bound, the date is accepted, and the last tick that ends within it runs.
     let edge = (1_i64 << 62) - (1_i64 << 62) % 50;
     let mut s = small_state();
-    put(&mut s, 14, &edge.to_le_bytes());
-    let h = header(&[("small", 1)], &[("small", 1)], 50, edge);
+    put(&mut s, 14, &(edge - 50).to_le_bytes());
+    let h = header(&[("small", 1)], &[("small", 1)], 50, edge - 50);
     let mut sim = restore(&decode(&h, &s).unwrap(), &small()).unwrap();
-    sim.step();
+    sim.step().unwrap();
+    assert_eq!(sim.now(), SimTime::from_millis(edge));
+    // #113: the next tick would end beyond 2^62, so it is refused before any phase runs,
+    // and the world, unchanged, still reads back.
+    let before = sim.state_hash();
+    assert_eq!(
+        sim.step(),
+        Err(ClockOutOfRange {
+            now: SimTime::from_millis(edge),
+            requested: SimTime::from_millis(edge + 50),
+        })
+    );
+    assert_eq!(sim.now(), SimTime::from_millis(edge));
+    assert_eq!(sim.state_hash(), before);
+    reads_back(&sim);
+}
+
+/// #113: a world the kernel made decodes and restores to the same state.
+fn reads_back(sim: &Sim) {
+    let snap: MemorySnapshot = sim.snapshot(SnapshotScope::Full);
+    let decoded = decode(&snap.header_bytes(), snap.canonical_bytes()).unwrap();
+    let restored = restore(&decoded, &small()).unwrap();
+    assert_eq!(restored.state_hash(), sim.state_hash());
 }
 
 /// Offsets of the two counters in [`small_state`].
@@ -514,24 +536,34 @@ fn counters_and_tick_are_bounded() {
             CanonicalError::Invalid("tick length out of range")
         );
     }
-    // At the bound, both counters still work after the restore.
+    // One below the bound, the last identifier is handed out, and the world reads back.
+    let mut s = small_state();
+    put(&mut s, NEXT_STABLE_ID, &((1_u64 << 62) - 1).to_le_bytes());
+    let mut sim = restore(&decode(&small_header(), &s).unwrap(), &small()).unwrap();
+    let id = sim.world.resource_mut::<StableIds>().allocate();
+    assert_eq!(id.map(StableId::index), Some((1 << 62) - 1));
+    reads_back(&sim);
+    // At the bound, both counters refuse rather than make a save that could not be read
+    // back (#113 for `StableId`, #31 for events), and the world still ticks.
     let mut s = small_state();
     put(&mut s, NEXT_STABLE_ID, &(1_u64 << 62).to_le_bytes());
     put(&mut s, NEXT_SEQ, &(1_u64 << 62).to_le_bytes());
     let mut sim = restore(&decode(&small_header(), &s).unwrap(), &small()).unwrap();
-    let id = sim.world.resource_mut::<StableIds>().allocate();
-    assert_eq!(id.map(StableId::index), Some(1 << 62));
+    assert_eq!(sim.world.resource_mut::<StableIds>().allocate(), None);
+    assert_eq!(
+        sim.world.resource::<StableIds>().0.to_snapshot_raw(),
+        1 << 62
+    );
     let event = TimedEvent {
         kind: 2,
         subject: StableId::from_snapshot_raw(0),
         arg: 0,
     };
-    // #31: the event counter is at the bound, so a new event is refused rather than making
-    // a save that could not be read back.
     let refused = sim
         .world
         .resource_mut::<EventQueue>()
         .schedule(SimTime::from_millis(500), event);
     assert_eq!(refused, Err(ScheduleError::CounterExhausted));
-    sim.step();
+    sim.step().unwrap();
+    reads_back(&sim);
 }

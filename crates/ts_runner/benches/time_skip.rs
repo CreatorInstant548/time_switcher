@@ -98,7 +98,9 @@ fn child(days: i64, threads: u16) -> Result<String, String> {
     let mut sim = Sim::build(cfg, &rules(TownSpec::PHASE0), &public_test_key(SEED))
         .map_err(|e| e.to_string())?;
     let start = Instant::now();
-    let report = sim.run_until(StopCondition::At(day_start(days)));
+    let report = sim
+        .run_until(StopCondition::At(day_start(days)))
+        .map_err(|e| e.to_string())?;
     let micros = start.elapsed().as_micros();
     let hash = hex(sim.state_hash().global.as_bytes());
     Ok(format!("{} {micros} {hash}", report.ticks))

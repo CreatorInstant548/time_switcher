@@ -15,8 +15,8 @@ use core::fmt;
 
 use ts_kernel::rng::WorldKey;
 use ts_kernel::{
-    BuildError, MemorySnapshot, Plugin, RestoreError, Sim, SimConfig, SimTime, SnapshotScope,
-    StateLayout, StopCondition,
+    BuildError, ClockOutOfRange, MemorySnapshot, Plugin, RestoreError, Sim, SimConfig, SimTime,
+    SnapshotScope, StateLayout, StopCondition,
 };
 use ts_persist::{Codec, DecodeError, EncodeError, Limits, decode_snapshot, encode_snapshot};
 
@@ -33,6 +33,8 @@ pub enum ResumeError {
     Decode(DecodeError),
     /// The decoded snapshot does not restore.
     Restore(RestoreError),
+    /// A checkpoint is beyond the dates the clock may reach (#113).
+    Clock(ClockOutOfRange),
     /// The world restored at `resumed_at` differs from the straight run at `at`.
     Diverged {
         /// Checkpoint of the snapshot.
@@ -51,6 +53,7 @@ impl fmt::Display for ResumeError {
             Self::Encode(e) => write!(f, "encode: {e}"),
             Self::Decode(e) => write!(f, "decode: {e}"),
             Self::Restore(e) => write!(f, "restore: {e}"),
+            Self::Clock(e) => write!(f, "run: {e}"),
             Self::Diverged { resumed_at, at } => write!(
                 f,
                 "restored at {} ms, the world differs at {} ms",
@@ -87,7 +90,9 @@ pub fn check_resume(
     let limits = Limits::default();
     let (mut hashes, mut saves) = (Vec::new(), Vec::new());
     for &at in checkpoints {
-        straight.run_until(StopCondition::At(at));
+        straight
+            .run_until(StopCondition::At(at))
+            .map_err(ResumeError::Clock)?;
         hashes.push(straight.state_hash());
         let snap: MemorySnapshot = straight.snapshot(SnapshotScope::Full);
         saves.push(encode_snapshot(&snap, Codec::Zstd, &limits).map_err(ResumeError::Encode)?);
@@ -102,7 +107,9 @@ pub fn check_resume(
         let mut resumed =
             Sim::restore(&decoded, cfg.clone(), rules, key).map_err(ResumeError::Restore)?;
         for (&at, expected) in checkpoints.iter().zip(&hashes).skip(i) {
-            resumed.run_until(StopCondition::At(at));
+            resumed
+                .run_until(StopCondition::At(at))
+                .map_err(ResumeError::Clock)?;
             if resumed.state_hash() != *expected {
                 return Err(ResumeError::Diverged { resumed_at, at });
             }

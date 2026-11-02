@@ -143,7 +143,8 @@ pub fn encode(scenario: &Scenario, scenario_bytes: &[u8], seed: u64) -> Result<E
     let labels = PLACE_LABELS.map(ByteArray::from);
     let mut rows = 0_usize;
     for day in 0..i64::from(days) {
-        sim.run_until(StopCondition::At(day_start(day).add_millis(SAMPLE_AT_MS)));
+        sim.run_until(StopCondition::At(day_start(day).add_millis(SAMPLE_AT_MS)))
+            .map_err(|e| e.to_string())?;
         let tick = sim.now().as_millis() / tick_millis;
         let mut sample = Day::default();
         let world = sim.world();
@@ -167,7 +168,8 @@ pub fn encode(scenario: &Scenario, scenario_bytes: &[u8], seed: u64) -> Result<E
         let mut group = writer.next_row_group().map_err(|e| parquet_error(&e))?;
         write_day(&mut group, &sample)?;
         group.close().map_err(|e| parquet_error(&e))?;
-        sim.run_until(StopCondition::At(day_start(day + 1)));
+        sim.run_until(StopCondition::At(day_start(day + 1)))
+            .map_err(|e| e.to_string())?;
     }
     let id = recording_id(seed, scenario_bytes);
     let rules_fingerprint = hex(sim.rules_fingerprint().as_bytes());
