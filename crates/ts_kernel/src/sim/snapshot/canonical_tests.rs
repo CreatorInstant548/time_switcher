@@ -390,7 +390,7 @@ fn restore_keeps_its_checks() {
     let stale = decode(&small_header(), &seq).unwrap();
     assert_eq!(
         restore(&stale, &small()).unwrap_err(),
-        RestoreError::Corrupt("event ranks")
+        RestoreError::Corrupt("pending events")
     );
     let mut off_grid = small_state();
     put(&mut off_grid, 14, &7_i64.to_le_bytes());

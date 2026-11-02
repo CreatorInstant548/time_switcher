@@ -8,6 +8,8 @@ license.workspace = true
 publish = false
 
 # No file access (core crate, no I/O): the host reads the files, see `ts_runner`.
+# `unicode-normalization` for the NFC check of display names (M40e): pure Rust, no `std`
+# needed, MIT or Apache-2.0, maintained by the unicode-rs project.
 # `ts_kernel` only for `not_public!`, which keeps the fuzzing body (`fuzzing`) out of the
 # `public` profile, as in `ts_persist` (#48); the pack itself uses no kernel type.
 [dependencies]
@@ -15,6 +17,7 @@ blake3.workspace = true
 ron.workspace = true
 serde.workspace = true
 ts_kernel = { path = "../ts_kernel" }
+unicode-normalization.workspace = true
 
 [lints]
 workspace = true
