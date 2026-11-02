@@ -436,7 +436,6 @@ pub mod lab {
                 dry_run: true,
                 ci: false,
                 cache: self.dir.join(".cache"),
-                home: None,
                 runner: Box::new(Hub {
                     answers,
                     calls: Rc::clone(&calls),

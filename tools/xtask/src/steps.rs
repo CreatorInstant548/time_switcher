@@ -269,32 +269,6 @@ pub fn test(cx: &Ctx) -> Outcome {
     status(tri!(run_live(&cx.root, &cargo(), &args)), "cargo test")
 }
 
-/// Copie épinglée des crochets, désignée par `core.hooksPath` (F2) : jamais la copie de travail.
-fn pinned_dir(cx: &Ctx) -> Result<PathBuf, String> {
-    let dir = PathBuf::from(cx.git(&["config", "--get", "core.hooksPath"])?.trim());
-    let name = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let hooks = sys::ts_cache().join("hooks");
-    let same_parent = dir.parent().is_some_and(|p| {
-        p.to_string_lossy()
-            .replace('\\', "/")
-            .eq_ignore_ascii_case(&hooks.to_string_lossy().replace('\\', "/"))
-    });
-    // Empreinte du jeu installé, écrite par xtask hooks install ; hooks verify recalcule le contenu.
-    let current = sys::read_text(&hooks.join("current.sha256")).unwrap_or_default();
-    let hex = name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit());
-    if !same_parent || !hex || !current.trim().eq_ignore_ascii_case(&name) {
-        return Err(
-            "core.hooksPath ne désigne pas la copie épinglée TS_CACHE/hooks/<current.sha256> : \
-             réinstaller les crochets (cargo xtask hooks install)"
-                .to_owned(),
-        );
-    }
-    Ok(dir)
-}
-
 pub(crate) fn lock_value(lock: &str, key: &str) -> Result<String, String> {
     lock.lines()
         .filter_map(|l| l.split_once('='))
@@ -302,12 +276,6 @@ pub(crate) fn lock_value(lock: &str, key: &str) -> Result<String, String> {
         .map(|(_, v)| v.trim().trim_matches('"').to_owned())
         .filter(|v| !v.is_empty())
         .ok_or_else(|| format!("{key} absent de tools.lock"))
-}
-
-fn pinned_lock(cx: &Ctx) -> Result<(PathBuf, String), String> {
-    let dir = pinned_dir(cx)?;
-    let lock = sys::read_text(&dir.join("tools.lock"))?;
-    Ok((dir, lock))
 }
 
 /// Version installée d'un outil cargo, comparée au `tools.lock` du dépôt (F9). Une version n'est
@@ -381,23 +349,51 @@ struct GitleaksSetup {
     sha256: String,
     config: PathBuf,
     ignore_dir: PathBuf,
+    /// Folder written for this run only, removed when the setup is dropped (local mode).
+    _temp: Option<TempDir>,
 }
 
-/// Mode CI (A2) : `CI=true` et `GITHUB_ACTIONS=true`. Un exécuteur n'a pas de copie épinglée des
-/// crochets ; le mode CI n'est pas plus permissif : binaire vérifié, configuration de `main`.
+/// Removes the folder written by [`gitleaks_local`] when the step ends, whatever the outcome.
+struct TempDir(PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0); // folder created by this run only
+    }
+}
+
+/// Mode CI (A2) : `CI=true` et `GITHUB_ACTIONS=true`. Le mode CI n'est pas plus permissif :
+/// binaire vérifié, configuration de `main`.
 pub fn ci_mode() -> bool {
     let is_true = |v: &str| sys::env(v).as_deref() == Some("true");
     is_true("CI") && is_true("GITHUB_ACTIONS")
 }
 
-/// Poste local : binaire, empreinte et configuration de la copie épinglée (F2).
+/// Local machine (AS-50: no more pinned hook copy): binary and SHA-256 from `tools.lock`, and
+/// configuration from `gitleaks.toml`, both read from `origin/main` by `git show`, never from the
+/// working copy, so a branch cannot point at another binary nor add an exception (F2, G5). The
+/// configuration is written to a folder of this run under `TS_CACHE/tmp`.
 fn gitleaks_local(cx: &Ctx) -> Result<GitleaksSetup, String> {
-    let (dir, lock) = pinned_lock(cx)?;
+    let lock = cx.git(&["show", "origin/main:tools/dev/tools.lock"])?;
+    let config = cx.git(&["show", "origin/main:tools/dev/hooks/gitleaks.toml"])?;
+    let (bin, sha256) = (
+        PathBuf::from(lock_value(&lock, "gitleaks.path")?),
+        lock_value(&lock, "gitleaks.sha256")?,
+    );
+    let dir = sys::ts_cache()
+        .join("tmp")
+        .join(format!("xtask-gitleaks-config-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir); // leftover of an earlier run with this process id
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{} : {e}", dir.display()))?;
+    // From here on, the folder is removed whatever happens.
+    let temp = TempDir(dir.clone());
+    sys::write(&dir.join("gitleaks.toml"), config.as_bytes())?;
     Ok(GitleaksSetup {
-        bin: PathBuf::from(lock_value(&lock, "gitleaks.path")?),
-        sha256: lock_value(&lock, "gitleaks.sha256")?,
+        bin,
+        sha256,
         config: dir.join("gitleaks.toml"),
         ignore_dir: dir,
+        _temp: Some(temp),
     })
 }
 
@@ -453,6 +449,7 @@ fn gitleaks_ci(cx: &Ctx) -> Result<GitleaksSetup, String> {
         sha256: lock_value(&lock, "gitleaks.linux.sha256")?,
         config,
         ignore_dir: dir,
+        _temp: None,
     })
 }
 
@@ -470,6 +467,7 @@ pub fn gitleaks(cx: &Ctx) -> Outcome {
         sha256,
         config,
         ignore_dir: dir,
+        _temp,
     } = setup;
     let expected = sha256.to_ascii_lowercase();
     if !bin.is_file() || tri!(sys::sha256(&cx.root, &bin)) != expected {
@@ -479,7 +477,7 @@ pub fn gitleaks(cx: &Ctx) -> Outcome {
         ));
     }
     if !config.is_file() {
-        return Outcome::Fail("gitleaks.toml absent de la copie épinglée".to_owned());
+        return Outcome::Fail("gitleaks.toml d'origin/main absent".to_owned());
     }
     if cx.root.join(".gitleaksignore").exists() {
         return Outcome::Fail(".gitleaksignore à la racine refusé (SEC0-08)".to_owned());
