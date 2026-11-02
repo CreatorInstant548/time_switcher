@@ -1,7 +1,7 @@
-# tools/dev/test-repo-settings.ps1 : tests de repo-settings.ps1, sans appel à GitHub.
-# Invariants du fichier (S2), comparaison des réponses, motifs de ref (S3), arguments et préalables,
-# forme -Check -SourceCommit <sha> (AS-38) et lecture du fichier dans ce commit ; bilan final de -Check et
-# script entier sur une API simulée, par un faux gh (AS-43).
+# tools/dev/test-repo-settings.ps1: tests of repo-settings.ps1, without any GitHub call.
+# File invariants (S2), comparison of the answers, ref patterns (S3), arguments and prerequisites,
+# file read from origin/main; final -Check verdict and whole script on a simulated API, through a fake
+# gh that also records every write of -Apply with its body (AS-43, #85).
 # Lit tools/ci/repo-settings.json de la copie de travail et les workflows d'origin/main. Sortie 1 si un cas échoue.
 $dev = $PSScriptRoot
 . (Join-Path $dev 'repo-settings.ps1')
@@ -181,8 +181,10 @@ function Get-Expiry([int]$Days) { return [DateTimeOffset]::UtcNow.AddDays($Days)
 function Copy-Json($V) { return ConvertFrom-Json (ConvertTo-Json -InputObject $V -Depth 30) -AsHashtable -Depth 50 -NoEnumerate }
 $cfg = New-Cfg
 function New-Fake {
+  # Same rulesets in both listings: -Check reads includes_parents=true, -Apply includes_parents=false.
+  $rulesets = @(@{ id = 9; name = $cfg.ruleset_main['name'] }, @{ id = 10; name = $cfg.ruleset_pilotage['name'] })
   $f = @{ '' = (Copy-Json $cfg.repo) + @{ default_branch = 'main' }; '/branches?protected=true&per_page=100' = @()
-    '/rulesets?includes_parents=true&per_page=100' = @(@{ id = 9; name = $cfg.ruleset_main['name'] }, @{ id = 10; name = $cfg.ruleset_pilotage['name'] })
+    '/rulesets?includes_parents=true&per_page=100' = $rulesets; '/rulesets?includes_parents=false&per_page=100' = (Copy-Json $rulesets)
     '/rulesets/9' = (Copy-Json $cfg.ruleset_main) + @{ id = 9; current_user_can_bypass = 'never' }
     '/rulesets/10' = (Copy-Json $cfg.ruleset_pilotage) + @{ id = 10; current_user_can_bypass = 'never' }
     '/rules/branches/main?per_page=100' = @($EffectiveMain | ForEach-Object { @{ type = $_; ruleset_source_type = 'Repository'; ruleset_id = 9 } }) }
@@ -258,7 +260,7 @@ function Run-Settings([string]$Dir, [string]$Script, [string[]]$A) {
 function Expect([string]$Name, $R, [string]$Pattern) { Check "$Name (code $($R.Code) : $($R.Out.Trim()))" ($R.Code -eq 2 -and $R.Out -match $Pattern) }
 
 foreach ($a in @(@(), @('-Check', '-Apply'), @('-check'), @('-Apply', 'x'), @('-Check:$true'), @('Check'), @('-Apply:$false'))) {
-  Expect "arguments refusés : $($a -join ' ')" (Run-Settings $M $S $a) 'usage :'
+  Expect "arguments refusés : $($a -join ' ')" (Run-Settings $M $S $a) 'usage:'
 }
 # Cas positif : -Check et -Apply passent les arguments et tous les préalables, jusqu'au dernier (distant).
 foreach ($mode in '-Check', '-Apply') { Expect "$mode atteint le dernier préalable" (Run-Settings $M $S @($mode)) 'distant origin hors de github\.com' }
@@ -278,63 +280,36 @@ Expect 'copie principale en avance d''origin/main' (Run-Settings $M $S @('-Check
 G -C $M push -q origin main; G -C $M reset -q --hard HEAD~1
 Expect 'copie principale en retard d''origin/main' (Run-Settings $M $S @('-Apply')) 'n''est pas à jour d''origin/main'
 G -C $M pull -q --ff-only
-# AS-38 : -Check -SourceCommit <sha>, forme réservée à cargo xtask merge ; les préalables S4 restent.
+# #85: the -Check -SourceCommit <sha> form (AS-38) is removed; it is now a refused argument.
 $head = "$(& git -C $M rev-parse HEAD)".Trim()
-foreach ($a in @(@('-Check', '-SourceCommit'), @('-Apply', '-SourceCommit', $head), @('-SourceCommit', $head, '-Check'),
-                 @('-Check', '-SourceCommit', $head, 'x'), @('-Check', '-sourcecommit', $head), @('-Check', '-Source', $head))) {
-  Expect "arguments refusés : $($a -join ' ')" (Run-Settings $M $S $a) 'usage :'
+foreach ($a in @(@('-Check', '-SourceCommit', $head), @('-Check', '-SourceCommit'), @('-Apply', '-SourceCommit', $head))) {
+  Expect "refused arguments: $($a -join ' ')" (Run-Settings $M $S $a) 'usage:'
 }
-foreach ($x in $head.Substring(0, 39), $head.ToUpperInvariant(), "${head}0", ('g' * 40), 'HEAD', 'origin/main') {
-  Expect "-SourceCommit refusé : $x" (Run-Settings $M $S @('-Check', '-SourceCommit', $x)) '-SourceCommit : SHA complet'
-}
-Expect '-SourceCommit : commit absent' (Run-Settings $M $S @('-Check', '-SourceCommit', ('0' * 40))) 'introuvable après git fetch'
-Expect '-SourceCommit atteint le dernier préalable' (Run-Settings $M $S @('-Check', '-SourceCommit', $head)) 'distant origin hors de github\.com'
-Expect '-SourceCommit hors de la racine' (Run-Settings (Join-Path $M 'sub') $S @('-Check', '-SourceCommit', $head)) 'pas depuis la racine de la copie principale'
-Expect '-SourceCommit depuis un worktree' (Run-Settings $W (Join-Path $W 'tools/dev/repo-settings.ps1') @('-Check', '-SourceCommit', $head)) 'pas depuis la racine de la copie principale'
-# Le fichier est lu dans le commit source (la tête d'une PR), ni sur le disque ni sur origin/main.
-G -C $M switch -q -c marque
-Set-Content (Join-Path $M 'tools/ci/repo-settings.json') '{"marque": 1}'
-G -C $M commit -q -am 'docs(essai): marque'
-$mark = "$(& git -C $M rev-parse HEAD)".Trim()
-G -C $M rm -q tools/ci/repo-settings.json; G -C $M commit -q -m 'docs(essai): sans fichier dans la branche'
-$nofile = "$(& git -C $M rev-parse HEAD)".Trim()
-G -C $M switch -q main
+# The file is read from origin/main, never from the disk.
 Set-Content (Join-Path $M 'tools/ci/repo-settings.json') '{"disque": 1}'
 Push-Location $M
-try { $r = Read-Config $mark; $o = Read-Config 'origin/main' } finally { Pop-Location }
-Check 'Read-Config lit le commit source, pas le disque' ($r -is [Collections.IDictionary] -and $r['marque'] -eq 1 -and -not $r.Contains('disque'))
-Check 'Read-Config d''origin/main' ($o -is [Collections.IDictionary] -and $o.Contains('ruleset_main') -and -not $o.Contains('marque'))
+try { $o = Read-Config 'origin/main' } finally { Pop-Location }
+Check 'Read-Config reads origin/main, not the disk' ($o -is [Collections.IDictionary] -and $o.Contains('ruleset_main') -and -not $o.Contains('disque'))
 G -C $M checkout -q -- tools/ci/repo-settings.json
-$r = Run-Settings $M $S @('-Check', '-SourceCommit', $mark)
-Check "-SourceCommit : fichier du commit lu et refusé par S2 avant GitHub (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.Out -match 'expected sections' -and $r.Out -notmatch 'distant')
-# AS-41 : un fichier affaibli dans la tête est refusé par S2, avec les invariants du script de la copie
-# principale (égal à origin/main par S4), même si la tête modifie aussi le script (refusé par ailleurs par
-# la condition 1 de merge).
-G -C $M switch -q -c affaibli main
-$weak = ConvertFrom-Json $text -AsHashtable -Depth 50; $weak.repo['allow_auto_merge'] = $true
-Set-Content (Join-Path $M 'tools/ci/repo-settings.json') (ConvertTo-Json $weak -Depth 30)
-G -C $M commit -q -am 'docs(essai): fichier affaibli'
-$weakSha = "$(& git -C $M rev-parse HEAD)".Trim()
-$lax = (Get-Content -Raw $S).Replace('function Get-Invalid($C) {', 'function Get-Invalid($C) { return , [Collections.Generic.List[string]]::new()')
-Set-Content (Join-Path $M 'tools/dev/repo-settings.ps1') $lax -NoNewline
-G -C $M commit -q -am 'docs(essai): script sans invariants'
-$laxSha = "$(& git -C $M rev-parse HEAD)".Trim()
-G -C $M switch -q main
-foreach ($x in @(@('fichier affaibli', $weakSha), @('fichier affaibli et script de la tête sans invariants', $laxSha))) {
-  $r = Run-Settings $M $S @('-Check', '-SourceCommit', $x[1])
-  Check "AS-41 -SourceCommit : $($x[0]) refusé (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.Out -match 'repo\.allow_auto_merge doit valoir false')
-}
-Check 'le script de la tête n''est pas celui de la copie principale' ((Get-Content -Raw $S) -cne $lax)
-Expect '-SourceCommit d''un commit sans le fichier' (Run-Settings $M $S @('-Check', '-SourceCommit', $nofile)) "absent du commit $nofile"
 # Script entier sur une API simulée (AS-43, Z2) : origin se lit github.com/o/r mais git le redirige vers
 # le dépôt nu local (insteadOf) ; un faux gh, premier dans PATH, sert New-Fake et note chaque appel.
-# Jamais -Apply ici : le faux gh répondrait aussi aux écritures.
+# #85: a write (-X, body read on the input) is recorded with its method, path and body in
+# TS_FAKE_GH_WRITES, then accepted, or refused with a 422 when "<method> <path>" equals __refuse.
 $bin = Join-Path $tmp 'bin'; New-Item -ItemType Directory -Force $bin | Out-Null
 Set-Content (Join-Path $bin 'gh.ps1') @'
 Add-Content -LiteralPath $env:TS_FAKE_GH_LOG "$($args[-1])"
 $data = Get-Content -Raw -LiteralPath $env:TS_FAKE_GH_DATA | ConvertFrom-Json -AsHashtable -Depth 50
 $k = "$($args[-1])" -creplace '^repos/o/r', ''
-if ($args[0] -cne 'api' -or $args -contains '-X' -or -not $data.ContainsKey($k)) { exit 1 }
+$x = [array]::IndexOf([object[]]$args, '-X')
+if ($args[0] -cne 'api') { exit 1 }
+if ($x -ge 0) {
+  $method = "$($args[$x + 1])"
+  $body = ConvertFrom-Json (@($input) -join "`n") -AsHashtable -Depth 50 -NoEnumerate
+  Add-Content -LiteralPath $env:TS_FAKE_GH_WRITES "$method`t$k`t$(ConvertTo-Json -InputObject $body -Depth 30 -Compress)"
+  if ("$method $k" -ceq $data['__refuse']) { ConvertTo-Json -InputObject @{ message = 'simulated'; status = '422' } -Compress; exit 1 }
+  '{}'; exit 0
+}
+if (-not $data.ContainsKey($k)) { exit 1 }
 $v = $data[$k]
 if ($v -is [Collections.IDictionary] -and $v.Contains('__http')) {   # simulated HTTP error, printed like gh does
   ConvertTo-Json -InputObject @{ message = 'simulated'; status = "$($v['__http'])" } -Compress; exit 1
@@ -342,7 +317,7 @@ if ($v -is [Collections.IDictionary] -and $v.Contains('__http')) {   # simulated
 ConvertTo-Json -InputObject $v -Depth 30 -Compress
 exit 0
 '@
-$env:TS_FAKE_GH_LOG = Join-Path $tmp 'gh.log'; $env:TS_FAKE_GH_DATA = Join-Path $tmp 'gh.json'
+$env:TS_FAKE_GH_LOG = Join-Path $tmp 'gh.log'; $env:TS_FAKE_GH_DATA = Join-Path $tmp 'gh.json'; $env:TS_FAKE_GH_WRITES = Join-Path $tmp 'gh-writes.log'
 # Si le vrai gh était lancé malgré tout, il ne joindrait pas GitHub : hôte invalide, sans configuration
 # ni jeton. Le cas conforme exige des appels notés, donc le faux gh.
 $savedEnv = @{}; foreach ($v in 'PATH', 'GH_HOST', 'GH_CONFIG_DIR', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN') { $savedEnv[$v] = [Environment]::GetEnvironmentVariable($v) }
@@ -353,9 +328,10 @@ G -C $M config "url.$($bare -replace '\\', '/').insteadOf" https://github.com/o/
 function Run-Faked([scriptblock]$Change, [string[]]$A) {
   $f = New-Fake; & $Change $f
   Set-Content -LiteralPath $env:TS_FAKE_GH_DATA (ConvertTo-Json -InputObject $f -Depth 30)
-  Remove-Item -LiteralPath $env:TS_FAKE_GH_LOG -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $env:TS_FAKE_GH_LOG, $env:TS_FAKE_GH_WRITES -ErrorAction SilentlyContinue
   $r = Run-Settings $M $S $A
   $r.Calls = @(if (Test-Path -LiteralPath $env:TS_FAKE_GH_LOG) { Get-Content -LiteralPath $env:TS_FAKE_GH_LOG })
+  $r.Writes = @(if (Test-Path -LiteralPath $env:TS_FAKE_GH_WRITES) { Get-Content -LiteralPath $env:TS_FAKE_GH_WRITES })
   $r.DriftLines = @($r.Out -split '\r?\n' | Where-Object { $_ -cmatch 'ÉCART' })
   return $r
 }
@@ -409,12 +385,58 @@ try {
     Check "whole script, $k`: code 1, one drift line (code $($r.Code) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.DriftLines.Count -eq 1 -and
       $r.DriftLines[0] -cmatch $weakened[$k][1] -and -not ($r.Calls -cmatch 'fork-pr-workflows-private-repos'))
   }
-  $r = Run-Faked { param($f) } @('-Check', '-SourceCommit', $weakSha)
-  Check "script entier, fichier refusé par S2 : code 1 sans appel à GitHub (code $($r.Code), $($r.Calls.Count) appel(s) : $($r.Out.Trim()))" ($r.Code -eq 1 -and
-    $r.Calls.Count -eq 0 -and $r.DriftLines.Count -eq 0 -and $r.Out -match 'repo\.allow_auto_merge doit valoir false')
+  # #85: -Apply on its real call path (AS-43). Each write, in order, with its exact body taken from the
+  # file of origin/main; then the final -Check, conforming on an unchanged API.
+  function Get-Writes($R) {
+    return @($R.Writes | ForEach-Object { $m, $p, $b = $_ -split "`t", 3; "$m $p $(J (ConvertFrom-Json $b -AsHashtable -Depth 50 -NoEnumerate))" })
+  }
+  # Literal split of the repository settings: every key but security_and_analysis in the first PATCH,
+  # only secret scanning and push protection in the second one (Dependabot has its own endpoints).
+  $plain = [ordered]@{}
+  foreach ($k in 'allow_auto_merge', 'allow_merge_commit', 'allow_rebase_merge', 'allow_squash_merge', 'delete_branch_on_merge', 'squash_merge_commit_title', 'visibility') { $plain[$k] = $cfg.repo[$k] }
+  $sa = $cfg.repo['security_and_analysis']
+  $scanning = @{ security_and_analysis = @{ secret_scanning = $sa['secret_scanning']; secret_scanning_push_protection = $sa['secret_scanning_push_protection'] } }
+  $expected = [Collections.Generic.List[string]]::new()
+  foreach ($w in @(@('PUT', '/rulesets/9', $cfg.ruleset_main), @('PUT', '/rulesets/10', $cfg.ruleset_pilotage), @('PATCH', '', $plain), @('PATCH', '', $scanning),
+                   @('PUT', '/vulnerability-alerts', @{}), @('PUT', '/automated-security-fixes', @{}))) {
+    $expected.Add("$($w[0]) $($w[1]) $(J $w[2])")
+  }
+  foreach ($k in $ActionsApi.Keys) { $expected.Add("PUT $($ActionsApi[$k]) $(J $cfg.actions[$k])") }
+  $expected.Add("PUT $ReportingApi $(J @{})"); $expected.Add("PUT $InteractionApi $(J $cfg.interaction_limits)")
+  $r = Run-Faked { param($f) } @('-Apply')
+  $got = Get-Writes $r
+  Check "whole script, -Apply: $($expected.Count) writes in order with the file's bodies, then a conforming -Check (code $($r.Code), $($got.Count) write(s): $($got -join ' | ') : $($r.Out.Trim()))" ($r.Code -eq 0 -and
+    ($got -join "`n") -ceq ($expected -join "`n") -and $r.DriftLines.Count -eq 0 -and $r.Out -cmatch 'repo-settings -Apply puis -Check : conforme à ')
+  # No ruleset of that name yet: both are created (POST), the other writes are unchanged. The fake API
+  # does not change after a write, so this case checks the writes only.
+  $r = Run-Faked { param($f) $f['/rulesets?includes_parents=false&per_page=100'] = @() } @('-Apply')
+  $got = Get-Writes $r
+  $tail = $expected.Count - 1
+  Check "whole script, -Apply without the rulesets: two POST, then the same writes (code $($r.Code), $($got.Count) write(s): $($got -join ' | '))" ($r.Code -eq 0 -and $got.Count -eq $expected.Count -and
+    $got[0] -ceq "POST /rulesets $(J $cfg.ruleset_main)" -and $got[1] -ceq "POST /rulesets $(J $cfg.ruleset_pilotage)" -and ($got[2..$tail] -join "`n") -ceq ($expected[2..$tail] -join "`n"))
+  # Two rulesets under the name of main: refused before any write.
+  $r = Run-Faked { param($f) $f['/rulesets?includes_parents=false&per_page=100'] += @(@{ id = 11; name = $cfg.ruleset_main['name'] }) } @('-Apply')
+  Check "whole script, -Apply with a duplicated ruleset: code 1, no write (code $($r.Code), $($r.Writes.Count) write(s) : $($r.Out.Trim()))" ($r.Code -eq 1 -and $r.Writes.Count -eq 0 -and
+    $r.Out -match 'à dédoublonner')
+  # A refused write stops -Apply there (code 1): nothing after it, and no final -Check.
+  $r = Run-Faked { param($f) $f['__refuse'] = 'PUT /vulnerability-alerts' } @('-Apply')
+  $got = Get-Writes $r
+  Check "whole script, -Apply with a refused write: code 1, stops at that write (code $($r.Code), $($got.Count) write(s) : $($r.Out.Trim()))" ($r.Code -eq 1 -and
+    ($got -join "`n") -ceq ($expected[0..4] -join "`n") -and $r.Out -match 'PUT repos/o/r/vulnerability-alerts refusé \(HTTP 422\)' -and $r.Out -notmatch 'conforme')
+  # AS-41: a weakened file on origin/main is refused by S2 with the script's own invariants, by -Check
+  # and by -Apply, before any GitHub call (formerly tested through -SourceCommit).
+  $weak = ConvertFrom-Json $text -AsHashtable -Depth 50; $weak.repo['allow_auto_merge'] = $true
+  Set-Content (Join-Path $M 'tools/ci/repo-settings.json') (ConvertTo-Json $weak -Depth 30)
+  G -C $M commit -q -am 'docs(essai): fichier affaibli'; G -C $M push -q origin main
+  foreach ($mode in '-Check', '-Apply') {
+    $r = Run-Faked { param($f) } @($mode)
+    Check "whole script, $mode, file weakened on origin/main: code 1, refused by S2 before any GitHub call (code $($r.Code), $($r.Calls.Count) call(s) : $($r.Out.Trim()))" ($r.Code -eq 1 -and
+      $r.Calls.Count -eq 0 -and $r.Writes.Count -eq 0 -and $r.DriftLines.Count -eq 0 -and $r.Out -match 'repo\.allow_auto_merge doit valoir false')
+  }
+  G -C $M checkout -q HEAD~1 -- tools/ci/repo-settings.json; G -C $M commit -q -am 'docs(essai): fichier rétabli'; G -C $M push -q origin main
 } finally {
   foreach ($v in $savedEnv.Keys) { [Environment]::SetEnvironmentVariable($v, $savedEnv[$v]) }
-  Remove-Item Env:TS_FAKE_GH_LOG, Env:TS_FAKE_GH_DATA -ErrorAction SilentlyContinue
+  Remove-Item Env:TS_FAKE_GH_LOG, Env:TS_FAKE_GH_DATA, Env:TS_FAKE_GH_WRITES -ErrorAction SilentlyContinue
   G -C $M config remote.origin.url ($bare -replace '\\', '/'); G -C $M config --unset "url.$($bare -replace '\\', '/').insteadOf"
 }
 G -C $M rm -q tools/ci/repo-settings.json; G -C $M commit -q -m 'docs(essai): sans fichier'; G -C $M push -q origin main

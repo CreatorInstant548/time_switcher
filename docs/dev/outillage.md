@@ -155,7 +155,7 @@ Tous travaillent dans des dépôts jetables sous `TS_CACHE\tmp\`, jamais dans le
 pwsh -NoProfile -File tools/dev/test-slots.ps1         # logique des baux, dans un TS_CACHE jetable
 pwsh -NoProfile -File tools/dev/test-slots.ps1 -Real   # plus les vérifications du §6.3, dans les vrais emplacements
 pwsh -NoProfile -File tools/dev/deny-rules.ps1 -Check   # refus natifs de .claude/settings.json égaux à leur génération (§3.2), aussi en CI
-pwsh -NoProfile -File tools/dev/test-repo-settings.ps1 # invariants, comparaison ; arguments et refus S4 dans un dépôt jetable dont origin est local ; script entier avec un faux gh, dépôt public et privé, chaque réglage d'AS-45 affaibli (AS-43, AS-45) : jamais d'appel à GitHub
+pwsh -NoProfile -File tools/dev/test-repo-settings.ps1 # invariants, comparaison ; arguments et refus S4 dans un dépôt jetable dont origin est local ; script entier avec un faux gh, dépôt public et privé, chaque réglage d'AS-45 affaibli, écritures de -Apply dans l'ordre avec leur corps (AS-43, AS-45, #85) : jamais d'appel à GitHub
 ```
 
 ## 5. Vérifications bloquantes de §6.3 (30/10/2026)
@@ -200,23 +200,16 @@ C'est un chemin sensible. Il a six sections (deux ajoutées par AS-45, au passag
 
 ### 6.2 `tools/dev/repo-settings.ps1 -Check | -Apply`
 
-Deux modes exclusifs, plus la forme réservée ci-dessous ; tout autre argument est refusé (code 2).
+Deux modes exclusifs ; tout autre argument est refusé (code 2). L'ancienne forme réservée `-Check -SourceCommit <sha>` (AS-38), que plus rien ne lançait depuis AS-50, est retirée avec ses tests (#85).
 
-**Forme réservée `-Check -SourceCommit <sha>` (AS-38)** : `-Check`, mais avec le fichier du commit `<sha>`, lu par `git show <sha>:tools/ci/repo-settings.json`, jamais sur le disque. Depuis AS-50, `cargo xtask merge` ne la lance plus (l'exception de réparation est retirée) : elle reste dans le script, sans usage, jusqu'à une PR qui le simplifiera.
-- Le SHA doit compter exactement 40 caractères hexadécimaux minuscules, le commit doit être présent localement après `git fetch`, et le fichier doit exister dans ce commit. Sinon : code 2.
-- Le fichier passe d'abord les invariants S2 de ce script, celui de la copie principale (AS-41) : un fichier affaibli donne le code 1, sans appel à GitHub.
-- Les préalables S4 restent tous en place, et les workflows comparés restent ceux d'`origin/main`.
-- `-Apply` n'a pas de forme `-SourceCommit`.
-
-- **Source** : le fichier est lu par `git show origin/main:tools/ci/repo-settings.json` (ou `<sha>:…` pour la forme réservée), **jamais sur le disque**. Une modification d'un worktree ne peut donc pas être appliquée avant d'avoir été fusionnée.
-- **Ordre des préalables**, chacun avec son message (code 2, sauf l'étape 6, qui rend le code 1) :
-  1. arguments (et, pour la forme réservée, format du SHA) ;
+- **Source** : le fichier est lu par `git show origin/main:tools/ci/repo-settings.json`, **jamais sur le disque**. Une modification d'un worktree ne peut donc pas être appliquée avant d'avoir été fusionnée.
+- **Ordre des préalables**, chacun avec son message (code 2, sauf l'étape 5, qui rend le code 1) :
+  1. arguments ;
   2. préalables S4 ci-dessous ;
   3. `git fetch origin` et égalité avec `origin/main` ;
   4. présence du fichier sur `origin/main` (sinon il le dit et s'arrête) ;
-  5. pour la forme réservée : présence du commit `<sha>` après `git fetch`, puis présence du fichier dans ce commit ;
-  6. **invariants S2** du fichier lu : un fichier refusé s'arrête là, avec le code 1, avant tout appel à GitHub ;
-  7. enfin, distant `origin` sur `github.com`.
+  5. **invariants S2** du fichier lu : un fichier refusé s'arrête là, avec le code 1, avant tout appel à GitHub, pour `-Check` comme pour `-Apply` ;
+  6. enfin, distant `origin` sur `github.com`.
 - **Préalables** (S4) : lancé depuis la racine de la copie principale, script de cette copie (pas celui d'un worktree), copie propre, sur `main`, égale à `origin/main`. Sinon : code 2.
 - **Invariants codés dans le script** (S2, élargis par AS-41). **Chaque champ du fichier a sa valeur sûre fixée dans le script**, et les clés sont fermées : un champ inconnu, absent, d'un autre type (`"false"` en texte) ou d'une autre valeur est refusé. Seuls les paramètres neutres d'AS-30 (`automatic_copilot_code_review_enabled: false`, `required_reviewers: []`) peuvent s'ajouter, et seulement avec leur valeur neutre. Les tables du script couvrent :
   - les deux *rulesets* : `name`, `target: branch`, `enforcement: active`, `bypass_actors: []`, `conditions` qui visent la seule branche ; règles exactement `deletion`, `non_fast_forward`, `required_linear_history`, `pull_request`, `required_status_checks` pour `main`, et `deletion`, `non_fast_forward` pour `pilotage`, sans doublon, sans paramètres pour les trois premières ;
@@ -228,7 +221,7 @@ Deux modes exclusifs, plus la forme réservée ci-dessous ; tout autre argument 
 
   Le fichier est refusé aussi si une action utilisée par les workflows d'`origin/main` n'est couverte par aucun motif (`-Apply` casserait la CI). Affaiblir une règle, ou changer une valeur, demande donc de modifier aussi le script. Un test par champ le vérifie (`test-repo-settings.ps1`).
 - **`-Check`** (lecture seule, `GET` seulement) compare GitHub au fichier et affiche chaque écart, avec la valeur attendue et la valeur lue ; code 1 s'il y en a un. Il signale :
-  - un fichier refusé par les invariants S2, **avant tout appel à GitHub** (AS-41). La comparaison et l'attestation ci-dessous ne viennent qu'ensuite, avec le fichier accepté, aussi bien sous la forme `-SourceCommit` ;
+  - un fichier refusé par les invariants S2, **avant tout appel à GitHub** (AS-41). La comparaison et l'attestation ci-dessous ne viennent qu'ensuite, avec le fichier accepté ;
   - un *ruleset* attendu absent, en double, ou différent (règles indexées par type, listes comparées sans tenir compte de l'ordre) ;
   - tout *ruleset* inconnu qui vise `main` ou `pilotage` (S3 ; motifs `~ALL`, `~DEFAULT_BRANCH` et jokers compris, de façon prudente) ;
   - toute **protection de branche classique** encore présente, sur n'importe quelle branche (S3). `branches?protected=true` compte aussi les branches visées par un *ruleset* : chaque branche listée est relue par `branches/<nom>/protection`. Seul le 404 dont le message est « Branch not protected » vaut « aucune » ; tout autre 404 arrête `-Check` (code 2) ;
@@ -238,7 +231,8 @@ Deux modes exclusifs, plus la forme réservée ci-dessous ; tout autre argument 
   - **l'attestation qui remplace l'essai R6.4** (AS-31, T3e-2) : `current_user_can_bypass` doit valoir `never` sur le *ruleset* `main` (lu par `GET` sur ce *ruleset*). Ce champ reste dans la liste des champs ignorés par la comparaison ci-dessous, puisqu'il ne figure pas dans le fichier : il est attesté à part, pour `main` seulement. Les règles effectives de `main` (`rules/branches/main`) doivent contenir `deletion`, `non_fast_forward`, `required_linear_history`, `pull_request` et `required_status_checks`. Sinon, c'est un écart (code 1), qui suspend les fusions (E4).
 
   Champs ignorés, liste explicite : `id`, `node_id`, `source`, `source_type`, `_links`, `created_at`, `updated_at`, `current_user_can_bypass` d'un *ruleset* ; les champs de l'objet du dépôt absents du fichier ; `selected_actions_url`. Un paramètre de règle présent sur GitHub et absent du fichier est un **écart** (par exemple `do_not_enforce_on_create: true`, qui affaiblirait la règle ; le fichier le fixe donc à `false`). Seule exception, une liste fermée et commentée dans le script, et seulement avec sa valeur neutre : `automatic_copilot_code_review_enabled: false` et `required_reviewers: []`, que GitHub peut renvoyer sans qu'on les envoie. Elle évite qu'un `-Apply` conforme laisse un écart qui suspendrait toutes les fusions.
-- **`-Apply`** : refuse un fichier invalide sans rien écrire. Sinon, crée (`POST`) ou remplace (`PUT`, identifiant retrouvé par nom) les deux *rulesets*, règle le dépôt (`PATCH` sans `security_and_analysis`, puis un second `PATCH` pour l'analyse de secrets et la protection des poussées, puis `PUT vulnerability-alerts` et `PUT automated-security-fixes` pour Dependabot) et les quatre ressources d'Actions (`PUT`), active le signalement privé des vulnérabilités (`PUT`), renouvelle la limite d'interaction (`PUT`, `six_months`), puis relance `-Check` et échoue si un écart subsiste. Il ne supprime ni *ruleset* inconnu ni protection classique : `-Check` les signale.
+- **`-Apply`** : refuse un fichier invalide sans rien écrire. Sinon, crée (`POST`) ou remplace (`PUT`, identifiant retrouvé par nom) les deux *rulesets*, règle le dépôt (`PATCH` sans `security_and_analysis`, puis un second `PATCH` pour l'analyse de secrets et la protection des poussées, puis `PUT vulnerability-alerts` et `PUT automated-security-fixes` pour Dependabot) et les quatre ressources d'Actions (`PUT`), active le signalement privé des vulnérabilités (`PUT`), renouvelle la limite d'interaction (`PUT`, `six_months`), puis relance `-Check` et échoue si un écart subsiste. Il ne supprime ni *ruleset* inconnu ni protection classique : `-Check` les signale. Une écriture refusée arrête `-Apply` sur place (code 1), sans `-Check` final : les écritures précédentes restent faites, et `-Check` montre ensuite ce qui reste en écart. L'ordre et le corps de chaque écriture sont vérifiés par `test-repo-settings.ps1`, sur le chemin réel du script, avec un faux `gh` qui note les écritures (#85).
+- **`-Apply` sur un dépôt redevenu privé** (#85) : le fichier fixe `visibility: public` (AS-45), donc **`-Apply` rend le dépôt public**, sans autre avertissement. Si le dépôt a été remis en privé exprès, lors d'un incident par exemple (fuite à contenir), **ne pas lancer `-Apply`** tant que la décision tient, y compris pour lever l'*issue* `repo-settings-drift` (§3.3, §6.3) ou pour renouveler la limite d'interaction : chacun de ces gestes passe par `-Apply`, donc rend le dépôt public. `-Check`, et donc `cargo xtask verify-main`, restent sans danger (lecture seule) : ils relèvent l'écart `repo.visibility` (code 1), qui suspend les fusions, et c'est voulu. Pour garder le dépôt privé durablement, il faut une décision d'archi-sécu, puis une PR qui change le fichier et le script (S2).
 
 Codes de sortie : 0 conforme, 1 écart ou écriture refusée, 2 usage, préalable non rempli ou erreur.
 
