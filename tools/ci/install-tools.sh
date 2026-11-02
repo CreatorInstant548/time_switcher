@@ -7,8 +7,10 @@
 #   install-tools.sh cargo-audit  cargo install --locked --version, into ~/ts-tools/cargo-audit (cached)
 #   install-tools.sh cargo-fuzz   cargo install --locked --version, with the dated nightly FUZZ_TOOLCHAIN
 #   install-tools.sh version <tool>  version from tools.lock, written to GITHUB_OUTPUT (cache key)
-#   install-tools.sh check <subcommand> [<tool>]  reads every tools.lock value the subcommand needs, with
-#                                 the same reader, and stops before any download, install or write (#95)
+#   install-tools.sh check <subcommand> [<tool>]  runs only read_<subcommand>: every tools.lock value the
+#                                 subcommand needs, with the same reader, and no download, install or write (#95)
+# Each subcommand is two functions, which the dispatcher runs: read_<name> reads and checks every value,
+# and has no side effect; install_<name> uses them, and never reads tools.lock.
 # The values come from the repository's tools/dev/tools.lock. No third-party action, no silent success.
 # spec: carnet architecture-securite.md SEC0-06, SEC0-30 ; §9.6 G5, G6
 set -euo pipefail
@@ -16,17 +18,14 @@ set -euo pipefail
 root=$(git rev-parse --show-toplevel)
 lock="$root/tools/dev/tools.lock"
 cache=${TS_CACHE:-}
-mode=install
+checking=false
 if [ "${1:-}" = check ]; then
-  mode=check
+  checking=true
   shift
 fi
 
 fail() { printf 'FAILED (install-tools): %s\n' "$*" >&2; exit 1; }
 need_cache() { [ -n "$cache" ] || fail "TS_CACHE is not set."; }
-# check mode: every subcommand reads all its values first, then returns here (cargo xtask check,
-# workflows step: a pin missing from tools.lock fails the PR, not the run, #75).
-checking() { [ "$mode" = check ]; }
 
 lock_value() { # lock_value <key>: non-empty value of tools.lock, without quotes
   local v
@@ -38,8 +37,9 @@ lock_value() { # lock_value <key>: non-empty value of tools.lock, without quotes
 sha256_of() { sha256sum "$1" | cut -d ' ' -f 1; }
 
 # check_source <url>: HTTPS only, from the official releases of the tool (closed list: a PR cannot
-# name another repository), in canonical form: no `..`, no `//` after the host, only the
-# characters [A-Za-z0-9._/-] (#17 m3; the SHA-256 stays the real protection).
+# name another repository), in canonical form: no `.` or `..` segment, no `//` after the host, only the
+# characters [A-Za-z0-9._/-] (#17 m3; the SHA-256 stays the real protection). Run by read_<name>,
+# so a refused source fails the PR, and again by download().
 check_source() {
   case $1 in
     https://github.com/gitleaks/gitleaks/releases/download/*) ;;
@@ -48,7 +48,7 @@ check_source() {
   esac
   local rest=${1#https://}
   case $rest in
-    *[!A-Za-z0-9._/-]* | *..* | *//*) fail "source refused: $1 (not in canonical form)." ;;
+    *[!A-Za-z0-9._/-]* | *..* | *//* | */./* | */.) fail "source refused: $1 (not in canonical form)." ;;
   esac
 }
 
@@ -61,26 +61,31 @@ download() {
   [ "$actual" = "$2" ] || fail "unexpected archive SHA-256 ($actual, expected $2): $1"
 }
 
-install_rust() {
-  local channel
+read_rust() {
   channel=$(sed -n 's/^channel *= *"\(.*\)".*/\1/p' "$root/rust-toolchain.toml" | head -n 1)
   [ -n "$channel" ] || fail "channel missing from rust-toolchain.toml."
-  checking && return 0
+}
+
+install_rust() {
   rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy --no-self-update
   rustup show active-toolchain
 }
 
-install_gitleaks() {
-  local version src archive_sha rel expected dir tmp actual
+read_gitleaks() {
+  local windows
   version=$(lock_value 'gitleaks\.linux\.version')
-  [ "$version" = "$(lock_value 'gitleaks\.version')" ] || fail "gitleaks.linux.version differs from gitleaks.version (G6)."
+  windows=$(lock_value 'gitleaks\.version')
+  [ "$version" = "$windows" ] || fail "gitleaks.linux.version differs from gitleaks.version (G6)."
   src=$(lock_value 'gitleaks\.linux\.source')
   archive_sha=$(lock_value 'gitleaks\.linux\.archive_sha256')
   rel=$(lock_value 'gitleaks\.linux\.path')
   expected=$(lock_value 'gitleaks\.linux\.sha256')
   case $rel in /*|*..*) fail "gitleaks.linux.path must be relative to TS_CACHE, without .." ;; esac
   check_source "$src"
-  checking && return 0
+}
+
+install_gitleaks() {
+  local dir tmp actual
   need_cache
   dir=$(dirname "$cache/$rel")
   tmp=$(mktemp -d)
@@ -101,10 +106,12 @@ install_gitleaks() {
 
 # Check of the installation (G4): gitleaks, with the installed configuration and the options of
 # xtask check, must find a fake secret in a folder, then in a commit under the -diff attribute.
-selftest_gitleaks() {
-  local rel bin dir tmp token code
+read_gitleaks_selftest() {
   rel=$(lock_value 'gitleaks\.linux\.path')
-  checking && return 0
+}
+
+install_gitleaks_selftest() {
+  local bin dir tmp token code
   need_cache
   bin="$cache/$rel"
   dir=$(dirname "$bin")
@@ -136,14 +143,18 @@ selftest_gitleaks() {
   rm -rf "$tmp"
 }
 
-install_cargo_deny() {
-  local version src archive_sha dir tmp name
+read_cargo_deny() {
+  local other
   version=$(lock_value 'cargo-deny\.linux\.version')
-  [ "$version" = "$(lock_value 'cargo-deny\.version')" ] || fail "cargo-deny.linux.version differs from cargo-deny.version (G6)."
+  other=$(lock_value 'cargo-deny\.version')
+  [ "$version" = "$other" ] || fail "cargo-deny.linux.version differs from cargo-deny.version (G6)."
   src=$(lock_value 'cargo-deny\.linux\.source')
   archive_sha=$(lock_value 'cargo-deny\.linux\.archive_sha256')
   check_source "$src"
-  checking && return 0
+}
+
+install_cargo_deny() {
+  local dir tmp name
   need_cache
   dir="$cache/ci/cargo-deny"
   tmp=$(mktemp -d)
@@ -157,10 +168,12 @@ install_cargo_deny() {
   "$dir/cargo-deny" --version
 }
 
-install_cargo_audit() {
-  local version dir
+read_cargo_audit() {
   version=$(lock_value 'cargo-audit\.version')
-  checking && return 0
+}
+
+install_cargo_audit() {
+  local dir
   dir="$HOME/ts-tools/cargo-audit"
   if [ -x "$dir/bin/cargo-audit" ] && [ "$("$dir/bin/cargo-audit" audit --version | awk '{print $NF}')" = "$version" ]; then
     echo "cargo-audit $version: cached copy"
@@ -172,10 +185,12 @@ install_cargo_audit() {
 }
 
 # cargo-fuzz, with the dated nightly of the fuzzing (FUZZ_TOOLCHAIN, G6).
-install_cargo_fuzz() {
-  local version dir toolchain
+read_cargo_fuzz() {
   version=$(lock_value 'cargo-fuzz\.version')
-  checking && return 0
+}
+
+install_cargo_fuzz() {
+  local dir toolchain
   toolchain=${FUZZ_TOOLCHAIN:?FUZZ_TOOLCHAIN is not set}
   dir="$HOME/ts-tools/cargo-fuzz"
   rustup toolchain install "$toolchain" --profile minimal --no-self-update
@@ -188,15 +203,22 @@ add_path() {
   export PATH="$1:$PATH"
 }
 
+# read_version <tool>: the version of a tool, the key being <tool>.version.
+read_version() {
+  local escaped
+  [ -n "${1:-}" ] || fail "tool missing."
+  escaped=$(printf '%s' "$1" | sed 's/\./\\./g')
+  version=$(lock_value "$escaped\.version")
+}
+
+install_version() {
+  printf 'version=%s\n' "$version" >> "${GITHUB_OUTPUT:-/dev/stdout}"
+}
+
 case ${1:-} in
-  rust) install_rust ;;
-  gitleaks) install_gitleaks ;;
-  gitleaks-selftest) selftest_gitleaks ;;
-  cargo-deny) install_cargo_deny ;;
-  cargo-audit) install_cargo_audit ;;
-  cargo-fuzz) install_cargo_fuzz ;;
-  version)
-    v=$(lock_value "$(printf '%s' "${2:?tool missing}" | sed 's/\./\\./g')\.version")
-    checking || printf 'version=%s\n' "$v" >> "${GITHUB_OUTPUT:-/dev/stdout}" ;;
+  rust|gitleaks|gitleaks-selftest|cargo-deny|cargo-audit|cargo-fuzz|version)
+    name=${1//-/_}
+    "read_$name" "${2:-}"
+    "$checking" || "install_$name" ;;
   *) fail "usage: install-tools.sh [check] rust|gitleaks|gitleaks-selftest|cargo-deny|cargo-audit|cargo-fuzz|version <tool>" ;;
 esac

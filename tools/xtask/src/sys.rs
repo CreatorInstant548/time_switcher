@@ -205,26 +205,6 @@ pub fn run_captured_env(
     Ok((out.status.success(), text))
 }
 
-/// Like [`run_captured`], with the variables `remove` taken out of the child's environment.
-pub fn run_captured_without(
-    root: &Path,
-    prog: &str,
-    args: &[&str],
-    remove: &[&str],
-) -> Result<(bool, String), String> {
-    let mut cmd = command(root, prog, args);
-    for var in remove {
-        cmd.env_remove(var);
-    }
-    let out = cmd
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("cannot run {}: {e}", shown_arg(prog)))?;
-    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&out.stderr));
-    Ok((out.status.success(), text))
-}
-
 /// The bash that runs the CI scripts. On Windows, the one of Git for Windows, three levels above
 /// `git --exec-path` (`<git>/ucrt64/libexec/git-core` or `mingw64`), never a `bash.exe` found on
 /// the `PATH`, which may be the one of WSL and would not see this file system the same way.

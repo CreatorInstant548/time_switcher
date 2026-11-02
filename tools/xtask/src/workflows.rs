@@ -1866,14 +1866,47 @@ mod tests {
         }
     }
 
+    /// #95: check mode runs `read_<name>` only, so all the reads of `tools.lock` belong there. A
+    /// read in `install_<name>` would pass the check and fail at run time (#75). Plain text test
+    /// on the definitions at column 0, not a parser of the script.
+    #[test]
+    fn the_installer_reads_its_pins_in_read_functions() {
+        let mut function = "";
+        let mut reads = 0;
+        for line in SCRIPT.lines().filter(|l| !l.trim_start().starts_with('#')) {
+            if let Some((name, _)) = line.split_once("() {") {
+                function = name;
+            }
+            if line.contains("lock_value ") {
+                reads += 1;
+                assert!(
+                    function.starts_with("read_") || function == "lock_value",
+                    "{function}: {line}"
+                );
+            }
+        }
+        assert!(reads > 5, "{reads}");
+    }
+
     /// #17 m3: the check mode applies the source filter of `download()`, so a URL that is not in
     /// canonical form fails the PR, not the run.
     #[test]
     fn refuses_a_source_that_is_not_canonical() {
-        let real = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz";
+        let source = |url: &str| {
+            let lines = LOCK.lines().map(|l| {
+                if l.starts_with("gitleaks.linux.source") {
+                    format!("gitleaks.linux.source = \"{url}\"\n")
+                } else {
+                    format!("{l}\n")
+                }
+            });
+            lines.collect::<String>()
+        };
         for (n, bad) in [
             "https://github.com/gitleaks/gitleaks/releases/download/../../../evil/x/releases/download/v1/a.tar.gz",
             "https://github.com/gitleaks/gitleaks/releases/download//v1/a.tar.gz",
+            "https://github.com/gitleaks/gitleaks/releases/download/./v1/a.tar.gz",
+            "https://github.com/gitleaks/gitleaks/releases/download/v1/.",
             "https://github.com/gitleaks/gitleaks/releases/download/v1/a.tar.gz?x=1",
             "https://github.com/gitleaks/gitleaks/releases/download/v1/a%2e.tar.gz",
             "https://github.com/evil/gitleaks/releases/download/v1/a.tar.gz",
@@ -1881,9 +1914,7 @@ mod tests {
         .iter()
         .enumerate()
         {
-            let lock = LOCK.replace(real, bad);
-            assert_ne!(lock, LOCK);
-            let lab = installer(&format!("source-{n}"), &lock);
+            let lab = installer(&format!("source-{n}"), &source(bad));
             let e = crate::steps::installer_check(&lab.dir, &["gitleaks"]).unwrap_err();
             assert!(e.contains("source refused"), "{bad}: {e}");
         }

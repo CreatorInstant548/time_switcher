@@ -1155,22 +1155,11 @@ pub fn workflows(cx: &Ctx) -> Outcome {
 }
 
 /// `install-tools.sh check <args>` in `root` (#95): the script reads its own `tools.lock` values
-/// and installs nothing. The files of GitHub Actions and the variables of the install modes are
-/// taken out of its environment: whatever the script of a PR does, it cannot change the next
-/// steps of the job through them, and the result does not depend on them. Its reason is its last
-/// line of output.
+/// and installs nothing. Its reason is its last line of output.
 pub(crate) fn installer_check(root: &Path, args: &[&str]) -> Result<(), String> {
-    const REMOVED: [&str; 6] = [
-        "GITHUB_ENV",
-        "GITHUB_PATH",
-        "GITHUB_OUTPUT",
-        "GITHUB_STEP_SUMMARY",
-        "TS_CACHE",
-        "FUZZ_TOOLCHAIN",
-    ];
     let bash = sys::bash(root)?;
     let all = [&[workflows::INSTALL_SCRIPT, "check"], args].concat();
-    let (ok, out) = sys::run_captured_without(root, &bash, &all, &REMOVED)?;
+    let (ok, out) = run_captured(root, &bash, &all)?;
     if ok {
         return Ok(());
     }
