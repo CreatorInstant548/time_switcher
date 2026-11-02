@@ -170,6 +170,16 @@ fn command(root: &Path, prog: &str, args: &[&str]) -> Command {
 
 /// Lance une commande, sortie affichée. Un outil absent est une erreur, jamais une réussite.
 pub fn run_live(root: &Path, prog: &str, args: &[&str]) -> Result<bool, String> {
+    run_live_env(root, prog, args, &[])
+}
+
+/// [`run_live`] with extra environment variables for the child only (never for xtask itself).
+pub fn run_live_env(
+    root: &Path,
+    prog: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<bool, String> {
     // Nom seul : le chemin complet d'un outil contient souvent le dossier personnel (SEC0-26).
     let shown = Path::new(prog)
         .file_stem()
@@ -177,6 +187,7 @@ pub fn run_live(root: &Path, prog: &str, args: &[&str]) -> Result<bool, String> 
     let printed: Vec<String> = args.iter().map(|a| shown_arg(a)).collect();
     println!("  $ {shown} {}", printed.join(" "));
     let status = command(root, prog, args)
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .status()
         .map_err(|e| format!("cannot run {}: {e}", shown_arg(prog)))?;
@@ -185,7 +196,18 @@ pub fn run_live(root: &Path, prog: &str, args: &[&str]) -> Result<bool, String> 
 
 /// Lance une commande et rend (réussite, sortie standard et sortie d'erreur).
 pub fn run_captured(root: &Path, prog: &str, args: &[&str]) -> Result<(bool, String), String> {
+    run_captured_env(root, prog, args, &[])
+}
+
+/// [`run_captured`] with extra environment variables for the child only.
+pub fn run_captured_env(
+    root: &Path,
+    prog: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<(bool, String), String> {
     let out = command(root, prog, args)
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("cannot run {}: {e}", shown_arg(prog)))?;

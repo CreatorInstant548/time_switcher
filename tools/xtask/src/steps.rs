@@ -214,10 +214,110 @@ pub fn clippy(cx: &Ctx) -> Outcome {
             return Outcome::Fail(format!("cargo clippy (fonctionnalité {f}) a échoué"));
         }
     }
+    let live = tri!(live_bans(cx));
     Outcome::Ok(format!(
-        "espace de travail, public, et {} fonctionnalités de développement",
+        "espace de travail, public, {} fonctionnalités de développement, {live} interdictions vivantes",
         DEV_FEATURES.len()
     ))
+}
+
+/// Crate name of a `path = "crate::item"` entry of `clippy.toml`, when it is one that tolerates
+/// an invalid path (`allow-invalid = true`).
+fn lenient_entry_crate(line: &str) -> Option<&str> {
+    let rest = line.split_once("path = \"")?.1;
+    let path = rest.split_once('"')?.0;
+    line.contains("allow-invalid = true")
+        .then(|| path.split("::").next().unwrap_or(path))
+}
+
+/// `clippy.toml` with `allow-invalid = true` removed from every entry whose crate is in `closure`
+/// (m1 of the review of PR #33): such an entry must resolve, so one that became dead after a
+/// dependency upgrade is a warning. The entries of crates that are not (yet) dependencies keep
+/// the flag. Rejects an entry it cannot rewrite. Returns the text and the number of entries made
+/// strict.
+fn strict_clippy_config(text: &str, closure: &BTreeSet<String>) -> Result<(String, usize), String> {
+    let (mut out, mut strict) = (String::new(), 0);
+    for line in text.lines() {
+        let line = match lenient_entry_crate(line) {
+            Some(krate) if closure.contains(krate) => {
+                strict += 1;
+                let (head, tail) = line
+                    .split_once(", allow-invalid = true")
+                    .ok_or_else(|| format!("clippy.toml entry not understood: {line}"))?;
+                format!("{head}{tail}")
+            }
+            _ => line.to_owned(),
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+    Ok((out, strict))
+}
+
+/// Normal dependencies of `ts_kernel`, whole graph, as library names (`bevy_ecs`).
+fn kernel_closure(cx: &Ctx) -> Result<BTreeSet<String>, String> {
+    let args = [
+        "tree",
+        "-p",
+        "ts_kernel",
+        "-e",
+        "normal",
+        "--prefix",
+        "none",
+        "--locked",
+    ];
+    let out = stdout_of(&cx.root, &cargo(), &args)?;
+    Ok(out
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .map(|n| n.replace('-', "_"))
+        .collect())
+}
+
+/// The bans of `clippy.toml` on crates the kernel depends on still resolve (m1 of the review of
+/// PR #33): clippy runs on `ts_kernel` with `allow-invalid` removed from those entries, from a
+/// copy of the configuration under `TS_CACHE`, set for that run only (`CLIPPY_CONF_DIR`). Without
+/// it, a ban made dead by a dependency upgrade is silent. Returns the number of entries checked.
+fn live_bans(cx: &Ctx) -> Result<usize, String> {
+    let text = String::from_utf8(cx.read("clippy.toml")?)
+        .map_err(|_| "clippy.toml is not UTF-8".to_owned())?;
+    let (strict, count) = strict_clippy_config(&text, &kernel_closure(cx)?)?;
+    let scratch = sys::Scratch::new("clippy-config")?;
+    let dir = scratch.path("conf");
+    std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", sys::shown(&dir)))?;
+    sys::write(&dir.join("clippy.toml"), strict.as_bytes())?;
+    let conf = dir.to_string_lossy().into_owned();
+    let args = [
+        "clippy",
+        "--locked",
+        "-p",
+        "ts_kernel",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ];
+    println!(
+        "  $ cargo {} (CLIPPY_CONF_DIR: strict copy of clippy.toml)",
+        args.join(" ")
+    );
+    let env = [("CLIPPY_CONF_DIR", conf.as_str())];
+    let (ok, out) = sys::run_captured_env(&cx.root, &cargo(), &args, &env)?;
+    // A ban that does not resolve is a plain warning, which `-D warnings` does not turn into a
+    // failure: any `warning` or `error` line is one (a clean run prints none).
+    let alarms: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with("warning") || l.starts_with("error"))
+        .collect();
+    if ok && alarms.is_empty() {
+        return Ok(count);
+    }
+    alarms.iter().for_each(|l| println!("  {l}"));
+    Err(
+        "a clippy.toml ban on a dependency of ts_kernel no longer resolves (allow-invalid \
+         removed for this run): update the path, or the ban is dead"
+            .to_owned(),
+    )
 }
 
 /// Crate de cœur ou de règles : ni hôte, ni outil (refus par défaut).
@@ -841,6 +941,7 @@ pub fn spec_map(cx: &Ctx) -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::Path;
 
     #[test]
@@ -918,6 +1019,34 @@ mod tests {
         );
         assert!(super::findings("[]", None).unwrap().is_empty());
         assert!(super::findings("not json", None).is_err());
+    }
+
+    /// m1 (PR #33): `allow-invalid` is removed only from the entries of crates in the closure.
+    #[test]
+    fn strict_clippy_config_follows_the_closure() {
+        let text = "allow-unwrap-in-tests = true\n\
+            disallowed-types = [\n\
+            \x20   { path = \"bevy_ecs::entity::EntityHashMap\", reason = \"r\", allow-invalid = true },\n\
+            \x20   { path = \"rand::rng\", reason = \"r\", allow-invalid = true },\n\
+            \x20   { path = \"std::collections::HashMap\", reason = \"r\" },\n\
+            ]\n";
+        let closure: BTreeSet<String> = ["bevy_ecs".to_owned()].into();
+        let (out, strict) = super::strict_clippy_config(text, &closure).unwrap();
+        assert_eq!(strict, 1);
+        assert!(out.contains("{ path = \"bevy_ecs::entity::EntityHashMap\", reason = \"r\" },"));
+        assert!(out.contains("{ path = \"rand::rng\", reason = \"r\", allow-invalid = true },"));
+        assert_eq!(out.lines().count(), text.lines().count());
+        // An entry of the closure that cannot be rewritten is refused, not skipped.
+        let odd = "{ allow-invalid = true, path = \"bevy_ecs::X\", reason = \"r\" },
+";
+        assert!(super::strict_clippy_config(odd, &closure).is_err());
+        // The real file: its entries on bevy crates all become strict.
+        let real = include_str!("../../../clippy.toml");
+        let all: BTreeSet<String> = ["bevy_ecs", "bevy_utils", "bevy_platform"]
+            .map(str::to_owned)
+            .into();
+        let (_, count) = super::strict_clippy_config(real, &all).unwrap();
+        assert!(count >= 10, "{count}");
     }
 
     #[test]
