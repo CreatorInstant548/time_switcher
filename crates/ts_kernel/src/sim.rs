@@ -24,7 +24,9 @@ use crate::{
 };
 
 mod snapshot;
-pub use snapshot::{MemorySnapshot, RestoreError, Snapshot, SnapshotScope, StateLayout};
+pub use snapshot::{
+    MemorySnapshot, RestoreError, RestoreTarget, Snapshot, SnapshotScope, StateLayout,
+};
 
 // spec: revues/architecture.md §11.3, §12.1 ; carnet architecture-securite.md §9.10 L4, L5
 /// Encodes the kernel state: date, day origin, [`StableId`] counter, `seq` counter and

@@ -192,7 +192,7 @@ pub fn clippy(cx: &Ctx) -> Outcome {
         "warnings",
     ];
     if !tri!(run_live(&cx.root, &cargo(), &args)) {
-        return Outcome::Fail("cargo clippy a échoué".to_owned());
+        return Outcome::Fail("cargo clippy failed".to_owned());
     }
     let meta = tri!(cx.meta());
     let mut shipped = BTreeSet::new();
@@ -207,26 +207,22 @@ pub fn clippy(cx: &Ctx) -> Outcome {
     shipped.iter().for_each(|p| args.extend(["-p", p.as_str()]));
     args.extend(["--", "-D", "warnings"]);
     if !tri!(run_live(&cx.root, &cargo(), &args)) {
-        return Outcome::Fail("cargo clippy (profil public) a échoué".to_owned());
+        return Outcome::Fail("cargo clippy (public profile) failed".to_owned());
     }
-    // Crates de cœur avec chaque fonctionnalité de développement, l'une après l'autre (I2) :
-    // le code sous #[cfg(feature = "dev-…")] est vu aussi. Jamais --all-features (E3).
-    let core: Vec<&str> = meta
-        .packages
-        .iter()
-        .map(|p| p.name.as_str())
-        .filter(|n| is_core(n))
-        .collect();
+    // Core crates with each development feature, one after the other (I2): the code under
+    // #[cfg(feature = "dev-…")] is seen too, in the kernel and in every core crate that relays
+    // the feature (#36). Never --all-features (E3).
+    let core = core_crates(meta);
     for f in DEV_FEATURES {
-        let args = dev_clippy_args(&core, f);
+        let args = dev_clippy_args(&core, &relays(meta, &core, f), f);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         if !tri!(run_live(&cx.root, &cargo(), &args)) {
-            return Outcome::Fail(format!("cargo clippy (fonctionnalité {f}) a échoué"));
+            return Outcome::Fail(format!("cargo clippy (feature {f}) failed"));
         }
     }
     let live = tri!(live_bans(cx));
     Outcome::Ok(format!(
-        "espace de travail, public, {} fonctionnalités de développement, {live} interdictions vivantes",
+        "workspace, public, {} development features, {live} live bans",
         DEV_FEATURES.len()
     ))
 }
@@ -399,8 +395,40 @@ fn is_core(name: &str) -> bool {
     !TOOLS.contains(&name) && !HOSTS.contains(&name)
 }
 
-/// `cargo clippy` des crates de cœur avec une fonctionnalité de développement de `ts_kernel`.
-fn dev_clippy_args(core: &[&str], feature: &str) -> Vec<String> {
+/// The core and rule crates of the workspace.
+fn core_crates(meta: &Metadata) -> Vec<&str> {
+    meta.packages
+        .iter()
+        .map(|p| p.name.as_str())
+        .filter(|n| is_core(n))
+        .collect()
+}
+
+/// The core crates other than `ts_kernel` that declare the development feature `feature`, a relay
+/// of the kernel's (`dev-commands = ["ts_kernel/dev-commands"]`, #36).
+fn relays<'a>(meta: &Metadata, core: &[&'a str], feature: &str) -> Vec<&'a str> {
+    core.iter()
+        .copied()
+        .filter(|c| *c != "ts_kernel")
+        .filter(|c| {
+            meta.package(c)
+                .is_some_and(|p| p.features.contains_key(feature))
+        })
+        .collect()
+}
+
+/// `--features` value that turns `feature` on in the kernel and in each relaying crate.
+fn dev_features_value(relays: &[&str], feature: &str) -> String {
+    std::iter::once("ts_kernel")
+        .chain(relays.iter().copied())
+        .map(|c| format!("{c}/{feature}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// `cargo clippy` of the core crates with a development feature of `ts_kernel`, and the same
+/// feature of the crates that relay it (#36).
+fn dev_clippy_args(core: &[&str], relays: &[&str], feature: &str) -> Vec<String> {
     let mut args = vec![
         "clippy".to_owned(),
         "--locked".to_owned(),
@@ -409,13 +437,28 @@ fn dev_clippy_args(core: &[&str], feature: &str) -> Vec<String> {
     for c in core {
         args.extend(["-p".to_owned(), (*c).to_owned()]);
     }
-    args.extend(["--features".to_owned(), format!("ts_kernel/{feature}")]);
+    args.extend(["--features".to_owned(), dev_features_value(relays, feature)]);
     args.extend(["--", "-D", "warnings"].map(str::to_owned));
     args
 }
 
+/// `cargo test` of the crates that relay a development feature, with it (#36): their gated unit
+/// and doc tests. Each relay turns the kernel's feature on itself. The kernel's own gated code is
+/// small and partly compiled under `cfg(test)`; four extra kernel test runs would cost more than
+/// they find (decided).
+fn dev_test_args(relays: &[&str], feature: &str) -> Vec<String> {
+    let mut args = vec!["test".to_owned(), "--locked".to_owned()];
+    for c in relays {
+        args.extend(["-p".to_owned(), (*c).to_owned()]);
+    }
+    let value: Vec<String> = relays.iter().map(|c| format!("{c}/{feature}")).collect();
+    args.extend(["--features".to_owned(), value.join(",")]);
+    args
+}
+
 pub fn test(cx: &Ctx) -> Outcome {
-    let crates: BTreeSet<String>;
+    // The crates tested, `None` for the whole workspace.
+    let mut crates: Option<BTreeSet<String>> = None;
     let mut args = vec!["test", "--locked"];
     let changed = if cx.all {
         None
@@ -433,15 +476,37 @@ pub fn test(cx: &Ctx) -> Outcome {
             .filter_map(|f| meta.package_of(f))
             .map(str::to_owned)
             .collect();
-        crates = meta.with_dependents(touched);
-        if crates.is_empty() {
-            return Outcome::Skipped("aucune crate touchée".to_owned());
+        let selected = crates.insert(meta.with_dependents(touched));
+        if selected.is_empty() {
+            return Outcome::Skipped("no crate touched".to_owned());
         }
-        crates.iter().for_each(|c| args.extend(["-p", c.as_str()]));
+        selected
+            .iter()
+            .for_each(|c| args.extend(["-p", c.as_str()]));
     } else {
         args.push("--workspace");
     }
-    status(tri!(run_live(&cx.root, &cargo(), &args)), "cargo test")
+    if !tri!(run_live(&cx.root, &cargo(), &args)) {
+        return Outcome::Fail("cargo test failed".to_owned());
+    }
+    // #36: the crates that relay a development feature, tested with it, when they are tested.
+    let meta = tri!(cx.meta());
+    let core = core_crates(meta);
+    let tested = |c: &&str| crates.as_ref().is_none_or(|s| s.contains(*c));
+    let mut passes = 0;
+    for f in DEV_FEATURES {
+        let relays: Vec<&str> = relays(meta, &core, f).into_iter().filter(tested).collect();
+        if relays.is_empty() {
+            continue;
+        }
+        let extra = dev_test_args(&relays, f);
+        let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
+        if !tri!(run_live(&cx.root, &cargo(), &extra)) {
+            return Outcome::Fail(format!("cargo test (feature {f}) failed"));
+        }
+        passes += 1;
+    }
+    Outcome::Ok(format!("cargo test, {passes} development feature pass(es)"))
 }
 
 pub(crate) fn lock_value(lock: &str, key: &str) -> Result<String, String> {
@@ -800,7 +865,8 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
             errors.push(format!("{name} ({}): {e}", sys::shown(Path::new(src))));
         }
     }
-    // ts_py : chaque allow ou expect de unsafe_code, dans tout fichier, suit un // SAFETY:.
+    // ts_py: every attribute naming unsafe_code, in any .rs file, follows a // SAFETY: line, and
+    // no file brings in another one (`include!`, `#[path]`) that this scan would not read (#91).
     if let Some(py) = meta.package(manifests::LOCAL_LINTS_CRATE) {
         let dir = format!("{}/", meta.rel_dir(py));
         for rel in tri!(cx.files())
@@ -810,7 +876,15 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
             let text = String::from_utf8_lossy(&tri!(cx.read(rel))).into_owned();
             if let Some(line) = manifests::unsafe_allow_without_safety(&text) {
                 errors.push(format!(
-                    "{rel}:{line} : exemption de unsafe_code sans // SAFETY:"
+                    "{rel}:{line}: unsafe_code named outside the crate attribute without a \
+                     // SAFETY: line just before"
+                ));
+            }
+            for line in exemptions::file_inclusions(&text) {
+                errors.push(format!(
+                    "{rel}:{line}: include!, include_str!, include_bytes! or #[path] refused in \
+                     {}: the unsafe_code scan reads only its .rs files",
+                    manifests::LOCAL_LINTS_CRATE
                 ));
             }
         }
@@ -1103,11 +1177,17 @@ mod tests {
     #[test]
     fn dev_feature_clippy_passes() {
         for f in crate::manifests::DEV_FEATURES {
-            let args = super::dev_clippy_args(&["ts_kernel", "ts_model"], f);
-            let feature = format!("ts_kernel/{f}");
+            let args = super::dev_clippy_args(&["ts_kernel", "ts_model"], &["ts_model"], f);
+            // #36: the relay of ts_model is turned on with the kernel's feature.
+            let feature = format!("ts_kernel/{f},ts_model/{f}");
             assert!(
                 args.windows(2)
                     .any(|w| w[0] == "--features" && w[1] == feature)
+            );
+            let test = super::dev_test_args(&["ts_model"], f);
+            assert_eq!(
+                test.join(" "),
+                format!("test --locked -p ts_model --features ts_model/{f}")
             );
             assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "ts_model"));
             assert!(
