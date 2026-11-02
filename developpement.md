@@ -479,3 +479,22 @@ erun\datanalytics\` ; l'utilisateur en est informé.
   - #122 a une tête de fusion `48b5522`, vérifiée par un relecteur Sonnet.
   - #121 a ses corrections AS-57 (`b08d873`), et #132 règle #123 (`5c9d27f`). Un relecteur Opus est sur les deux. `archsec-ok` est demandé.
 - **Nouvelles issues** : #130 (test `disk` instable) et #133 (`EventQueue` expose tout le `Scheduler`).
+
+### 02/11 (suite 2) : A15 sur main, #122 fusionnée
+
+- **Fusions** :
+  - #128, puis #129 : l'approbation de #129 a été reportée par AS-55 après une fusion de `main` sans conflit ;
+  - #122, puis fermeture de #59 avec un renvoi au reliquat.
+  - Les issues #43, #44 et #45 sont closes.
+- **Nouvelles issues** :
+  - #134 : `ids_lock` doit échouer sur une erreur de git ;
+  - #135 : mesurer chaque terme de M41h ;
+  - #136 : mesure de M39 et alerte de la CI à 50 % ;
+  - #137 : remontée de conception (identifiants hors fiche, caractères invisibles) ;
+  - #139 : `-Acquire` rend le code 0 sans emplacement.
+- **Incident** : le lot 3A a compilé une fois sans emplacement, à cause de #139. La consigne commune est corrigée : il faut lire la ligne « Emplacement de compilation attribué » avant de compiler.
+- **En cours** :
+  - agent sur les suites A15 (#134, #135, #136) ;
+  - lot 3A repris (PR #138 `clippy.toml` en relecture, puis `clippy-checks`, #95, #17) ;
+  - lot 3B (#55, #85) ;
+  - relecteur Opus sur #121 et #132.
