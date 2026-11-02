@@ -681,7 +681,11 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
                     .map(|(l, ident, why)| format!("{rel}:{l}: {ident} is reserved: {why}")),
             );
         }
-        for d in &p.dependencies {
+        for d in p
+            .dependencies
+            .iter()
+            .filter(|d| d.kind.as_deref() != Some("dev"))
+        {
             if let Some(why) = reserved::refused_dependency(&p.name, &d.name) {
                 errors.push(format!("{}: dependency on {}: {why}", p.name, d.name));
             }

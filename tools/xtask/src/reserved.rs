@@ -2,9 +2,13 @@
 //! to (#26 m3, m4). Pure functions, no I/O.
 //!
 //! The source is normalized as in `exemptions` (comments removed, literals marked), so only
-//! identifiers of code count. Test code is skipped: files under a `tests`, `benches` or
-//! `examples` directory, files named `tests.rs` or `*_tests.rs`, and the body of an inline
-//! `#[cfg(test)] mod name { … }`.
+//! identifiers of code count. Test code is skipped: the `tests`, `benches` and `examples`
+//! targets at the root of a crate, files named `tests.rs` or `*_tests.rs` (by convention
+//! declared under `#[cfg(test)]`), and the body of an inline `#[cfg(test)] mod name { … }`.
+//!
+//! A guard against mistakes, not against a determined author, whom review catches: a
+//! renamed dependency or a re-export inside an allowed crate, or `StateDecode` for
+//! `StableId`, reach the same items without naming them.
 //! spec: carnet architecture-securite.md §9.9 K5, K9
 
 use crate::exemptions::{Src, normalize};
@@ -16,8 +20,7 @@ struct Reserved {
     why: &'static str,
 }
 
-/// Closed list (decided, #26). `WorldKey` and `from_snapshot_raw` cover their constructors:
-/// a key or an identifier cannot be built without naming them.
+/// Closed list (decided, #26). `WorldKey` and `from_snapshot_raw` cover their constructors.
 const RESERVED: [Reserved; 4] = [
     Reserved {
         ident: "WorldKey",
@@ -48,7 +51,8 @@ const RESERVED: [Reserved; 4] = [
     },
 ];
 
-/// Crates that may depend on a raw primitive (any dependency kind), by package name.
+/// Crates that may depend on a raw primitive (normal or build dependency; tests may use any),
+/// by package name.
 const PRIMITIVE_DEPENDENCIES: [(&str, &[&str]); 2] = [
     ("chacha20", &["ts_kernel"]),
     ("blake3", &["ts_kernel", "ts_data", "ts_persist", "ts_toy"]),
@@ -63,11 +67,12 @@ pub fn refused_dependency(krate: &str, dependency: &str) -> Option<&'static str>
         .map(|_| "raw primitive of the keyed randomness or of the state hash (#26 m4)")
 }
 
-/// True for a file of test code, by its path.
+/// True for a file of test code, by its path: a test target at the root of a crate
+/// (`crates/<crate>/tests/…`), or a test module file.
 fn is_test_file(rel: &str) -> bool {
-    let mut parts = rel.split('/');
-    let name = parts.next_back().unwrap_or_default();
-    parts.any(|d| matches!(d, "tests" | "benches" | "examples"))
+    let parts: Vec<&str> = rel.split('/').collect();
+    let name = parts.last().copied().unwrap_or_default();
+    matches!(parts.get(2), Some(&("tests" | "benches" | "examples"))) && parts.len() > 3
         || name == "tests.rs"
         || name.ends_with("_tests.rs")
 }
@@ -238,6 +243,11 @@ mod tests {
         ] {
             assert!(idents(rel, src).is_empty(), "{rel}");
         }
+        // Only the test targets at the root of a crate.
+        assert_eq!(
+            idents("crates/ts_model/src/examples/a.rs", src),
+            [(1, "WorldKey")]
+        );
         let rule = "crates/ts_model/src/player.rs";
         let inline = "fn a() {}\n#[cfg(test)]\nmod tests {\n    use ts_kernel::rng::WorldKey;\n    fn b() { let _ = { 1 }; }\n}\nuse ts_kernel::rng::WorldKey;";
         assert_eq!(idents(rule, inline), [(7, "WorldKey")]);
@@ -259,6 +269,20 @@ mod tests {
         let braces =
             "#[cfg(test)]\nmod t { const S: &str = \"}\"; use a::WorldKey; }\nuse b::WorldKey;";
         assert_eq!(idents(rule, braces), [(3, "WorldKey")]);
+    }
+
+    /// The `bevy_ecs` paths of the restore-contract bans in `clippy.toml` were checked against
+    /// this version, and `allow-invalid` hides a path that no longer resolves: on a bump,
+    /// check each one again (a throwaway file that uses it must be refused), then update this.
+    #[test]
+    fn clippy_bans_were_checked_against_this_bevy_ecs() {
+        let manifest = include_str!("../../../Cargo.toml");
+        assert!(
+            manifest.contains("bevy_ecs = { version = \"=0.20.0\""),
+            "bevy_ecs changed: check the bevy_ecs paths of clippy.toml again (#31)"
+        );
+        let clippy = include_str!("../../../clippy.toml");
+        assert!(clippy.contains("bevy_ecs::system::Local"));
     }
 
     #[test]

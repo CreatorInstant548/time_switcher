@@ -1,6 +1,7 @@
-# Interdictions du cœur : SEC0-22, architecture §9.2, corrections E1, E5 et m2 ; contrat de
-# restauration AS-27 (#31) : ni `Local`, ni détection de changement (`Added`, `Changed`,
-# `Spawned`, `RemovedComponents`, lectures de `DetectChanges`).
+# Bans of the core: SEC0-22, architecture §9.2, fixes E1, E5 and m2; restore contract AS-27
+# (#31): no `Local` and no change detection (filters, removals, ticks, `DetectChanges` reads).
+# The bevy_ecs paths below are checked against bevy_ecs 0.20.0: an xtask test fails when the
+# version changes, so that they are checked again (`allow-invalid` would hide a moved path).
 # Seules les crates d'hôte et d'outil peuvent s'en exempter localement (docs/dev/espace-travail.md).
 
 allow-unwrap-in-tests = true
@@ -13,7 +14,15 @@ disallowed-methods = [
     { path = "bevy_ecs::change_detection::DetectChanges::is_changed", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
     { path = "bevy_ecs::change_detection::DetectChanges::is_changed_after", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
     { path = "bevy_ecs::change_detection::DetectChanges::last_changed", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
+    { path = "bevy_ecs::change_detection::DetectChanges::last_run", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
+    { path = "bevy_ecs::change_detection::DetectChanges::this_run", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
     { path = "bevy_ecs::schedule::IntoScheduleConfigs::ambiguous_with", reason = "arête d'ambiguïté non détectée à la construction (L7) : ordonner les systèmes explicitement (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::world::World::is_resource_added", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
+    { path = "bevy_ecs::world::World::is_resource_added_by_id", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
+    { path = "bevy_ecs::world::World::is_resource_changed", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
+    { path = "bevy_ecs::world::World::is_resource_changed_by_id", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
+    { path = "bevy_ecs::world::World::removed", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
+    { path = "bevy_ecs::world::World::removed_with_id", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
     { path = "chrono::Local::now", reason = "horloge murale : le cœur n'utilise que le temps de jeu entier", allow-invalid = true },
     { path = "chrono::Utc::now", reason = "horloge murale : le cœur n'utilise que le temps de jeu entier", allow-invalid = true },
     { path = "getrandom::fill", reason = "aléa du système : utiliser l'aléa à clé du monde", allow-invalid = true },
@@ -49,6 +58,8 @@ disallowed-methods = [
 
 disallowed-types = [
     { path = "bevy_ecs::archetype::ComponentIndex", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::change_detection::ComponentTicks", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
+    { path = "bevy_ecs::change_detection::Tick", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
     { path = "bevy_ecs::entity::EntityEquivalentHashMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
     { path = "bevy_ecs::entity::EntityEquivalentHashSet", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
     { path = "bevy_ecs::entity::EntityEquivalentIndexMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
@@ -64,6 +75,7 @@ disallowed-types = [
     { path = "bevy_ecs::query::SpawnDetails", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
     { path = "bevy_ecs::query::Spawned", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
     { path = "bevy_ecs::system::Local", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
+    { path = "bevy_ecs::system::SystemChangeTick", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
     { path = "bevy_platform::collections::hash_map::HashMap", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
     { path = "bevy_platform::collections::hash_set::HashSet", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
     { path = "bevy_platform::collections::hash_table::HashTable", reason = "table de hachage de bevy_ecs à itération non déterministe, accessible par la réexportation de ts_kernel : utiliser BTreeMap/BTreeSet, ou un Vec trié (architecture §9.2, issue #12)", allow-invalid = true },
