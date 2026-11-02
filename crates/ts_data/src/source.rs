@@ -6,8 +6,9 @@ use std::io::Read;
 use crate::error::{Code, Diagnostic};
 
 // spec: carnet architecture-securite.md SEC0-25 ; carnet architecture-securite.md §9.13 T2
-/// Bounds on the content read. An input over a bound fails the load.
-// PROVISIONAL(design #43): all six values, to confirm by the design.
+/// Bounds on the content read. An input over a bound fails the load. The defaults are the
+/// design values (A15): safety ceilings, raised by a design PR to 4 times the largest measured
+/// value once a measure reaches half of one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// Largest file, in bytes.
@@ -27,11 +28,17 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            // spec: attendus-mesurables.md §10.1 (M39a, 1 MiB)
             max_file_bytes: 1 << 20,
+            // spec: attendus-mesurables.md §10.1 (M39b, 64 MiB)
             max_total_bytes: 64 << 20,
+            // spec: attendus-mesurables.md §10.1 (M39c)
             max_files: 4096,
+            // spec: attendus-mesurables.md §10.1 (M39d)
             max_cards: 65_536,
+            // spec: attendus-mesurables.md §10.1 (M39e)
             max_depth: 16,
+            // spec: attendus-mesurables.md §10.1 (M39f)
             max_dir_depth: 8,
         }
     }

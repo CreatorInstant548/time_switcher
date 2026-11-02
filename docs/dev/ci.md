@@ -28,8 +28,8 @@ Déclencheurs : `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_
 | Travail | Quand | Contenu |
 |---|---|---|
 | `changes` | toujours | `tools/ci/changes.sh --summary` : tableau des zones et chemins sensibles touchés, dans le résumé de l'exécution |
-| `pr-title` | PR seulement | titre au format `type(portée): description`, même motif que le crochet `commit-msg` ; le titre passe par `env:` (SEC0-31) |
-| `security` | toujours, quels que soient les chemins | gitleaks épinglé et son auto-test ; `cargo xtask check --only workflows,gitleaks,deny`, plus `audit` si `Cargo.lock` change. Avertit si la PR touche la zone `ci` (G5 étendu, voir plus bas) |
+| `pr-title` | PR seulement | titre au format `type(portée): description`, même motif que `cargo xtask merge` (A31) ; le titre passe par `env:` (SEC0-31) |
+| `security` | toujours, quels que soient les chemins | gitleaks épinglé et son auto-test ; `tools/dev/deny-rules.ps1 -Check` (refus natifs de Claude Code égaux à leur génération, [outillage](outillage.md) §3.2) ; `cargo xtask check --only workflows,gitleaks,deny`, plus `audit` si `Cargo.lock` change. Avertit si la PR touche la zone `ci` (G5 étendu, voir plus bas) |
 | `rust-linux` | zone `rust` ou `ci` | `cargo xtask check --all --only fmt,clippy,test,determinism,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map` |
 | `rust-windows` | push sur `main`, étiquette `ci:windows`, ou zone `sensitive` | même chose, sans `fmt` |
 | `ci-ok` | toujours (`always()`) | lit `needs.<travail>.result` (G2) : `changes`, `security` et, sur une PR, `pr-title` doivent valoir `success` ; `rust-linux` et `rust-windows` peuvent valoir `skipped`. Sur un brouillon, il **échoue** au lieu d'être sauté, car GitHub tient un contrôle sauté pour réussi. Délai : 10 min pour le travail, 2 min pour son étape (voir plus bas) |
@@ -44,7 +44,7 @@ Déclencheurs : `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_
 **Délai de `ci-ok`** (*issue* #61, décidé) : d'après l'incident observé, le `timeout-minutes` d'un travail a aussi compté l'attente d'un exécuteur. Le 30/10, lors d'un incident de GitHub Actions, `ci-ok` a attendu 3 min 25 s et a été annulé à 2 min alors que tout était vert. Le travail a donc 10 min, et son unique étape garde un `timeout-minutes: 2`, qui borne le script lui-même. Coût nul en temps normal : le travail ne fait que lire des résultats (3 s), et un travail n'est facturé que pendant qu'il tourne.
 
 **Zones** (`changes.sh`), calculées sur `git diff <base commune> <tête>` ; une base absente ou inconnue retient toutes les zones :
-- `rust` : `crates/`, `tools/xtask/`, `fuzz/`, `.cargo/`, `data/golden/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml`, `deny.toml` ;
+- `rust` : `crates/`, `tools/xtask/`, `fuzz/`, `.cargo/`, `data/golden/`, `data/content/` et `data/scenarios/` (lus par les tests de `ts_runner` : empreinte du paquet d'exemple, registre `ids.lock` en ajout seul, M40d, scénarios), `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml`, `deny.toml` ;
 - `python` : `python/`, `*.py`, `pyproject.toml`, `uv.lock` ; `web` : `admin-web/`, `package.json`, `pnpm-*.yaml` ; `client` : `client/` (aucun travail encore) ;
 - `ci` : ce que la CI exécute pour se contrôler, soit `.github/`, `tools/ci/`, `tools/xtask/`, `tools/dev/tools.lock`, `tools/dev/hooks/gitleaks.toml` ; `docs` : `docs/`, `*.md` ;
 - `sensitive` : `tools/ci/sensitive-paths.txt`, **union** de sa version d'`origin/main` et de celle de la PR (une PR ne peut pas s'en retirer). Les sections `[features]` et `[profile.*]` d'un `Cargo.toml` sont comparées entre la base et la tête, clés pointées de la racine comprises ; `Cargo.lock` est sensible quand il ajoute un nom de crate ;

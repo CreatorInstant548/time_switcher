@@ -24,6 +24,7 @@
 mod card;
 mod error;
 mod pack;
+mod registry;
 mod scan;
 mod source;
 
@@ -35,9 +36,12 @@ ts_kernel::not_public! {
     pub mod fuzzing;
 }
 
-pub use card::{Card, MAX_ID_BYTES, MAX_NAME_BYTES, is_valid_id, is_valid_name};
+pub use card::{
+    Card, MAX_ID_BYTES, MAX_NAME_BYTES, NAMESPACES, is_valid_card_id, is_valid_id, is_valid_name,
+};
 pub use error::{Code, Diagnostic, LoadErrors, MAX_DIAGNOSTICS};
 pub use pack::{ContentPack, FORMAT_VERSION, Fingerprint};
+pub use registry::{IdState, REGISTRY_FILE, Registry};
 pub use source::{Limits, SourceFile, is_relative_path, read_bounded};
 
 #[cfg(test)]
