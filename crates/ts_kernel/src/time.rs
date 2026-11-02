@@ -25,6 +25,12 @@ impl SimTime {
     /// every save can be read back.
     pub const MAX_SAVED_ABS_MILLIS: i64 = 1 << 62;
 
+    /// True if a snapshot can hold this date: within ±[`SimTime::MAX_SAVED_ABS_MILLIS`]. The
+    /// one check shared by the decoder, the scheduler and the clock (#113).
+    pub const fn is_savable(self) -> bool {
+        self.0.unsigned_abs() <= Self::MAX_SAVED_ABS_MILLIS.unsigned_abs()
+    }
+
     /// The instant `millis` milliseconds from the epoch.
     pub const fn from_millis(millis: i64) -> Self {
         Self(millis)
@@ -316,6 +322,17 @@ mod tests {
             SimTime::EPOCH.checked_add_millis(-5),
             Some(SimTime::from_millis(-5))
         );
+    }
+
+    #[test]
+    fn savable_dates_are_within_2_pow_62() {
+        let m = SimTime::MAX_SAVED_ABS_MILLIS;
+        for ms in [-m, -1, 0, 1, m] {
+            assert!(SimTime::from_millis(ms).is_savable(), "{ms}");
+        }
+        for ms in [i64::MIN, -m - 1, m + 1, i64::MAX] {
+            assert!(!SimTime::from_millis(ms).is_savable(), "{ms}");
+        }
     }
 
     #[test]

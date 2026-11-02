@@ -62,9 +62,13 @@ pub fn run_toy(days: u32, seed: u64) -> Result<Outcome, String> {
     let (mut ticks, mut skipped) = (0_u64, 0_u64);
     for day in 0..i64::from(days) {
         let before = tally(&sim);
-        let morning = sim.run_until(StopCondition::At(day_start(day).add_millis(SAMPLE_AT_MS)));
+        let morning = sim
+            .run_until(StopCondition::At(day_start(day).add_millis(SAMPLE_AT_MS)))
+            .map_err(|e| e.to_string())?;
         let sample = tally(&sim);
-        let rest = sim.run_until(StopCondition::At(day_start(day + 1)));
+        let rest = sim
+            .run_until(StopCondition::At(day_start(day + 1)))
+            .map_err(|e| e.to_string())?;
         let after = tally(&sim);
         let day_ticks = morning.ticks + rest.ticks;
         let day_skipped = morning.skipped_ticks + rest.skipped_ticks;

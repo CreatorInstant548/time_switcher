@@ -64,18 +64,22 @@ Ce qui disparaît avec eux, et qui n'est plus tenu que par la discipline des ses
 
 ### 3.1 Ce que contient `permissions.deny`
 
-190 règles : **38 motifs de base**, chacun écrit sous `Bash(…)` et sous `PowerShell(…)`, plus, pour chacun, les formes `PowerShell(& …)`, `Bash(cmd /c …)` et `PowerShell(cmd /c …)`. Les 38 motifs de base :
+605 règles : **121 motifs de base**, chacun écrit sous cinq formes, `Bash(…)`, `PowerShell(…)`, `PowerShell(& …)`, `Bash(cmd /c …)` et `PowerShell(cmd /c …)`. Les règles sont **générées** par `tools/dev/deny-rules.ps1`, qui porte la liste des motifs de base (§3.2) ; le tableau ci-dessous la résume, le script fait foi.
 
-| Famille | Motifs (ils commencent tous par `git` ou `gh`) |
+| Famille | Motifs de base (ils commencent tous par `git` ou `gh`) |
 |---|---|
-| Fusion | `gh pr merge:*` : la fusion passe par `cargo xtask merge` (§3.3) |
-| Poussée forcée ou vers `main` (10) | `git push --force:*`, `git push -f:*`, `git push --force-with-lease:*`, `git push * --force*`, `git push * -f *`, `git push * -f`, `git push * main`, `git push * main:*`, `git push * HEAD:main*`, `git push * +*` |
-| Écriture dans l'API de `gh` (22) | `gh api *-X DELETE*` et `gh api *--method DELETE*` ; pour chacune des cinq ressources `rulesets`, `*/protection`, `actions/permissions`, `interaction-limits` et `private-vulnerability-reporting`, quatre motifs (`-X` ou `--method` placé avant ou après la ressource, toute méthode) |
-| Réglages et secrets du dépôt (5) | `gh repo edit:*`, `gh repo delete:*`, `gh secret:*`, `gh workflow disable:*`, `gh ruleset:*` |
+| Fusion (1) | `gh pr merge:*` : la fusion passe par `cargo xtask merge` (§3.3) |
+| Poussée forcée ou vers `main` (35) | `git push --force:*`, `git push -f:*`, `git push --force-with-lease:*`, `git push --force*` (valeur collée : `--force-with-lease=<réf>`), `git push * --force*`, `git push * -f *`, `git push * -f`, options groupées `git push -fu*`, `git push -uf*`, `git push * -fu*`, `git push * -uf*`, `git push --mirror*`, `git push * --mirror*` ; vers `main` : `git push * main`, `git push * main *`, `git push * main:*`, `git push * HEAD:main*`, `git push *:main*` (`origin <branche>:main`, et la suppression `origin :main`), `git push * refs/heads/main*`, `git push *:refs/heads/main*` ; `git push * +*` ; et 14 motifs après `git -C *` : `push *--force*`, `push -f*`, `push * -f`, `push * -f *`, `push -uf*`, `push * -fu*`, `push * -uf*`, `push *--mirror*`, `push * main`, `push * main *`, `push *:main*`, `push * refs/heads/main*`, `push *:refs/heads/main*`, `push * +*`. Les trois premiers, couverts par `git push --force*`, restent pour la continuité avec la #118 |
+| Écriture dans l'API de `gh` (77) | `gh api *-X DELETE*`, `gh api *--method DELETE*`, `gh api *-X PATCH*`, `gh api *--method PATCH*` (dont `PATCH repos/<slug>`, équivalent de `gh repo edit`, et `PATCH git/refs`, qui déplace une branche) ; graphies collées `-XDELETE`, `-XPUT`, `-XPATCH`, `-XPOST`, et `--method=`, `-X=`, quelle que soit la méthode ; pour chacune des quatorze ressources `rulesets`, `/protection`, `actions/permissions`, `interaction-limits`, `private-vulnerability-reporting`, `/merge` (`pulls/<n>/merge` et `merges`), `/collaborators`, `/keys`, `/hooks`, `/environments`, `actions/workflows` (dont `…/disable`), `actions/secrets`, `actions/variables` et `/transfer`, quatre motifs (`-X` ou `--method` placé avant ou après la ressource, toute méthode) ; GraphQL : `gh api graphql*<nom>*` pour les mutations `mergePullRequest`, `RepositoryRuleset`, `BranchProtectionRule`, `updateRepository`, `enablePullRequestAutoMerge`, `mergeBranch`, `updateRef`, `deleteRef` et `createCommitOnBranch`, plus `gh api graphql*=@*` et `gh api graphql*--input*` (requête lue dans un fichier, qui cacherait le nom) |
+| Réglages et secrets du dépôt (8) | `gh repo edit:*`, `gh repo delete:*`, `gh repo archive:*`, `gh repo rename:*`, `gh secret:*`, `gh variable:*`, `gh workflow disable:*`, `gh ruleset:*` |
 
-Ordres de poussée courants couverts : `git push -f`, `git push --force`, `git push --force-with-lease`, `git push origin +<réf>`, `git push origin main`, `git push origin HEAD:main`, et les mêmes précédés de `& ` ou de `cmd /c`. Une lecture par `gh api` (sans `-X`) n'est pas refusée.
+Ordres de poussée courants couverts : `git push -f`, `git push --force`, `git push --force-with-lease[=<réf>]`, `git push --mirror`, `git push -fu origin <branche>`, `git push origin +<réf>`, `git push origin main`, `git push origin HEAD:main`, `git push origin <branche>:main`, `git push origin :main`, `git push origin refs/heads/main`, `git -C <dossier> push …` sous les mêmes formes, et les mêmes précédés de `& ` ou de `cmd /c`. D'autres groupements d'options courtes (`-qf`, `-vf`) ne sont pas couverts.
 
-**Limite : une ceinture, pas un verrou.** La correspondance se fait par préfixe ou par motif sur le texte de la commande. Elle est donc contournable : ordre des options (`git -C <dossier> push …`, `git push origin refs/heads/main`), alias, variable, `bash -c`, script écrit puis exécuté, interpréteur qui construit le nom par morceaux. Ces refus arrêtent l'erreur, non l'attaque. **Le verrou reste le *ruleset* du serveur** (AS-50 AU1, §6.4) : PR obligatoire, `ci-ok`, historique linéaire, ni poussée forcée ni suppression, aucun contournement. Les réglages eux-mêmes sont surveillés par `repo-settings.ps1 -Check` (§6.3).
+**Faux refus acceptés** (décidé : la ceinture prime sur le confort, et `gh` a une sous-commande pour chaque usage légitime) : une branche dont le nom contient `:main` ou se termine par ` main` (renommer la branche) ; `gh api --method=GET` (écrire `-X GET`) ; toute modification par `gh api -X PATCH`, dont celle d'un commentaire (utiliser `gh issue edit`, `gh pr edit`, `gh label edit`, `gh issue comment --edit-last`) ; un appel `-X` qui cite l'une des ressources ci-dessus, même en lecture.
+
+**`gh api` sans `-X` n'est pas toujours une lecture** : `-f`, `-F`, `--field`, `--raw-field` et `--input` en font un `POST`. En dehors de GraphQL, ces formes ne sont pas refusées : un `POST` implicite (par exemple l'ajout d'une clé de déploiement ou d'un *webhook*, ou un transfert) passe ces règles, comme tout ce que le §3.4 énumère.
+
+**Limite : une ceinture, pas un verrou.** La correspondance se fait par préfixe ou par motif sur le texte de la commande. Elle est donc contournable : autres options globales (`git -c <clé>=<valeur> push -f`, `git --no-pager push -f`), alias, variable, `bash -c`, script écrit puis exécuté, interpréteur qui construit le nom par morceaux. Ces refus arrêtent l'erreur, non l'attaque. **Le verrou reste le *ruleset* du serveur** (AS-50 AU1, §6.4) : PR obligatoire, `ci-ok`, historique linéaire, ni poussée forcée ni suppression, aucun contournement. Les réglages eux-mêmes sont surveillés par `repo-settings.ps1 -Check` (§6.3).
 
 Un refus de Claude Code n'est jamais contourné : s'il gêne un travail légitime, ouvrir une *issue* `role:dev`.
 
@@ -83,7 +87,17 @@ Un refus de Claude Code n'est jamais contourné : s'il gêne un travail légitim
 
 ### 3.2 Étendre ou modifier les refus
 
-`.claude/settings.json` est un chemin sensible (`tools/ci/sensitive-paths.txt`). Toute modification passe par une PR sur une branche `claude/outillage-*`, avec une relecture par un sous-agent neuf, `/security-review`, puis `review-ok` et `archsec-ok` du propriétaire avant `cargo xtask merge`. Pour un nouveau motif, écrire les trois autres formes avec lui (`PowerShell(…)`, `PowerShell(& …)`, `cmd /c`) et le tester à la main dans une session neuve. Plus aucun garde n'empêche une session de modifier ce fichier dans son worktree : seules la revue et le contrôle des chemins sensibles à la fusion le font (§3.4).
+`.claude/settings.json` est un chemin sensible (`tools/ci/sensitive-paths.txt`). Toute modification passe par une PR sur une branche `claude/outillage-*`, avec une relecture par un sous-agent neuf, `/security-review`, puis `review-ok` et `archsec-ok` du propriétaire avant `cargo xtask merge`.
+
+**Génération reproductible** (#119, décidé : un script plutôt qu'une liste tenue à la main, pour que les cinq formes ne divergent jamais). La liste des motifs de base vit dans `tools/dev/deny-rules.ps1` :
+
+```
+pwsh -NoProfile -File tools/dev/deny-rules.ps1 -Check   # le fichier est-il égal à la génération ? (code 1 sinon)
+pwsh -NoProfile -File tools/dev/deny-rules.ps1 -Write   # réécrit le seul tableau deny, le reste du fichier intact
+pwsh -NoProfile -File tools/dev/deny-rules.ps1 -List    # affiche les règles générées
+```
+
+Pour un nouveau motif : l'ajouter à la liste de base du script, lancer `-Write` (ou recopier la sortie de `-List`), relire le diff, puis le tester à la main dans une session neuve. Le travail `security` de la CI lance `-Check` à chaque PR : un fichier modifié à la main, sans le script, est refusé. L'ordre est fixe : toutes les formes `Bash(…)`, puis toutes les formes `PowerShell(…)`, puis, motif par motif, `PowerShell(& …)`, `Bash(cmd /c …)` et `PowerShell(cmd /c …)`. Plus aucun garde n'empêche une session de modifier ce fichier dans son worktree : seules la revue et le contrôle des chemins sensibles à la fusion le font (§3.4).
 
 ### 3.3 Fusion : `cargo xtask merge <PR>`
 
@@ -140,6 +154,7 @@ Tous travaillent dans des dépôts jetables sous `TS_CACHE\tmp\`, jamais dans le
 ```powershell
 pwsh -NoProfile -File tools/dev/test-slots.ps1         # logique des baux, dans un TS_CACHE jetable
 pwsh -NoProfile -File tools/dev/test-slots.ps1 -Real   # plus les vérifications du §6.3, dans les vrais emplacements
+pwsh -NoProfile -File tools/dev/deny-rules.ps1 -Check   # refus natifs de .claude/settings.json égaux à leur génération (§3.2), aussi en CI
 pwsh -NoProfile -File tools/dev/test-repo-settings.ps1 # invariants, comparaison ; arguments et refus S4 dans un dépôt jetable dont origin est local ; script entier avec un faux gh, dépôt public et privé, chaque réglage d'AS-45 affaibli (AS-43, AS-45) : jamais d'appel à GitHub
 ```
 
