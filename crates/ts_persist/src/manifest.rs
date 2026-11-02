@@ -52,8 +52,8 @@ flat_schema! {
     /// after.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct PartEntry {
-        /// Identifier: `/`-separated segments of `[a-z0-9._-]`, none empty or starting with
-        /// `.`; never a file path.
+        /// Identifier: `/`-separated segments of `[a-z0-9._-]`, none empty, none starting with
+        /// `.`, none naming a reserved Windows device (`con`, `nul.x`…); never a file path.
         pub name: String,
         /// Storage of the part.
         pub codec: Codec,
@@ -71,7 +71,8 @@ flat_schema! {
 flat_schema! {
     // spec: revues/generation.md §8.1, P30 ; carnet architecture-securite.md §9.13
     /// List of the parts, strictly sorted by name; the payload holds their stored bytes in
-    /// this order.
+    /// this order. `parts` must stay the first field: the envelope reads its count from the
+    /// first bytes of the manifest before decoding it (m4 of #50, tested).
     #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
     pub struct Manifest {
         /// Parts, sorted by name.
@@ -92,7 +93,25 @@ pub(crate) fn len64(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
-/// Checks a part name: length, then alphabet.
+/// Device names reserved by Windows, matched against the stem of a segment (m7 of #50).
+/// `com0` and `lpt0` are in Microsoft's current list; the superscript variants cannot be
+/// spelled in the alphabet of a name.
+const RESERVED: [&str; 24] = [
+    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+    "com8", "com9", "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Whether `segment` is a reserved Windows device name, with or without an extension: its
+/// stem (the text before the first `.`) matches [`RESERVED`]. The comparison ignores case,
+/// as Windows does, so that it stays right if the alphabet of names ever admits capitals
+/// (today [`check_name`] refuses them first).
+fn is_reserved(segment: &str) -> bool {
+    let stem = segment.split('.').next().unwrap_or(segment);
+    RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
+}
+
+// spec: carnet architecture-securite.md SEC0-23
+/// Checks a part name: length, then alphabet, then reserved names.
 pub(crate) fn check_name(name: &str, limits: &Limits) -> Result<(), DecodeError> {
     too_large(
         Bound::Name,
@@ -100,12 +119,16 @@ pub(crate) fn check_name(name: &str, limits: &Limits) -> Result<(), DecodeError>
         u64::from(limits.max_name_len),
     )?;
     // Segments separated by `/`, each non-empty, in `[a-z0-9._-]`, not starting with `.`: no
-    // empty segment, no `.` or `..`, no leading or trailing `/`, so never a path.
+    // empty segment, no `.` or `..`, no leading or trailing `/`, so never a path. A reserved
+    // Windows device name (`con`, `nul.x`…) is refused too (m7 of #50, decided): a name is
+    // never meant to become a file path, but if a host ever maps one to a file, it cannot
+    // open a device.
     let segment = |s: &str| {
         !s.is_empty()
             && !s.starts_with('.')
             && s.bytes()
                 .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+            && !is_reserved(s)
     };
     if !name.split('/').all(segment) {
         return Err(DecodeError::InvalidName);
@@ -119,6 +142,8 @@ impl Manifest {
     /// length that the parts announce.
     pub(crate) fn check(&self, limits: &Limits) -> Result<u64, DecodeError> {
         let parts = &self.parts.0;
+        // Already checked on the announced count before decoding (envelope); checked again on
+        // the decoded entries so that this function holds on its own.
         too_large(
             Bound::Parts,
             len64(parts.len()),
