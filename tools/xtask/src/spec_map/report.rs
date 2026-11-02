@@ -192,7 +192,7 @@ pub(super) fn markdown(v: &Value) -> String {
     for k in &marks {
         let issue = k["issue"]
             .as_u64()
-            .map_or("SANS NUMÉRO".to_owned(), |n| format!("conception #{n}"));
+            .map_or("SANS NUMÉRO".to_owned(), |n| format!("remontée #{n}"));
         out += &format!("- `{}` : {issue}\n", place(k));
     }
     out
