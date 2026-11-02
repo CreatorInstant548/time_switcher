@@ -54,7 +54,8 @@ impl fmt::Display for OutError {
                                racine du disque, ou dans une copie de travail Git"
             }
             Self::BadPath => {
-                "invalid --out: `..` or `.git` component, name rewritten by Windows (trailing dot or                  space, `:`), no final name, or not a directory"
+                "invalid --out: `..`, `.git`, a Windows-rewritten name (trailing dot or space, `:`), \
+                 no final name, or not a directory"
             }
             Self::Link => "--out passe par un lien symbolique ou une jonction : refusé",
             Self::OutsideCache => {
