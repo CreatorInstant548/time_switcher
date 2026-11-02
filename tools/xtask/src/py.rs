@@ -170,6 +170,7 @@ fn run_uv(uv: &Path, dir: &Path, args: &[&str]) -> Result<bool, String> {
     for name in sys::env_names().iter().filter(|n| stripped(n)) {
         cmd.env_remove(name);
     }
+    sys::harden_git_env(&mut cmd);
     cmd.env("UV_NO_CONFIG", "1");
     // No bytecode written next to the tests.
     cmd.env("PYTHONDONTWRITEBYTECODE", "1");
