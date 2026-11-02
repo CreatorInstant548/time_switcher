@@ -87,7 +87,7 @@ Un refus de Claude Code n'est jamais contourné : s'il gêne un travail légitim
 
 ### 3.2 Étendre ou modifier les refus
 
-`.claude/settings.json` est un chemin sensible (`tools/ci/sensitive-paths.txt`). Toute modification passe par une PR sur une branche `claude/outillage-*`, avec une relecture par un sous-agent neuf, `/security-review`, puis `review-ok` et `archsec-ok` du propriétaire avant `cargo xtask merge`.
+`.claude/settings.json` est un chemin sensible (`tools/ci/sensitive-paths.txt`). Toute modification passe par une PR sur une branche `claude/outillage-*`, avec une relecture par un sous-agent neuf, qui fait la passe de sécurité (AS-59), puis `review-ok` et `archsec-ok` du propriétaire avant `cargo xtask merge`.
 
 **Génération reproductible** (#119, décidé : un script plutôt qu'une liste tenue à la main, pour que les cinq formes ne divergent jamais). La liste des motifs de base vit dans `tools/dev/deny-rules.ps1` :
 

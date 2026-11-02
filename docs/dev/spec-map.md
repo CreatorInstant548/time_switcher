@@ -2,7 +2,7 @@
 
 Mode d'emploi de l'outil qui relie le code à la conception (tâche T4 de la phase 0). Sources : [organisation](../pilotage/organisation.md) §3.1 point 3, et le §7 du carnet du responsable architecture et sécurité, avec ses corrections H1 à H8 (§9.7).
 
-`tools/xtask/` est un **chemin sensible** : toute modification passe par `/security-review`, un relecteur neuf et l'avis d'archi-sécu. L'outil est en lecture seule, sans réseau ni dépendance nouvelle (les titres Markdown sont analysés à la main, `serde_json` produit le JSON).
+`tools/xtask/` est un **chemin sensible** : toute modification passe par un relecteur neuf, qui fait la passe de sécurité (AS-59), et l'avis d'archi-sécu. L'outil est en lecture seule, sans réseau ni dépendance nouvelle (les titres Markdown sont analysés à la main, `serde_json` produit le JSON).
 
 ## 1. Commandes
 

@@ -4,7 +4,7 @@ Mode d'emploi de `.github/` et de `tools/ci/` (tâche T13 de la phase 0). Source
 - [revue du développement par agents](../conception/revues/developpement-agents.md) §8.2 et §8.3 ;
 - les exigences SEC0-29 à SEC0-34 du carnet du responsable architecture et sécurité, avec les corrections G1 à G12 de son §9.6.
 
-`.github/` et `tools/ci/` sont des **chemins sensibles** : `/security-review`, un relecteur neuf et l'avis `archsec-ok` d'archi-sécu.
+`.github/` et `tools/ci/` sont des **chemins sensibles** : un relecteur neuf, qui fait la passe de sécurité (AS-59), et l'avis `archsec-ok` d'archi-sécu.
 
 ## 1. Fichiers
 
