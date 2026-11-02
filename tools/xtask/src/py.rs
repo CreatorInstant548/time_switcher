@@ -6,7 +6,7 @@
 //! one pinned in `tools/dev/tools.lock`: version and SHA-256 checked before any use (PY5).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{ExitCode, Stdio};
 
 use crate::steps::lock_value;
 use crate::sys;
@@ -165,7 +165,7 @@ fn stripped(name: &str) -> bool {
 /// without any uv configuration file (`UV_NO_CONFIG`, inherited by the `uv pip` of maturin).
 fn run_uv(uv: &Path, dir: &Path, args: &[&str]) -> Result<bool, String> {
     println!("  $ uv {}", args.join(" "));
-    let mut cmd = Command::new(uv);
+    let mut cmd = sys::base_command(uv);
     cmd.args(args).current_dir(dir).stdin(Stdio::null());
     for name in sys::env_names().iter().filter(|n| stripped(n)) {
         cmd.env_remove(name);

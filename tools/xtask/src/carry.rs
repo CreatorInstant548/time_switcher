@@ -124,7 +124,8 @@ impl<'a> Carry<'a> {
                 Some(r) => r.clone(),
                 None => {
                     let r = self.pure_update(a).unwrap_or_else(|e| {
-                        Err(format!("unreadable on GitHub, not carried over ({e})"))
+                        // The read can be a `gh api` call or a local `git` one: `e` names it.
+                        Err(format!("unreadable, not carried over ({e})"))
                     });
                     self.seen.insert(a.clone(), r.clone());
                     r
@@ -371,6 +372,8 @@ pub mod lab {
             "GIT_WORK_TREE",
             "GIT_INDEX_FILE",
             "GIT_COMMON_DIR",
+            // Set by `cargo xtask check` for its children (#63); the lab must not depend on it.
+            "GIT_NO_REPLACE_OBJECTS",
         ] {
             cmd.env_remove(v);
         }
@@ -541,6 +544,8 @@ pub mod lab {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::lab::{Case, Lab, PR_FILE, case, commits};
     use super::*;
 
@@ -952,7 +957,9 @@ mod tests {
         );
         let e = r.unwrap().unwrap_err();
         assert!(
-            e.contains("unreadable on GitHub") && e.contains("HTTP 404"),
+            e.contains("unreadable, not carried over")
+                && !e.contains("on GitHub")
+                && e.contains("HTTP 404"),
             "{e}"
         );
         let two = [format!("review-ok: {}", c.a), format!("review-ok: {}", c.h)];
@@ -964,6 +971,41 @@ mod tests {
         )];
         let (r, _) = resolve_in(&c.lab, failed, &h2, &c.m1, &h2, false, "review-ok", &two);
         assert!(r.is_err(), "{r:?}");
+    }
+
+    /// A failed local `git` read (objects of the PR not fetched) is not labelled as a GitHub one
+    /// (#63); the Git error stays attached.
+    #[test]
+    fn failed_local_read_is_not_labelled_github() {
+        let c = case("local-read");
+        let f = "f".repeat(40);
+        let mut answers = commits(&[&f, &c.h]);
+        let compare = |a: &str, b: &str, base: &str| {
+            (
+                format!("gh api repos/o/r/compare/{a}...{b}"),
+                json!({"merge_base_commit": {"sha": base}}).to_string(),
+            )
+        };
+        answers.push(compare(&f, &c.h, &f));
+        answers.push(compare(&c.m1, &f, &c.c0));
+        let (repo, _) = c.lab.repo(answers);
+        let pr = Pr {
+            number: 7,
+            head: &c.h,
+            main: &c.m1,
+            diff: (&c.m1, &c.h, &[]),
+            local_objects: true,
+        };
+        let bodies = [format!("review-ok: {f}")];
+        let e = Carry::new(&repo, pr)
+            .resolve("review-ok", &bodies, &|_| true)
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            e.contains("unreadable, not carried over") && e.contains("git ls-tree"),
+            "{e}"
+        );
+        assert!(!e.contains("on GitHub"), "{e}");
     }
 
     /// Most recent approval first; a repeated SHA is looked at once; a quoted line does not count.
