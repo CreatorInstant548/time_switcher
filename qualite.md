@@ -202,6 +202,7 @@ Avant le correctif, il fallait 28 s pour 1 000 résidents et 139,5 s pour 10 000
 |---|---|---|---|
 | 01/11 | Orchestrateur | Points 2 et 4 de §5 pour la phase 0 | Rendue le 01/11, puis le 02/11 (§1) |
 | 02/11 | Développement (message) | #67 fusionnée (PR #92) : refaire les campagnes | Faite le 02/11 (§3.2, §4.2) |
+| 02/11 | Orchestrateur (message) | Prend acte de la validation du point 2. Arbitrages : #68 est une dette de la phase 0 pour le développement ; #94 passe au reliquat de la phase 1. Une passe courte de déterminisme est possible après les lots de #68 et de #90 | En attente de sa demande. Ce sera `campaign2.sh` ou `matrix-det2.txt` seul, comparé au §3.2 |
 
 ## 7. Pour la relève
 
