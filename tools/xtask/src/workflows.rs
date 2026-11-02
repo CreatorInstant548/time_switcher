@@ -647,7 +647,10 @@ pub fn check_workflow(text: &str) -> Vec<String> {
         };
         let concurrency = !l.item
             && matches!(key, "group" | "cancel-in-progress")
-            && matches!(path.as_slice(), ["concurrency"] | ["jobs", _, "concurrency"]);
+            && matches!(
+                path.as_slice(),
+                ["concurrency"] | ["jobs", _, "concurrency"]
+            );
         let job_output = !l.item && matches!(path.as_slice(), ["jobs", _, "outputs"]);
         if concurrency {
             if !concurrency_interpolation(raw) {
@@ -1348,9 +1351,7 @@ mod tests {
         let top = |group: &str, cancel: &str| {
             good().replace(
                 "jobs:\n",
-                &format!(
-                    "concurrency:\n  group: {group}\n  cancel-in-progress: {cancel}\njobs:\n"
-                ),
+                &format!("concurrency:\n  group: {group}\n  cancel-in-progress: {cancel}\njobs:\n"),
             )
         };
         let in_job = |group: &str| {
@@ -1365,7 +1366,8 @@ mod tests {
                 &format!("    outputs:\n      rust: {value}\n    steps:\n"),
             )
         };
-        let allowed = "${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}";
+        let allowed =
+            "${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}";
         let cancel = "${{ github.event_name == 'pull_request' }}";
         for ok in [
             top(allowed, cancel),
@@ -1379,11 +1381,17 @@ mod tests {
         }
         for (bad, why) in [
             (top("${{ github.head_ref }}", "true"), "concurrency"),
-            (top("${{ github.event.pull_request.title }}", "true"), "concurrency"),
+            (
+                top("${{ github.event.pull_request.title }}", "true"),
+                "concurrency",
+            ),
             (top("${{ github.ref", "true"), "concurrency"),
             (top("${{ }}", "true"), "concurrency"),
             (top("${{ toJSON(github) }}", "true"), "concurrency"),
-            (top("${{ github.ref }}", "${{ github.ref == github.actor }}"), "concurrency"),
+            (
+                top("${{ github.ref }}", "${{ github.ref == github.actor }}"),
+                "concurrency",
+            ),
             (top("${{ github.ref == 'a b' }}", "true"), "concurrency"),
             (top("${{ github.ref github.sha }}", "true"), "concurrency"),
             (top("${{ || }}", "true"), "concurrency"),
@@ -1391,15 +1399,24 @@ mod tests {
             (top("${{ 'a' 'b' }}", "true"), "concurrency"),
             (top("${{ runner.os }}", "true"), "concurrency"),
             (top("x # ${{ github.actor }}", "true"), "concurrency"),
-            (top("${{ github.ref }} # ${{ github.actor }}", "true"), "concurrency"),
+            (
+                top("${{ github.ref }} # ${{ github.actor }}", "true"),
+                "concurrency",
+            ),
             (in_job("${{ inputs.group }}"), "concurrency"),
             (output("${{ github.head_ref }}"), "job output"),
             (output("${{ steps.a.conclusion }}"), "job output"),
             (output("${{ steps.a.outputs.b }}-x"), "job output"),
             (output("x-${{ steps.a.outputs.b }}"), "job output"),
             (output("${{ steps.a.outputs.b.c }}"), "job output"),
-            (output("${{ steps.a.outputs.b || github.ref }}"), "job output"),
-            (output("${{ steps.a.outputs.b }} # ${{ github.actor }}"), "job output"),
+            (
+                output("${{ steps.a.outputs.b || github.ref }}"),
+                "job output",
+            ),
+            (
+                output("${{ steps.a.outputs.b }} # ${{ github.actor }}"),
+                "job output",
+            ),
         ] {
             let errors = check_workflow(&bad);
             assert!(errors.iter().any(|e| e.contains(why)), "{bad}: {errors:?}");
