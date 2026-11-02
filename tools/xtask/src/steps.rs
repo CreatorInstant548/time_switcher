@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::manifests::{self, DEV_FEATURES, HOSTS, TOOLS};
 use crate::metadata::{self, Metadata};
 use crate::sys::{self, cargo, run_captured, run_live, stdout_of};
-use crate::{exemptions, scan, workflows};
+use crate::{exemptions, reserved, scan, workflows};
 
 pub enum Outcome {
     Ok(String),
@@ -654,6 +654,7 @@ pub fn features(cx: &Ctx) -> Outcome {
 }
 
 /// Exemptions de clippy hors des hôtes et des outils (E6, F5) ; `clippy.toml` hors de la racine.
+/// Also the kernel items reserved to some crates, and the raw primitives (#26 m3, m4).
 pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
     let meta = tri!(cx.meta());
     let mut errors = Vec::new();
@@ -673,6 +674,21 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
                     .iter()
                     .map(|l| format!("{rel}:{l} : exemption ou code caché à clippy interdit")),
             );
+            // #26 m3, m4: what clippy cannot ban in the core, which may not exempt itself.
+            errors.extend(
+                reserved::reserved_uses(rel, &text)
+                    .into_iter()
+                    .map(|(l, ident, why)| format!("{rel}:{l}: {ident} is reserved: {why}")),
+            );
+        }
+        for d in p
+            .dependencies
+            .iter()
+            .filter(|d| d.kind.as_deref() != Some("dev"))
+        {
+            if let Some(why) = reserved::refused_dependency(&p.name, &d.name) {
+                errors.push(format!("{}: dependency on {}: {why}", p.name, d.name));
+            }
         }
         // Un fichier non .rs sous src/ ne peut servir qu'à #[path] ou include! (I2).
         let src = format!("{dir}src/");

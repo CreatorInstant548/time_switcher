@@ -14,6 +14,7 @@ mod manifests;
 mod merge;
 mod metadata;
 mod py;
+mod reserved;
 mod scan;
 mod sensitive;
 mod slots;
@@ -72,7 +73,7 @@ const STEPS: [Step; 14] = [
     ),
     (
         "clippy-exemptions",
-        "aucune exemption de clippy dans le cœur",
+        "no clippy exemption in the core, reserved kernel items (#26)",
         steps::clippy_exemptions,
     ),
     (
