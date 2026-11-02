@@ -782,7 +782,9 @@ pub fn tool_lock_errors(
                         Err("install-tools.sh version without a literal tool name".to_owned())
                     }
                     _ => match args.iter().find(|a| !version_tool(a)) {
-                        Some(a) => Err(format!("install-tools.sh argument `{a}` is not a plain word")),
+                        Some(a) => Err(format!(
+                            "install-tools.sh argument `{a}` is not a plain word"
+                        )),
                         None => Ok(()),
                     },
                 };
