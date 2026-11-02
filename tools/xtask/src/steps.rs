@@ -1144,16 +1144,42 @@ pub fn workflows(cx: &Ctx) -> Outcome {
     }
     let count = flows.len();
     if count > 0 {
-        // Every installer call needs its pins in tools.lock (#75).
-        let script =
-            String::from_utf8_lossy(&tri!(cx.read(workflows::INSTALL_SCRIPT))).into_owned();
-        let lock = String::from_utf8_lossy(&tri!(cx.read(workflows::TOOLS_LOCK))).into_owned();
-        errors.extend(workflows::tool_lock_errors(&flows, &script, &lock));
+        // Every installer call needs its pins in tools.lock (#75), read by the script itself (#95).
+        let mut check = |args: &[&str]| installer_check(&cx.root, args);
+        errors.extend(workflows::tool_lock_errors(&flows, &mut check));
     }
     match (count, errors.is_empty()) {
         (0, true) => Outcome::Skipped("aucun workflow".to_owned()),
         _ => from_errors(errors, format!("{count} workflow(s)")),
     }
+}
+
+/// `install-tools.sh check <args>` in `root` (#95): the script reads its own `tools.lock` values
+/// and installs nothing. The files of GitHub Actions and the variables of the install modes are
+/// taken out of its environment: whatever the script of a PR does, it cannot change the next
+/// steps of the job through them, and the result does not depend on them. Its reason is its last
+/// line of output.
+pub(crate) fn installer_check(root: &Path, args: &[&str]) -> Result<(), String> {
+    const REMOVED: [&str; 6] = [
+        "GITHUB_ENV",
+        "GITHUB_PATH",
+        "GITHUB_OUTPUT",
+        "GITHUB_STEP_SUMMARY",
+        "TS_CACHE",
+        "FUZZ_TOOLCHAIN",
+    ];
+    let bash = sys::bash(root)?;
+    let all = [&[workflows::INSTALL_SCRIPT, "check"], args].concat();
+    let (ok, out) = sys::run_captured_without(root, &bash, &all, &REMOVED)?;
+    if ok {
+        return Ok(());
+    }
+    let reason = out.lines().rfind(|l| !l.trim().is_empty());
+    Err(reason
+        .map_or("failed without a message", |l| {
+            l.trim_start_matches("FAILED (install-tools): ")
+        })
+        .to_owned())
 }
 
 /// `spec-map check` : renvois du code vers la conception et vers `origin/pilotage` (T4).
