@@ -64,7 +64,8 @@ pub fn check_unsafe_root(crate_name: &str, source: &str) -> Result<(), String> {
 }
 
 /// The attributes naming `unsafe_code` that need no `// SAFETY:` comment: those that only make the
-/// lint stricter, written alone, the crate attribute of [`LOCAL_LINTS_CRATE`] among them.
+/// lint stricter, written alone outside any macro, the crate attribute of [`LOCAL_LINTS_CRATE`]
+/// among them.
 const STRICT_ATTRIBUTES: [&str; 4] = [
     "#![deny(unsafe_code)]",
     "#![forbid(unsafe_code)]",
@@ -78,7 +79,8 @@ const STRICT_ATTRIBUTES: [&str; 4] = [
 /// it, so an attribute split over several lines (`#[allow(\n unsafe_code)]`) is seen whole, and a
 /// `// SAFETY:` inside a literal or a block comment is no comment (#91). Fails closed: a mention
 /// outside any attribute (a macro argument, say) is reported too, and so is any weakening lint
-/// level, `allow`, `expect` and `warn` alike.
+/// level, `allow`, `expect` and `warn` alike. A strict attribute handed to a macro or written in a
+/// `macro_rules!` body is not exempt: the macro may rewrite it (`#[allow($l)]`).
 pub fn unsafe_allow_without_safety(source: &str) -> Option<usize> {
     let src = crate::exemptions::normalize(source);
     let blank: Vec<bool> = source.lines().map(|l| l.trim().is_empty()).collect();
@@ -89,6 +91,7 @@ pub fn unsafe_allow_without_safety(source: &str) -> Option<usize> {
             .find(|&l| !blank[l - 1])
             .is_some_and(|l| src.safety_lines.contains(&l))
     };
+    let (in_macro, _) = src.macro_regions();
     let tokens = src.tokens();
     let mentions = tokens
         .iter()
@@ -99,7 +102,8 @@ pub fn unsafe_allow_without_safety(source: &str) -> Option<usize> {
             return Some(src.line[at]);
         };
         let text: String = src.text[open..=close].iter().collect();
-        if STRICT_ATTRIBUTES.contains(&text.as_str()) || safety_before(src.line[open]) {
+        let strict = STRICT_ATTRIBUTES.contains(&text.as_str()) && !in_macro[open];
+        if strict || safety_before(src.line[open]) {
             continue;
         }
         return Some(src.line[open]);
@@ -194,11 +198,12 @@ fn lint_tables(manifest: &str, prefix: &str) -> Result<BTreeMap<String, Lints>, 
                 n + 1
             ));
         }
-        // `["lints.rust"]` is one key named `lints.rust` for Cargo, not the table [lints.rust]:
-        // a quoted segment with a dot is refused in a table name or a key (#91).
-        if quoted_dot(line) {
+        // `["lints.rust"]` is one key named `lints.rust` for Cargo, not the table [lints.rust], and
+        // `["lints'".rust]` is a key `lints'`: in a table name or a key, a quoted segment holds no
+        // dot, quote or blank (#91), since quotes and blanks are dropped below.
+        if odd_quoted_key(line) {
             return Err(format!(
-                "line {}: quoted table name or key with a dot refused: {}",
+                "line {}: quoted table name or key holding a dot, a quote or a blank refused: {}",
                 n + 1,
                 line.trim()
             ));
@@ -259,23 +264,24 @@ fn toml_code(line: &str) -> &str {
 }
 
 /// A quoted segment (`"…"` or `'…'`, closed or not) of the table name or key of `line` holds a
-/// dot. The key ends at the first `=` outside quotes, so `"a=b.c" = 1` is read whole; a line
-/// that is not a table header and has no such `=`, or a `,` or `{` before it, is a value (an
-/// array continued over lines).
-fn quoted_dot(line: &str) -> bool {
+/// character that the line reading of [`lint_tables`] drops or splits on: a dot, a quote of the
+/// other kind, a blank (`"*"` stays allowed). The key ends at the first `=` outside quotes, so
+/// `"a=b.c" = 1` is read whole; a line that is not a table header and has no such `=`, or a `,`
+/// or `{` before it, is a value (an array continued over lines).
+fn odd_quoted_key(line: &str) -> bool {
     let header = line.trim_start().starts_with('[');
-    let (mut quote, mut dot) = (None, false);
+    let (mut quote, mut odd) = (None, false);
     for c in line.chars() {
         match (quote, c) {
             (None, '"' | '\'') => quote = Some(c),
             (Some(q), _) if c == q => quote = None,
             (None, ',' | '{') if !header => return false,
-            (None, '=') => return dot,
-            (Some(_), '.') => dot = true,
+            (None, '=') => return odd,
+            (Some(_), c) if matches!(c, '.' | '"' | '\'') || c.is_whitespace() => odd = true,
             _ => {}
         }
     }
-    header && dot
+    header && odd
 }
 
 /// Entries of one lint table: key -> value, without blanks.
@@ -359,7 +365,8 @@ fn feature_covered(crate_name: &str, feature: &str, items: &[String]) -> bool {
 
 /// The features `features` of the workspace crate `krate` turn on a development feature of
 /// `ts_kernel`, directly or through the features of the workspace crates they name, whatever
-/// those features are called (#36). `seen` holds the (crate, feature) pairs already followed.
+/// those features are called (#36). `seen` holds the (crate, feature) pairs already followed. A
+/// `dep/feature` item names the dependency as `krate` knows it, renamed or not.
 fn reaches_dev(
     meta: &Metadata,
     krate: &str,
@@ -368,7 +375,15 @@ fn reaches_dev(
 ) -> bool {
     for item in features.iter().filter(|f| !f.starts_with("dep:")) {
         let (target, feature) = match item.split_once('/') {
-            Some((dep, f)) => (dep.trim_end_matches('?'), f),
+            Some((dep, f)) => {
+                let dep = dep.trim_end_matches('?');
+                let renamed = meta.package(krate).and_then(|p| {
+                    p.dependencies
+                        .iter()
+                        .find(|d| d.rename.as_deref() == Some(dep))
+                });
+                (renamed.map_or(dep, |d| d.name.as_str()), f)
+            }
             None => (krate, item.as_str()),
         };
         if target == "ts_kernel" && DEV_FEATURES.contains(&feature) {
@@ -383,6 +398,22 @@ fn reaches_dev(
         }
     }
     false
+}
+
+/// The dependency `d` on a workspace crate turns on a development feature of `ts_kernel`, through
+/// the features it declares or the `default` of the crate. Fails closed: a development feature
+/// named in its features, even unresolved, counts.
+fn dependency_turns_on_dev(meta: &Metadata, d: &crate::metadata::Dependency) -> bool {
+    let named = d.features.iter().any(|f| {
+        DEV_FEATURES
+            .iter()
+            .any(|dev| f == dev || f.ends_with(&format!("/{dev}")))
+    });
+    let mut on = d.features.clone();
+    if d.uses_default_features {
+        on.push("default".to_owned());
+    }
+    named || reaches_dev(meta, &d.name, &on, &mut BTreeSet::new())
 }
 
 /// Fonctionnalités dans les manifestes (F4) et règle D-DEV-02. Rend la liste des écarts.
@@ -421,9 +452,16 @@ pub fn check_features(meta: &Metadata) -> Vec<String> {
                         p.name
                     ));
                 }
+                // #36: also through a relay of another name (`extra = ["ts_runner/sim"]`).
                 let dev = DEV_FEATURES
                     .iter()
-                    .any(|f| item.ends_with(&format!("/{f}")));
+                    .any(|f| item.ends_with(&format!("/{f}")))
+                    || reaches_dev(
+                        meta,
+                        &p.name,
+                        std::slice::from_ref(item),
+                        &mut BTreeSet::new(),
+                    );
                 if HOSTS.contains(&p.name.as_str()) && dev {
                     errors.push(format!("hôte {} : {feature} active {item}", p.name));
                 }
@@ -437,29 +475,30 @@ pub fn check_features(meta: &Metadata) -> Vec<String> {
                 ));
             }
         }
-        // #36: a dependency on any crate of the workspace, not only ts_kernel, since a crate may
-        // relay the development features (`ts_model = { features = ["dev-commands"] }`).
-        for d in p
-            .dependencies
-            .iter()
-            .filter(|d| meta.package(&d.name).is_some())
-        {
-            let mut on = d.features.clone();
-            if d.uses_default_features {
-                on.push("default".to_owned());
-            }
-            // Fails closed: a development feature named anywhere, even unresolved, counts.
-            let named = d.features.iter().any(|f| {
-                DEV_FEATURES
-                    .iter()
-                    .any(|dev| f == dev || f.ends_with(&format!("/{dev}")))
-            });
-            let dev = named || reaches_dev(meta, &d.name, &on, &mut BTreeSet::new());
-            if HOSTS.contains(&p.name.as_str()) && d.kind.is_none() && dev {
-                errors.push(format!(
-                    "host {}: normal dependency on {} with a development feature",
-                    p.name, d.name
-                ));
+        // #36: a normal dependency on any crate of the workspace, not only ts_kernel, since a
+        // crate may relay the development features (`ts_model = { features = ["dev-commands"] }`),
+        // declared by the host or by any crate of its normal closure, optional ones included
+        // (Cargo unifies the features of the build).
+        if HOSTS.contains(&p.name.as_str()) {
+            for c in meta.normal_closure(&p.name) {
+                let Some(c) = meta.package(&c) else { continue };
+                for d in c.dependencies.iter().filter(|d| {
+                    d.kind.is_none()
+                        && meta.package(&d.name).is_some()
+                        && dependency_turns_on_dev(meta, d)
+                }) {
+                    errors.push(if c.name == p.name {
+                        format!(
+                            "host {}: normal dependency on {} with a development feature",
+                            p.name, d.name
+                        )
+                    } else {
+                        format!(
+                            "host {}: normal dependency of {} on {} with a development feature",
+                            p.name, c.name, d.name
+                        )
+                    });
+                }
             }
         }
         let tool = TOOLS.contains(&p.name.as_str()) || p.name == "ts_toy";
@@ -558,6 +597,10 @@ mod tests {
             "/* x\n// SAFETY: fake\n*/\n#[allow(unsafe_code)]\nfn a() {}\n",
             "fn b() {} // SAFETY: fake\n#[allow(unsafe_code)]\nfn a() {}\n",
             "/// SAFETY: a doc comment\n#[allow(unsafe_code)]\nfn a() {}\n",
+            // A strict attribute handed to a macro, which may turn it into `allow`.
+            "macro_rules! m { (#[deny($l:ident)]) => { #[allow($l)] fn f() {} }; }\n\
+             m!(#[deny(unsafe_code)]);\n",
+            "macro_rules! m { () => { #[deny(unsafe_code)] fn f() {} }; }\n",
         ] {
             let text = format!("{root}{bad}");
             assert!(
@@ -671,6 +714,13 @@ mod tests {
             LOCAL.replace("[lints.clippy]", "[lints.\"clippy.x\"]"),
             LOCAL.replace("unwrap_used =", "\"unwrap_used.x\" ="),
             LOCAL.replace("unwrap_used =", "\"un=wrap.used\" ="),
+            // Review of this PR: a quote of the other kind is part of the key for Cargo.
+            LOCAL
+                .replace("[lints.rust]", "[\"lints'\".rust]")
+                .replace("[lints.clippy]", "[\"lints'\".clippy]"),
+            LOCAL.replace("[lints.clippy]", "['lints\"'.clippy]"),
+            LOCAL.replace("unwrap_used =", "\"unwrap_used'\" ="),
+            LOCAL.replace("[lints.clippy]", "[lints.\"clippy \"]"),
         ];
         for manifest in &bad {
             assert!(check_local_lints(manifest, ROOT).is_err(), "{manifest}");
@@ -686,6 +736,11 @@ mod tests {
         assert_eq!(check_local_lints(&commented, ROOT), Ok(()));
         let root = ROOT.replace("[profile.dev]", "# a\\b\n[profile.dev] # c:\\x");
         assert_eq!(check_local_lints(LOCAL, &root), Ok(()));
+        let star = ROOT.replace(
+            "[profile.dev]",
+            "[profile.dev.package.\"*\"]\n[profile.dev]",
+        );
+        assert_eq!(check_local_lints(LOCAL, &star), Ok(()));
         let valued = LOCAL.replace(
             "name = \"ts_py\"",
             "name = \"ts#py\"\nversion = \"0.1.0\"\ninclude = [\n  \"src/*.rs\",\n  \"a.b\", { x = 1 },\n]",
@@ -767,6 +822,40 @@ mod tests {
             .is_empty()
         );
         assert!(run(r#"{"name":"other","kind":null,"features":["dev-commands"]}"#).is_empty());
+    }
+
+    /// Security review of this PR: a host feature that turns a relay on, a renamed kernel
+    /// dependency, and a crate of the host's closure that turns a development feature on.
+    #[test]
+    fn host_features_and_closure_reach_the_kernel() {
+        let run = |features: &str, deps: &str| {
+            let json = format!(
+                r#"{{"workspace_root":"/w","packages":[
+                {{"name":"ts_kernel","manifest_path":"/w/k/Cargo.toml","features":{{"default":[]}}}},
+                {{"name":"ts_model","manifest_path":"/w/m/Cargo.toml",
+                  "features":{{"dev-commands":["ts_kernel/dev-commands"]}}}},
+                {{"name":"ts_runner","manifest_path":"/w/r/Cargo.toml",
+                  "features":{{"sim":["k/dev-commands"],"plain":[]}},
+                  "dependencies":[{{"name":"ts_kernel","rename":"k","kind":null}}]}},
+                {{"name":"ts_glue","manifest_path":"/w/g/Cargo.toml",
+                  "dependencies":[{{"name":"ts_model","kind":null,"features":["dev-commands"]}}]}},
+                {{"name":"ts_server","manifest_path":"/w/s/Cargo.toml",
+                  "features":{{{features}}},"dependencies":[{deps}]}}]}}"#
+            );
+            check_features(&parse(&json).unwrap())
+        };
+        let runner = r#"{"name":"ts_runner","kind":null,"optional":true}"#;
+        let e = run(r#""extra":["ts_runner/sim"]"#, runner);
+        assert_eq!(e, ["hôte ts_server : extra active ts_runner/sim"]);
+        assert!(run(r#""extra":["ts_runner/plain"]"#, runner).is_empty());
+        let e = run(
+            r#""extra":["dep:ts_glue"]"#,
+            r#"{"name":"ts_glue","kind":null,"optional":true}"#,
+        );
+        assert_eq!(
+            e,
+            ["host ts_server: normal dependency of ts_glue on ts_model with a development feature"]
+        );
     }
 
     /// Y6, D-DEV-02: `ts_toy` is refused in a normal dependency of a host or a rule crate,

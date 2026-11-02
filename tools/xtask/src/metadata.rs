@@ -34,6 +34,9 @@ pub struct Dependency {
     /// The `default` feature of the dependency is on (absent field: on, as for Cargo).
     #[serde(default = "default_on")]
     pub uses_default_features: bool,
+    /// The name the dependency is known by in its dependent (`k = { package = "ts_kernel" }`).
+    #[serde(default)]
+    pub rename: Option<String>,
 }
 
 fn default_on() -> bool {

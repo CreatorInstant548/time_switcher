@@ -165,7 +165,7 @@ impl Src {
     /// For each character: inside a region handed to a macro (see [`Src::opens_macro`]), and
     /// inside the body of a `macro_rules!`. Such a region is read strictly: a form that is only
     /// allowed outside it is refused inside.
-    fn macro_regions(&self) -> (Vec<bool>, Vec<bool>) {
+    pub(crate) fn macro_regions(&self) -> (Vec<bool>, Vec<bool>) {
         let ends: BTreeMap<usize, (usize, usize)> =
             self.tokens().into_iter().map(|t| (t.1, t)).collect();
         // One entry per open delimiter: 0 an ordinary one, 1 the arguments of a call, 2 the body
