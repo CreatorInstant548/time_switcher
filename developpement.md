@@ -454,3 +454,6 @@ erun\datanalytics\` ; l'utilisateur en est informé.
   - second lot noyau : #113, #58, #59 ;
   - #93 : question posée à archi-sécu.
 - Restent ensuite : #17, #36, #55, #85, #91 et #95 (second lot xtask) ; #7 et #8, qui attendent la décision de l'utilisateur sur AU1 ; #43, #44 et #45, côté conception (#87).
+- 02/11 : **#118 fusionnée (AU1).** Sur décision directe de l'utilisateur (« J'autorise, fais-le »), les gardes Claude Code sont retirés et remplacés par 190 refus natifs dans `.claude/settings.json`. #7 et #8 sont closes. AU4 (retrait de `core.hooksPath`) revient à archi-sécu. #119, l'extension des refus, est prioritaire dans le second lot xtask.
+- 02/11 : lot xtask 1 terminé : #105, #108, #111, #114, #115 et #117 (liste fermée des `macro_rules!`, AS-56). #116 (AS-55) est fusionnée.
+- En cours : second lot noyau (#113, #58, #59, #93) et second lot xtask.
