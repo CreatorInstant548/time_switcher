@@ -59,7 +59,7 @@ fn move_all(
 ) {
     let slot = clock.now().as_millis().unsigned_abs();
     for (s, mut p, mut h) in &mut q {
-        let r = draw(streams.get(Stream::Population), s.id(), slot, 1);
+        let r = draw(streams.keys().get(Stream::Population), s.id(), slot, 1);
         p.0 += i64::try_from(r % 7).unwrap() - 3;
         h.0 = h.0 * 0.5 + p.0 as f64;
     }
@@ -68,7 +68,7 @@ fn move_all(
 fn on_event(due: Res<DueEvents>, mut queue: ResMut<EventQueue>, mut total: ResMut<Total>) {
     for e in due.iter() {
         total.0 += i64::try_from(e.event.arg).unwrap();
-        queue.schedule(e.at.add_millis(1000), e.event);
+        queue.schedule(e.at.add_millis(1000), e.event).unwrap();
     }
 }
 
@@ -113,7 +113,8 @@ impl Plugin for Life {
         };
         world
             .resource_mut::<EventQueue>()
-            .schedule(SimTime::from_millis(120), event);
+            .schedule(SimTime::from_millis(120), event)
+            .unwrap();
         b.add_systems(Phase::Scheduled, on_event);
         b.add_systems(Phase::Act, move_all);
         b.add_systems(Phase::Consequences, sum);
@@ -184,7 +185,7 @@ fn restore_checks_rules_fingerprint() {
             assert_eq!(snapshot, a.rules_fingerprint());
             assert_eq!(current, RulesFingerprint::of(&[("life", 2)]));
         }
-        other => panic!("refus attendu : {other:?}"),
+        other => panic!("expected a refusal: {other:?}"),
     }
     let migrating: Vec<Box<dyn Plugin>> = vec![Box::new(Life {
         version: 2,
@@ -256,7 +257,7 @@ fn snapshot_excludes_stream_keys() {
     let subject = StableId::from_snapshot_raw(3);
     let sample = |sim: &Sim| {
         let streams = sim.world.resource::<WorldStreams>();
-        draw(streams.get(Stream::Population), subject, 1, 1)
+        draw(streams.keys().get(Stream::Population), subject, 1, 1)
     };
     let restored = Sim::restore(&snap_a, SimConfig::default(), &life(1), &other).unwrap();
     assert_eq!(sample(&restored), sample(&b));
@@ -528,8 +529,31 @@ fn stable_index_follows_spawn_and_despawn() {
     assert_eq!(sim.world.resource::<StableIndex>().conflicts(), 1);
     sim.world.despawn(twin);
     assert_eq!(sim.world.resource::<StableIndex>().get(id), Some(e));
+    // #31 m1: the count follows the duplicates that are still there.
+    assert_eq!(sim.world.resource::<StableIndex>().conflicts(), 0);
     sim.world.despawn(e);
     assert!(sim.world.resource::<StableIndex>().is_empty());
+}
+
+/// #31 m1: when the indexed entity leaves, a duplicate left alone takes its place, so it
+/// stays in the fingerprint and the snapshot, and the world is sound again.
+#[test]
+fn duplicate_takes_the_place_of_a_despawned_original() {
+    let mut sim = build(&[]);
+    let id = sim.world.resource_mut::<StableIds>().allocate().unwrap();
+    let e = sim.world.spawn(StableEntity::new(id)).id();
+    let twins: Vec<_> = (0..2)
+        .map(|_| sim.world.spawn(StableEntity::new(id)).id())
+        .collect();
+    assert_eq!(sim.world.resource::<StableIndex>().conflicts(), 2);
+    sim.world.despawn(e);
+    let index = sim.world.resource::<StableIndex>();
+    assert_eq!((index.get(id), index.conflicts()), (Some(twins[0]), 1));
+    sim.world.despawn(twins[0]);
+    let index = sim.world.resource::<StableIndex>();
+    assert_eq!((index.get(id), index.conflicts()), (Some(twins[1]), 0));
+    let snap: MemorySnapshot = sim.snapshot(SnapshotScope::Full);
+    assert_eq!(snap.entities, [id]);
 }
 
 /// Order-dependent fold, following the rule: walk the index, sorted by `StableId` (I3).
@@ -588,7 +612,7 @@ fn reschedule(
             e.at.add_millis(offset)
         };
         let arg = e.event.arg.wrapping_mul(7).wrapping_add(3);
-        queue.schedule(at, TimedEvent { arg, ..e.event });
+        queue.schedule(at, TimedEvent { arg, ..e.event }).unwrap();
     }
 }
 
@@ -612,7 +636,9 @@ impl Plugin for Timers {
                 subject,
                 arg: i.unsigned_abs(),
             };
-            queue.schedule(SimTime::from_millis(13 + 997 * i), event);
+            queue
+                .schedule(SimTime::from_millis(13 + 997 * i), event)
+                .unwrap();
         }
         b.add_systems(Phase::Scheduled, reschedule);
     }
