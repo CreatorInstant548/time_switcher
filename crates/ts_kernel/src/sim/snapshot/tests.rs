@@ -751,11 +751,8 @@ fn restore_refuses_another_tick_length() {
     );
 }
 
-/// Number of times [`Counted`] was built.
-static BUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Test plugin that counts its builds.
-struct Counted;
+/// Test plugin that counts its builds, in a counter of its own.
+struct Counted(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
 impl Plugin for Counted {
     fn name(&self) -> &'static str {
@@ -765,7 +762,7 @@ impl Plugin for Counted {
         1
     }
     fn build(&self, _: &mut SimBuilder) {
-        BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -775,13 +772,14 @@ impl Plugin for Counted {
 #[test]
 fn restore_target_builds_the_rules_once() {
     use std::sync::atomic::Ordering::Relaxed;
+    let builds = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let rules: Vec<Box<dyn Plugin>> = vec![
         Box::new(Life {
             version: 1,
             migrates_from: None,
             declares_state: true,
         }),
-        Box::new(Counted),
+        Box::new(Counted(builds.clone())),
     ];
     let mut a = build(&rules);
     steps(&mut a, 30);
@@ -797,16 +795,16 @@ fn restore_target_builds_the_rules_once() {
         .unwrap()
     };
 
-    BUILDS.store(0, Relaxed);
+    builds.store(0, Relaxed);
     let target = RestoreTarget::build(SimConfig::default(), &rules, &key()).unwrap();
     let decoded = decode(target.layout());
     let mut b = target.restore(&decoded).unwrap();
-    assert_eq!(BUILDS.load(Relaxed), 1);
+    assert_eq!(builds.load(Relaxed), 1);
 
-    BUILDS.store(0, Relaxed);
+    builds.store(0, Relaxed);
     let layout = StateLayout::of(&SimConfig::default(), &rules).unwrap();
     let mut c = restore(&decode(&layout), &rules).unwrap();
-    assert_eq!(BUILDS.load(Relaxed), 2);
+    assert_eq!(builds.load(Relaxed), 2);
 
     assert_eq!(b.state_hash(), a.state_hash());
     assert_eq!(c.state_hash(), a.state_hash());
@@ -875,8 +873,9 @@ impl Plugin for NarrowLife {
     }
 }
 
-/// #59: a declared migration reads the recorded values with the current decoders, so a
-/// changed encoding is refused, from bytes and from memory, never misread.
+/// #59: a declared migration reads the recorded values with the current decoders, so an
+/// encoding of another length is refused, from bytes and from memory (an encoding read back
+/// identically would not be: see `SimBuilder::migrates_from`).
 #[test]
 fn migration_with_a_changed_encoding_is_refused() {
     let mut a = build(&life(1));

@@ -264,7 +264,14 @@ impl StateLayout {
     /// The [`BuildError`] of building these rules.
     pub fn of(cfg: &SimConfig, rules: &[Box<dyn Plugin>]) -> Result<Self, BuildError> {
         let sim = Sim::build(cfg.clone(), rules, &WorldKey::from_bytes(LAYOUT_KEY))?;
-        Ok(Self { entries: sim.state })
+        Ok(Self::of_sim(&sim))
+    }
+
+    /// Layout of the state types of a built world.
+    fn of_sim(sim: &Sim) -> Self {
+        Self {
+            entries: sim.state.clone(),
+        }
     }
 }
 
@@ -275,9 +282,12 @@ impl StateLayout {
 /// build them twice.
 ///
 /// The world is built with the real world key and nothing else reaches it: it is never run,
-/// hashed nor saved before the restore, and [`RestoreTarget::restore`] keeps every check of
-/// [`Snapshot::restore`], which is the same code. Use [`StateLayout::of`] to decode without a
-/// key (tools, fuzzing).
+/// hashed nor saved before the restore, and [`RestoreTarget::restore`] runs the same code and
+/// checks as [`Snapshot::restore`]. On this path the families and state types of the bytes
+/// are checked by the decoding against [`RestoreTarget::layout`], so the layout comparison of
+/// the restore holds by construction. Use [`StateLayout::of`] to decode without a key (tools,
+/// fuzzing); the generic resume test (`ts_toy::resume`) keeps that path, which checks that
+/// the state types do not depend on the world key.
 pub struct RestoreTarget {
     sim: Sim,
     layout: StateLayout,
@@ -293,7 +303,8 @@ impl fmt::Debug for RestoreTarget {
 }
 
 impl RestoreTarget {
-    /// Builds the world of `rules` with `cfg` and `world_key`, as [`Sim::build`].
+    /// Builds the world of `rules` with `cfg` and `world_key`, as [`Sim::build`]: like it, the
+    /// first build of the process fixes the global thread pool to `cfg.threads`.
     ///
     /// # Errors
     ///
@@ -304,9 +315,7 @@ impl RestoreTarget {
         world_key: &WorldKey,
     ) -> Result<Self, BuildError> {
         let sim = Sim::build(cfg, rules, world_key)?;
-        let layout = StateLayout {
-            entries: sim.state.clone(),
-        };
+        let layout = StateLayout::of_sim(&sim);
         Ok(Self { sim, layout })
     }
 

@@ -157,9 +157,11 @@ impl SimBuilder {
     ///
     /// There is no migration function yet (#59): the recorded values are read by the current
     /// [`StateDecode`]s, and the restore compares their re-encoding with the **recorded**
-    /// bytes. A changed encoding is therefore refused, never misread; a change of meaning
-    /// with the same bytes is not detected. Changing the encoding of a state type needs the
-    /// versioned decoders of architecture §12.5 first (#59).
+    /// bytes. An encoding change that the current decoders cannot read back to the same bytes
+    /// (another length, another tag) is refused. One they read back identically (fields
+    /// swapped, a `u64` split into two `u32`, a change of unit) is **misread**: nothing can
+    /// tell it from the old encoding. Changing the encoding or the meaning of a state type
+    /// therefore needs the versioned decoders of architecture §12.5 first (#59).
     pub fn migrates_from(&mut self, version: u32) -> &mut Self {
         self.migrations.push((self.current, version));
         self
