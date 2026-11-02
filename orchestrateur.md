@@ -239,3 +239,12 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
   - #112 (#26, #31), #115 (#18).
 - **#116 (AS-55)** est en cours de fusion. **#111 et #114** sont en correction. **#113** a été ouverte entre-temps.
 - **Reliquat** : nouvelle section « Déclencheurs à surveiller ». Premier déclencheur, AS-55 m2 : figer `--attr-source` du rejeu X2 le jour où un `.gitattributes` déclarera `merge=`.
+- **AU1 réglé par l'utilisateur.** Il a répondu directement à la session de développement : « J'autorise, fais-le ».
+  - La #118 est fusionnée : `guard-git` et `guard-main` sont retirés, remplacés par 190 refus natifs dans `.claude/settings.json`. Le verrou reste le ruleset côté serveur.
+  - Sont closes : #7 et #8. Sont aussi closes, par les lots de dette : #82, #18, #26, #31.
+  - Suites : #119 (refus étendus, dont la fusion par l'API) en priorité, puis AU4 (`core.hooksPath`), qui revient à archi-sécu.
+- **15 issues encore ouvertes** :
+  - noyau : #113, #58, #59, #93 ;
+  - xtask : #119, #17, #36, #55, #85, #91, #95, #12 ;
+  - conception : #43 à #45, par la PR #87.
+  - La #87 n'a pas bougé depuis le 01/11. Le responsable conception est relancé pour traiter les trois constats importants de la relecture.
