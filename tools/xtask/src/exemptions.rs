@@ -12,13 +12,14 @@ use std::collections::BTreeMap;
 /// (`disallowed_method`, `disallowed_type`, `blacklisted_name`): refused wherever they appear.
 /// Any other `disallowed_*` identifier is refused only when written as a clippy lint path
 /// (`clippy::disallowed_…`), so that `fn disallowed_moves()` stays legitimate (m14).
-const DISALLOWED_LINTS: [&str; 8] = [
+const DISALLOWED_LINTS: [&str; 9] = [
     "disallowed_methods",
     "disallowed_method",
     "disallowed_types",
     "disallowed_type",
     "disallowed_macros",
     "disallowed_names",
+    "disallowed_fields",
     "disallowed_script_idents",
     "blacklisted_name",
 ];
@@ -49,6 +50,11 @@ pub(crate) struct Src {
     pub(crate) line: Vec<usize>,
     gap: Vec<bool>,
     pub(crate) string: Vec<bool>,
+    /// The character belongs to a raw identifier (`r#if`): its `r#` was removed, but it is not
+    /// the keyword.
+    raw: Vec<bool>,
+    /// The next identifier is raw (its `r#` has just been removed).
+    pending_raw: bool,
 }
 
 impl Src {
@@ -57,6 +63,10 @@ impl Src {
         self.line.push(line);
         self.gap.push(gap);
         self.string.push(string);
+        self.raw.push(self.pending_raw && is_ident(c));
+        if !is_ident(c) {
+            self.pending_raw = false;
+        }
     }
 
     /// Identifiants hors chaîne : (début, fin exclue). Un blanc coupe un identifiant.
@@ -132,50 +142,86 @@ impl Src {
     /// gone, so `k !(x)` is read like `k!(x)`), or the body of `macro_rules! name { … }`.
     /// A `!` after a keyword (`if !(x)`) is a negation, not a call. `ends` maps the end of
     /// each token to the token.
-    fn opens_macro(&self, k: usize, ends: &BTreeMap<usize, (usize, usize)>) -> bool {
+    fn opens_macro(&self, k: usize, ends: &BTreeMap<usize, (usize, usize)>) -> Option<bool> {
         if k >= 1 && self.text[k - 1] == '!' && !self.string[k - 1] {
-            return ends
+            // A raw identifier (`r#if!(..)`) is a macro name, not the keyword.
+            let call = ends
                 .get(&(k - 1))
-                .is_some_and(|&t| !NOT_A_MACRO.contains(&self.word(t).as_str()));
+                .is_some_and(|&t| self.raw[t.0] || !NOT_A_MACRO.contains(&self.word(t).as_str()));
+            return call.then_some(false);
         }
-        let Some(&(name, _)) = ends.get(&k) else {
-            return false;
-        };
-        name >= 1
+        let &(name, _) = ends.get(&k)?;
+        let rules = name >= 1
             && self.text[name - 1] == '!'
             && ends
                 .get(&(name - 1))
-                .is_some_and(|&t| self.word(t) == "macro_rules")
+                .is_some_and(|&t| self.word(t) == "macro_rules");
+        rules.then_some(true)
     }
 
-    /// For each character: inside a region handed to a macro (see [`Src::opens_macro`]). Such a
-    /// region is read strictly: a form that is only allowed outside it is refused inside.
-    fn in_macro_args(&self) -> Vec<bool> {
+    /// For each character: inside a region handed to a macro (see [`Src::opens_macro`]), and
+    /// inside the body of a `macro_rules!`. Such a region is read strictly: a form that is only
+    /// allowed outside it is refused inside.
+    fn macro_regions(&self) -> (Vec<bool>, Vec<bool>) {
         let ends: BTreeMap<usize, (usize, usize)> =
             self.tokens().into_iter().map(|t| (t.1, t)).collect();
-        let (mut stack, mut inside) = (Vec::new(), 0_usize);
-        let mut out = vec![false; self.text.len()];
-        for (k, slot) in out.iter_mut().enumerate() {
-            if !self.string[k] {
-                match self.text[k] {
-                    '(' | '[' | '{' => {
-                        let call = self.opens_macro(k, &ends);
-                        stack.push(call);
-                        inside += usize::from(call);
-                    }
-                    ')' | ']' | '}' => {
-                        *slot = inside > 0;
-                        if stack.pop() == Some(true) {
-                            inside -= 1;
-                        }
-                        continue;
-                    }
+        // One entry per open delimiter: 0 an ordinary one, 1 the arguments of a call, 2 the body
+        // of a `macro_rules!`.
+        let (mut stack, mut calls, mut bodies) = (Vec::new(), 0_usize, 0_usize);
+        let mut any = vec![false; self.text.len()];
+        let mut rules = vec![false; self.text.len()];
+        for k in 0..self.text.len() {
+            let close = !self.string[k] && matches!(self.text[k], ')' | ']' | '}');
+            if !self.string[k] && matches!(self.text[k], '(' | '[' | '{') {
+                let kind = match self.opens_macro(k, &ends) {
+                    Some(true) => 2,
+                    Some(false) => 1,
+                    None => 0,
+                };
+                stack.push(kind);
+                calls += usize::from(kind == 1);
+                bodies += usize::from(kind == 2);
+            }
+            (any[k], rules[k]) = (calls + bodies > 0, bodies > 0);
+            if close {
+                match stack.pop() {
+                    Some(1) => calls -= 1,
+                    Some(2) => bodies -= 1,
                     _ => {}
                 }
             }
-            *slot = inside > 0;
         }
-        out
+        (any, rules)
+    }
+
+    /// Lines of the attributes assembled from a metavariable in a `macro_rules!` body: `#[` or
+    /// `#![` then `$name` followed by anything but `]` (`#[$a(not($b))]`, `#[$k = $v]`,
+    /// `#[$l($t::$g)]`, `#[$($t)*]`). `$(#[$m])*` forwards an attribute whole and stays allowed,
+    /// and so does the matcher `#[$m:meta]`.
+    fn metavariable_attributes(&self, rules: &[bool]) -> Vec<usize> {
+        let t = &self.text;
+        let mut lines = Vec::new();
+        for k in (0..t.len()).filter(|&k| t[k] == '#' && !self.string[k] && rules[k]) {
+            let mut j = k + 1;
+            if t.get(j) == Some(&'!') {
+                j += 1;
+            }
+            if t.get(j) != Some(&'[') || t.get(j + 1) != Some(&'$') {
+                continue;
+            }
+            j += 2;
+            let name = t[j..].iter().take_while(|&&c| is_ident(c)).count();
+            j += name;
+            let whole = name > 0 && t.get(j) == Some(&']');
+            let matcher = name > 0 && t.get(j) == Some(&':') && {
+                let frag = t[j + 1..].iter().take_while(|&&c| is_ident(c)).count();
+                frag > 0 && t.get(j + 1 + frag) == Some(&']')
+            };
+            if !(whole || matcher) {
+                lines.push(self.line[k]);
+            }
+        }
+        lines
     }
 
     /// For each character: inside a `use` declaration, up to its closing `;`.
@@ -259,6 +305,7 @@ pub(crate) fn normalize(source: &str) -> Src {
             && at(i + 2).is_some_and(|d| d.is_alphabetic() || d == '_')
         {
             i += 2; // r#ident : l'identifiant seul compte
+            src.pending_raw = true;
         } else if c == 'r'
             && (!prev_ident || (matches!(s[i - 1], 'b' | 'c') && (i < 2 || !is_ident(s[i - 2]))))
             && at(i + 1 + s[i + 1..].iter().take_while(|&&h| h == '#').count()) == Some('"')
@@ -338,7 +385,8 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
             .eq(w.chars())
             && !src.string.get(end).copied().unwrap_or(false)
     };
-    let (in_macro, in_use) = (src.in_macro_args(), src.in_use());
+    let ((in_macro, rules), in_use) = (src.macro_regions(), src.in_use());
+    found.extend(src.metavariable_attributes(&rules));
     for tok in src.tokens() {
         let (start, end) = tok;
         let word = src.word(tok);
@@ -600,5 +648,56 @@ mod tests {
         ] {
             assert!(!flagged(ok), "{ok}");
         }
+    }
+
+    /// Review of PR #111, round two: a raw identifier is a macro name, not the keyword.
+    #[test]
+    fn raw_keywords_are_macro_names() {
+        for bad in [
+            "r#if!(include_str)",
+            "r#if!(x cfg(not(clippy)))",
+            "r#as![x path = \"../c.inc\"]",
+            "r#match!{include_bytes}",
+            "r#while !(include_str)",
+            "r#in!(x . allow(clippy::all))",
+        ] {
+            assert!(flagged(bad), "{bad}");
+        }
+        // The keyword itself is still a negation.
+        assert!(!flagged("fn f(include: bool) { if !(include) { g(); } }"));
+        assert!(flagged("#[allow(clippy::disallowed_fields)] fn a() {}"));
+    }
+
+    /// AS-56: in a `macro_rules!` body an attribute is forwarded whole or not assembled.
+    #[test]
+    fn attributes_assembled_from_metavariables_are_refused() {
+        let body =
+            |inner: &str| format!("macro_rules! m {{ ($a:meta, $b:meta) => {{ {inner} }} }}");
+        for bad in [
+            "#[$a(not($b))] fn f() {}",
+            "#[$k = $v] mod c;",
+            "#[$l($t::$g)] fn f() {}",
+            "#![$a(x)]",
+            "#[$($t)*] fn f() {}",
+            "#[$a:meta = x] fn f() {}",
+            "#[ $a ( x ) ] fn f() {}",
+        ] {
+            assert!(flagged(&body(bad)), "{bad}");
+        }
+        // Forwarded whole, matchers, plain attributes and the same text outside a macro body.
+        for ok in [
+            "$(#[$m])* fn f() {}",
+            "#[$a] fn f() {}",
+            "#[inline] fn f() {}",
+            "#[derive(Debug)] struct S;",
+        ] {
+            assert!(!flagged(&body(ok)), "{ok}");
+        }
+        assert!(!flagged(
+            "macro_rules! p { ($(#[$m:meta])* $v:vis fn $n:ident) => { $(#[$m])* $v fn $n() {} } }"
+        ));
+        assert!(!flagged(
+            "fn f() { let a = 1; #[allow(dead_code)] let b = 2; }"
+        ));
     }
 }
