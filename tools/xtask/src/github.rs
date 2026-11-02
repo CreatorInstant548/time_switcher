@@ -429,13 +429,18 @@ pub const ANOMALY_TITLE: &str = "verify-main : anomalie sur le commit";
 /// Title of the issue that `verify-main` opens for a drift of the GitHub settings (`-Check`).
 pub const DRIFT_TITLE: &str =
     "verify-main : réglages GitHub différents de tools/ci/repo-settings.json";
-/// Title prefixes of the anomaly issues (AS-50 AU2, AU3).
+/// Title prefixes of the anomaly issues that `cargo xtask` opens (AS-50 AU2, AU3).
 pub const ANOMALY_TITLES: [&str; 2] = [ANOMALY_TITLE, DRIFT_TITLE];
+/// Exact title of the issue that the `report` job of `nightly.yml` opens when its `verify-main`
+/// job fails or is cancelled (AS-52, AU8). The workflow writes the same text (test
+/// `nightly_writes_the_anomaly_title`).
+pub const NIGHTLY_ANOMALY_TITLE: &str = "verify-main : anomalie détectée par la tâche périodique";
+/// Login of the GitHub Actions bot, author of the issues opened with the job token (AS-52).
+const ACTIONS_BOT: &str = "github-actions[bot]";
 
-/// AS-50 AU2, the one definition of an anomaly issue: an issue (not a pull request) written by
-/// the owner (P3), whose title starts with one of [`ANOMALY_TITLES`]. An open one stops
-/// `cargo xtask merge`; [`Repo::open_issue`] only reuses such an issue.
-pub fn is_anomaly(item: &Value, slug: &str) -> bool {
+/// An anomaly issue that `cargo xtask` opens: an issue (not a pull request) written by the owner
+/// (P3), whose title starts with one of [`ANOMALY_TITLES`]. The only kind [`tracks`] reuses.
+fn owner_anomaly(item: &Value, slug: &str) -> bool {
     item.get("pull_request").is_none()
         && by_owner(item, slug)
         && item["title"]
@@ -443,15 +448,35 @@ pub fn is_anomaly(item: &Value, slug: &str) -> bool {
             .is_some_and(|t| ANOMALY_TITLES.iter().any(|a| t.starts_with(a)))
 }
 
+/// AS-52 (AU8): the issue of the nightly `report` job, an issue (not a pull request) whose title
+/// is exactly [`NIGHTLY_ANOMALY_TITLE`] and whose author is exactly [`ACTIONS_BOT`] with account
+/// type `Bot`. A user login cannot contain `[bot]`, and only collaborators can open issues; any
+/// workflow of this repository with `issues: write` could open it too, which only stops merges.
+fn nightly_anomaly(item: &Value) -> bool {
+    item.get("pull_request").is_none()
+        && item["user"]["login"].as_str() == Some(ACTIONS_BOT)
+        && item["user"]["type"].as_str() == Some("Bot")
+        && item["title"].as_str() == Some(NIGHTLY_ANOMALY_TITLE)
+}
+
+/// AS-50 AU2 and AS-52, the one definition of an anomaly issue: one of the owner (P3) with an
+/// anomaly title of `cargo xtask verify-main`, or the nightly issue of `github-actions[bot]`
+/// ([`NIGHTLY_ANOMALY_TITLE`]). An open one stops `cargo xtask merge`. Counting more issues can
+/// only stop a merge, never let one through.
+pub fn is_anomaly(item: &Value, slug: &str) -> bool {
+    owner_anomaly(item, slug) || nightly_anomaly(item)
+}
+
 /// Line written by [`Repo::open_issue`] in the body of the issue for `key`.
 fn key_marker(key: &str) -> String {
     format!("Clé : `{key}`")
 }
 
-/// The anomaly issue ([`is_anomaly`]) whose body carries the marker of `key`: the only kind of
-/// issue [`Repo::open_issue`] reuses for `key`.
+/// The owner's anomaly issue whose body carries the marker of `key`: the only kind of issue
+/// [`Repo::open_issue`] reuses for `key`. Never the nightly bot issue (AS-52): its body is not
+/// written by `cargo xtask`, and it is closed once the night's anomaly is cleared.
 pub fn tracks(item: &Value, slug: &str, key: &str) -> bool {
-    is_anomaly(item, slug)
+    owner_anomaly(item, slug)
         && item["body"]
             .as_str()
             .is_some_and(|b| b.lines().any(|l| l.trim_end() == key_marker(key)))
@@ -824,6 +849,80 @@ mod tests {
         assert_eq!(opens(&[same], sha, &title), Ok(false));
         // Only anomaly issues are opened.
         assert!(opens(&[], "k", "Remontée").is_err());
+    }
+
+    /// The nightly issue as the API returns it: author `github-actions[bot]`, type `Bot`.
+    fn nightly_issue() -> Value {
+        json!({"title": NIGHTLY_ANOMALY_TITLE, "number": 9, "body": "Run: u",
+               "user": {"login": "github-actions[bot]", "type": "Bot"},
+               "author_association": "NONE"})
+    }
+
+    /// AS-52 (AU8): the nightly issue of `github-actions[bot]` with the exact title is an
+    /// anomaly; another bot, another title, a user account or a pull request is not.
+    #[test]
+    fn counts_the_nightly_bot_issue() {
+        let bot = nightly_issue();
+        assert!(is_anomaly(&bot, "o/r"));
+        for (path, value) in [
+            ("/user/login", json!("dependabot[bot]")),
+            ("/user/login", json!("github-actions")),
+            ("/user/login", json!("GitHub-Actions[bot]")),
+            ("/user/login", json!("o")),
+            ("/user/login", Value::Null),
+            ("/user/type", json!("User")),
+            ("/user/type", Value::Null),
+            ("/title", json!("Tâche périodique en échec")),
+            ("/title", json!(format!("{NIGHTLY_ANOMALY_TITLE} "))),
+            ("/title", json!(format!("Re: {NIGHTLY_ANOMALY_TITLE}"))),
+            ("/title", json!(format!("{ANOMALY_TITLE} 1234567"))),
+            ("/title", json!(DRIFT_TITLE)),
+            ("/title", Value::Null),
+        ] {
+            let mut v = bot.clone();
+            *v.pointer_mut(path).unwrap() = value.clone();
+            assert!(!is_anomaly(&v, "o/r"), "{path} = {value}");
+        }
+        let mut pr = bot.clone();
+        pr["pull_request"] = json!({});
+        assert!(!is_anomaly(&pr, "o/r"));
+        // The owner may not stand in for the bot on this title: P3 covers only xtask's titles.
+        let mut owner = owner_item("x");
+        owner["title"] = json!(NIGHTLY_ANOMALY_TITLE);
+        assert!(!is_anomaly(&owner, "o/r"));
+        // A stranger using the title is not counted either.
+        let mut stranger = owner.clone();
+        stranger["user"]["login"] = json!("someone");
+        stranger["author_association"] = json!("NONE");
+        assert!(!is_anomaly(&stranger, "o/r"));
+    }
+
+    /// AS-52: `open_issue` never reuses the nightly bot issue, even when its body carries the
+    /// key marker: it only reuses an owner's issue that [`tracks`] the key.
+    #[test]
+    fn never_reuses_the_nightly_issue() {
+        let mut bot = nightly_issue();
+        bot["labels"] = json!([{"name": "role:architecture"}]);
+        bot["body"] = json!(format!("Run: u\n{}", key_marker("k")));
+        assert!(is_anomaly(&bot, "o/r") && !tracks(&bot, "o/r", "k"));
+        assert_eq!(opens(&[bot], "k", DRIFT_TITLE), Ok(true));
+    }
+
+    /// AS-52: the `report` job of `nightly.yml` opens the issue under the very title that
+    /// [`is_anomaly`] counts, and only after `verify-main` fails or is cancelled.
+    #[test]
+    fn nightly_writes_the_anomaly_title() {
+        let yml = include_str!("../../../.github/workflows/nightly.yml");
+        let line = format!("NIGHTLY_ANOMALY_TITLE: \"{NIGHTLY_ANOMALY_TITLE}\"");
+        assert_eq!(
+            yml.lines().filter(|l| l.trim() == line).count(),
+            1,
+            "{line}"
+        );
+        let gate = "if: always() && (needs.verify-main.result == 'failure' || \
+                    needs.verify-main.result == 'cancelled')";
+        assert_eq!(yml.lines().filter(|l| l.trim() == gate).count(), 1);
+        assert!(!NIGHTLY_ANOMALY_TITLE.contains(['"', '\\', '$', '`']));
     }
 
     #[test]
