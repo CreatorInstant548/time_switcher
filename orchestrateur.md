@@ -222,3 +222,13 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
   - m4 et m7 se corrigent en phase 0 ;
   - m5 rejoint #45.
 - **En cours au dev** : #98, puis #63. #77 et #48 sont lancées.
+- **Le lot sécurité du dev est fusionné** :
+  - les PR #100 (#50 m4/m7), #102 (#98), #103 (#48), #104 (#63) et #101 (#77) ;
+  - #101 a eu cinq relecteurs neufs ; quatre contournements de SEC0-31 ont été trouvés puis fermés par AS-53 et AS-54 ;
+  - les issues #6, #48, #50, #63, #77 et #98 sont closes.
+- **Reliquat** : le dernier point de #48, le lecteur borné dans `ts_host`, va en phase 3, avec `ts_host` (décision d'archi-sécu).
+- **Issues encore ouvertes : 21**
+  - 16 `role:dev`, en trois lots parallèles ;
+  - #93 (architecture) ;
+  - #43 à #45 (conception, PR #87) ;
+  - #7 et #8, qui dépendent d'AU1 et donc de l'utilisateur.

@@ -33,6 +33,12 @@ Ce sont les *issues* reportées (organisation.md §5, point 5). Seul le travail 
 |---|---|---|---|---|
 | [#94](https://github.com/CreatorInstant548/time_switcher/issues/94) | Calibrer `PARALLEL_FROM_WORK` et `PAR_ITER_FROM` sur les systèmes de la phase 1 (AS-51) | dev, puis qualité pour les mesures | Les systèmes à mesurer n'existent pas encore. Les valeurs actuelles ne changent pas le résultat. Les marqueurs pointent déjà vers #94 (PR #99). | 02/11 |
 
+### Phase 3
+
+| *Issue* | Sujet | Rôle | Motif du report | Décidé le |
+|---|---|---|---|---|
+| [#48](https://github.com/CreatorInstant548/time_switcher/issues/48) (dernier point) | Déplacer le lecteur de contenu borné dans l'hôte de jeu `ts_host`, avec `openat` ou `cap-std` | dev, avec `archsec-ok` | `ts_host` arrive en phase 3 (revue d'architecture §22). Le durcissement contre les liens est déjà fait par la #103 dans `ts_runner`. Décidé par archi-sécu (carnet `b5cfde6`). À l'ouverture de la phase 3, ouvrir une *issue* neuve qui renvoie à #48. | 02/11 |
+
 ### Phase 5
 
 | *Issue* | Sujet | Rôle | Motif du report | Décidé le |
