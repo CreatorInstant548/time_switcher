@@ -236,6 +236,40 @@ fn bytes(cx: &Ctx, rel: &str) -> Result<Vec<u8>, String> {
         .map_err(|_| format!("{rel} : lecture impossible"))
 }
 
+/// Texte d'un fichier source à analyser. UTF-8 d'abord ; UTF-16 avec marque d'ordre des octets
+/// (PowerShell l'écrit ainsi) est décodé ; tout autre texte (Windows-1252 d'un `.ps1`) est lu avec
+/// remplacement des octets illisibles, ce qui laisse intacts les commentaires ASCII. Un fichier
+/// qui contient des octets nuls est binaire : sauté sans extension (des données), sinon c'est un
+/// écart, puisqu'un type analysé ne doit jamais être sauté en silence (#18).
+fn source_text(rel: &str, bytes: Vec<u8>) -> Result<Option<String>, String> {
+    let utf16 = |little: bool, b: &[u8]| {
+        let units = b.as_chunks::<2>().0.iter().map(|c| match little {
+            true => u16::from_le_bytes([c[0], c[1]]),
+            false => u16::from_be_bytes([c[0], c[1]]),
+        });
+        char::decode_utf16(units)
+            .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect::<String>()
+    };
+    match bytes.as_slice() {
+        [0xFF, 0xFE, rest @ ..] => return Ok(Some(utf16(true, rest))),
+        [0xFE, 0xFF, rest @ ..] => return Ok(Some(utf16(false, rest))),
+        _ => {}
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.as_bytes().contains(&0) => {
+            match rel.rsplit('/').next().is_some_and(|n| n.contains('.')) {
+                true => Err(format!(
+                    "{rel} : binary content in a file of an analysed type"
+                )),
+                false => Ok(None),
+            }
+        }
+        Err(e) => Ok(Some(String::from_utf8_lossy(e.as_bytes()).into_owned())),
+    }
+}
+
 fn text_of(cx: &Ctx, rel: &str) -> Result<String, String> {
     String::from_utf8(bytes(cx, rel)?).map_err(|_| format!("{rel} n'est pas en UTF-8"))
 }
@@ -261,8 +295,7 @@ fn load(cx: &Ctx) -> Result<Model, String> {
     }
     let mut sources = Vec::new();
     for f in files.iter().filter(|f| scanned(f) && refs::scannable(f)) {
-        // Un fichier qui n'est pas en UTF-8 est binaire : il ne porte aucun renvoi.
-        if let Ok(text) = String::from_utf8(bytes(cx, f)?) {
+        if let Some(text) = source_text(f, bytes(cx, f)?)? {
             sources.push((f.clone(), text));
         }
     }
@@ -370,13 +403,57 @@ fn evaluate(m: &Model, known_text: &str) -> (Vec<String>, usize) {
     (errors, tolerated)
 }
 
+/// Entrées de `known_bad.txt` absentes de la version d'`origin/main` (H3) : la liste ne peut que
+/// diminuer, donc toute entrée ajoutée est refusée, même si la PR est relue. Lignes comparées
+/// sans blancs de bord ; commentaires et lignes vides ignorés.
+fn grown_entries(local: &str, main: &str) -> Vec<String> {
+    let on_main: std::collections::BTreeSet<&str> = main
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    local
+        .lines()
+        .enumerate()
+        .map(|(i, l)| (i + 1, l.trim()))
+        .filter(|(_, l)| !l.is_empty() && !l.starts_with('#') && !on_main.contains(l))
+        .map(|(n, _)| {
+            format!("known_bad.txt:{n} : entry absent from origin/main: the list can only shrink, fix the reference instead")
+        })
+        .collect()
+}
+
+/// Types de fichier suivis ni analysés ni classés parmi ceux qui ne portent rien (#18) : un par
+/// extension, avec un fichier en exemple. Les documents (`docs/`, `*.md`) ne sont pas concernés.
+fn unknown_types(files: &[String]) -> Vec<String> {
+    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+    for f in files.iter().filter(|f| scanned(f) && !refs::known_type(f)) {
+        let name = f.rsplit('/').next().unwrap_or(f);
+        let ext = name
+            .rsplit_once('.')
+            .map_or(name, |(_, e)| e)
+            .to_ascii_lowercase();
+        seen.entry(ext).or_insert(f);
+    }
+    seen.into_iter()
+        .map(|(ext, f)| {
+            format!("{f} : file type `{ext}` is neither analysed nor classed as carrying no reference: add it to refs::style or refs::NOT_SCANNED")
+        })
+        .collect()
+}
+
 /// Étape `spec-map` de `check` : erreurs et note de réussite.
 pub fn check(cx: &Ctx) -> Result<(Vec<String>, String), String> {
     let m = load(cx)?;
     let known = text_of(cx, KNOWN_BAD)?;
-    let (errors, tolerated) = evaluate(&m, &known);
+    let (mut errors, tolerated) = evaluate(&m, &known);
+    let main = format!("origin/main:{KNOWN_BAD}");
+    let on_main = sys::stdout_of(&cx.root, "git", &["show", "--end-of-options", &main])
+        .map_err(|_| format!("{KNOWN_BAD} unreadable on origin/main (H3)"))?;
+    errors.extend(grown_entries(&known, &on_main));
+    errors.extend(unknown_types(cx.files()?));
     let note = format!(
-        "{} renvoi(s), {} marque(s) PROVISOIRE, {tolerated} renvoi(s) faux connu(s)",
+        "{} renvoi(s), {} marque(s) provisoire(s), {tolerated} renvoi(s) faux connu(s)",
         m.cites.len(),
         m.marks.len()
     );

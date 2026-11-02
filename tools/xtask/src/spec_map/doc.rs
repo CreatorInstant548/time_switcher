@@ -66,10 +66,19 @@ pub fn parse(text: &str) -> Doc {
     // Points numérotés de premier niveau, cités comme des sous-sections `k.N` (voir `point`).
     let mut points: BTreeMap<String, Section> = BTreeMap::new();
     let (mut open, mut point_dups) = (None::<String>, BTreeSet::new());
+    let mut html = false;
     for line in text.lines() {
         let t = line.trim_start();
         let mut id_section = open.clone().unwrap_or_else(|| current.clone());
-        if t.starts_with("```") || t.starts_with("~~~") {
+        // A line that starts inside a comment `<!-- … -->` defines nothing: a title or an
+        // identifier there is not part of the document (#18).
+        let hidden = !fence && (html || t.starts_with("<!--"));
+        if !fence {
+            html = html_comment_open(line, html);
+        }
+        if hidden {
+            // Only the text of the section grows, below.
+        } else if t.starts_with("```") || t.starts_with("~~~") {
             fence = !fence;
         } else if !fence {
             if let Some(title) = heading(line) {
@@ -135,6 +144,22 @@ pub fn parse(text: &str) -> Doc {
     doc
 }
 
+/// Le texte est, à la fin de `line`, à l'intérieur d'un commentaire HTML `<!-- … -->`, sachant
+/// s'il l'était au début de la ligne.
+fn html_comment_open(line: &str, mut open: bool) -> bool {
+    let mut rest = line;
+    loop {
+        let (marker, next) = if open { ("-->", false) } else { ("<!--", true) };
+        match rest.find(marker) {
+            Some(at) => {
+                open = next;
+                rest = &rest[at + marker.len()..];
+            }
+            None => return open,
+        }
+    }
+}
+
 /// Point numéroté de premier niveau (`3. Texte`, sans retrait) : numéro et début du texte. La
 /// conception cite ces points comme des sous-sections (`§2.3` pour le point 3 de la section 2).
 fn point(line: &str) -> Option<(String, String)> {
@@ -188,12 +213,22 @@ pub fn is_suffix(s: &str) -> bool {
 }
 
 /// Identifiant défini par la ligne : première cellule d'un tableau, ou gras en tête d'élément de
-/// liste (case à cocher admise) ou de ligne (H2).
+/// liste (case à cocher admise) ou de ligne (H2). Dans un tableau dont la première colonne est une
+/// date (`| 30/10 | AS-33 | … |`), la deuxième cellule définit aussi un identifiant, mais
+/// seulement si elle n'est faite que de lui, éventuellement entre `**` ou accents graves ; les
+/// autres cellules n'en définissent jamais.
 fn defined_id(line: &str) -> Option<String> {
     let t = line.trim_start();
     if let Some(row) = t.strip_prefix('|') {
-        let cell = row.split('|').next()?.trim().trim_start_matches(['*', '`']);
-        return id_prefix(cell).map(|(id, _)| id);
+        let mut cells = row.split('|');
+        let first = cells.next()?.trim().trim_start_matches(['*', '`']);
+        if let Some((id, _)) = id_prefix(first) {
+            return Some(id);
+        }
+        let second = cells.next()?.trim().trim_matches(['*', '`']);
+        return id_prefix(second)
+            .filter(|(_, len)| *len == second.len())
+            .map(|(id, _)| id);
     }
     let mut item = t;
     if let Some(rest) = ["- ", "* ", "+ "].iter().find_map(|m| item.strip_prefix(m)) {

@@ -416,6 +416,7 @@ fn scans_comment_styles() {
             (5, "bad spec: pas.md §9".to_owned()),
             (7, "mark PROVISOIRE(conception #12)".to_owned()),
             (8, "mark PROVISOIRE sans numéro".to_owned()),
+            (9, "mark PROVISOIRE, à revoir".to_owned()),
             (10, "mark PROVISOIRE(conception #4)".to_owned()),
             (11, "mark PROVISOIRE(conception #5)".to_owned()),
             (12, "bad Spec: d.md §4".to_owned()),
@@ -582,7 +583,7 @@ fn report_is_sorted_and_lists_gaps() {
             .all(|s| s["doc"] == SECURITE)
     );
     let md = markdown(&v);
-    assert!(md.contains("## Sections sans code") && md.contains("conception #3"));
+    assert!(md.contains("## Sections sans code") && md.contains("remontée #3"));
     // Aucun chemin absolu ni séparateur Windows dans la sortie (SEC0-26).
     assert!(!md.contains('\\') && !md.contains(":/") && !md.contains(":\\"));
     assert_eq!(natural("10"), (vec![10], String::new()));
@@ -622,4 +623,247 @@ fn diff_refuses_options_as_revisions() {
     for good in ["HEAD~3", "origin/main", "69b4849", "v1.0"] {
         assert!(check_rev(good).is_ok(), "{good}");
     }
+}
+
+/// #18: silent successes of the scan, each reproduced as it was reported.
+#[test]
+fn scan_has_no_silent_successes() {
+    let marks = |path: &str, text: &str| -> Vec<(usize, String)> {
+        refs::scan(path, text)
+            .into_iter()
+            .map(|f| match f.hit {
+                Hit::Spec(t) => (f.line, format!("spec {t}")),
+                Hit::Mark(t) => (f.line, format!("mark {t}")),
+                Hit::Bad(t, _) => (f.line, format!("bad {t}")),
+            })
+            .collect()
+    };
+    // A UTF-8 byte order mark before a `# spec:` on line 1 of a PowerShell file.
+    assert_eq!(
+        marks("tools/x.ps1", "\u{feff}# spec: a.md §1\n"),
+        [(1, "spec a.md §1".to_owned())]
+    );
+    // An apostrophe inside a word does not open a string and hide the mark.
+    let yaml = "step: l'étape   # PROVISOIRE(conception #3)\nit's: x # spec: a.md §1\n";
+    assert_eq!(
+        marks("x.yml", yaml),
+        [
+            (1, "mark PROVISOIRE(conception #3)".to_owned()),
+            (2, "bad spec: a.md §1".to_owned())
+        ]
+    );
+    // A real quoted string still hides what it holds, with or without a Python prefix.
+    assert!(marks("x.py", "s = 'a # PROVISOIRE' + r'# spec: a.md §1'\n").is_empty());
+    // The mark is the word, with or without a number; the English form is read too.
+    let rs = "// valeur PROVISOIRE\n// PROVISIONAL(design #44): bounds\nlet a = 1; /* PROVISOIRE */\n\
+              /* PROVISIONAL(design #7) */\n// XPROVISIONAL and PROVISOIRES are other words\n";
+    assert_eq!(
+        marks("x.rs", rs),
+        [
+            (1, "mark PROVISOIRE".to_owned()),
+            (2, "mark PROVISIONAL(design #44): bounds".to_owned()),
+            (3, "mark PROVISOIRE".to_owned()),
+            (4, "mark PROVISIONAL(design #7)".to_owned()),
+        ]
+    );
+    // A multi-line block comment is read line by line; `spec:` in a block is refused.
+    let block = "/*\n * PROVISOIRE(conception #8)\n * spec: a.md §1\n */\nlet z = 1;\n";
+    assert_eq!(
+        marks("x.rs", block),
+        [
+            (2, "mark PROVISOIRE(conception #8)".to_owned()),
+            (3, "bad spec: a.md §1".to_owned())
+        ]
+    );
+    // SQL and shaders are analysed; `--` is not a comment in a Rust file.
+    assert_eq!(
+        marks("db/x.sql", "SELECT 1; -- PROVISIONAL(design #2)\n").len(),
+        1
+    );
+    assert_eq!(marks("a/x.gdshader", "// spec: a.md §1\n").len(), 1);
+    assert_eq!(marks("tools/x.psd1", "# spec: a.md §1\n").len(), 1);
+    assert!(marks("x.rs", "let a = 1 -- PROVISOIRE(conception #1)\n").is_empty());
+    // Both forms of mark carry an issue number.
+    assert_eq!(refs::mark("PROVISIONAL(design #12)"), Ok(12));
+    for bad in [
+        "PROVISIONAL",
+        "PROVISIONAL(design #)",
+        "PROVISIONAL(conception #3)",
+        "PROVISOIRE(design #3)",
+    ] {
+        assert!(refs::mark(bad).is_err(), "{bad}");
+    }
+}
+
+/// #18: every tracked type is analysed or classed; an unknown one fails the check.
+#[test]
+fn file_types_are_all_classed() {
+    for known in [
+        "a.rs",
+        "b.sql",
+        "c.psd1",
+        "Cargo.lock",
+        "d.json",
+        "e.PNG",
+        "tools/hooks/pre-commit",
+    ] {
+        assert!(refs::known_type(known), "{known}");
+    }
+    assert!(!refs::known_type("db/f.xyz"));
+    let files: Vec<String> = ["a.rs", "docs/x.png", "db/f.xyz", "db/g.xyz", "h.README"]
+        .map(str::to_owned)
+        .to_vec();
+    let errors = unknown_types(&files);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors[0].starts_with("h.README : file type `readme`"));
+    assert!(errors[1].starts_with("db/f.xyz : file type `xyz`"));
+}
+
+/// #18: an element made only of parentheses would be dropped silently.
+#[test]
+fn lone_parenthesised_elements_are_refused() {
+    for bad in [
+        "combat.md, (§3)",
+        "combat.md §1 ; (securite.md §4)",
+        "(combat.md §3)",
+    ] {
+        let errors = errors_of(bad);
+        assert!(
+            errors.iter().any(|e| e.contains("seul entre parenthèses")),
+            "{bad}: {errors:?}"
+        );
+    }
+    // A note in parentheses next to an element stays free text.
+    assert!(errors_of("combat.md §1 (voir aussi §9, sans effet), D1").is_empty());
+    assert!(errors_of("combat.md §1.1 D1 (note)").is_empty());
+}
+
+/// #18: a title or an identifier in an HTML comment is not part of the document.
+#[test]
+fn html_comments_define_nothing() {
+    let d = doc::parse(&text(&[
+        "## 1. Réel",
+        "<!--",
+        "## 2. Commenté",
+        "- **X1** commenté",
+        "-->",
+        "<!-- ## 3. Sur une ligne -->",
+        "<!-- ouvert ## 4. Caché",
+        "- **X2** caché --> - **X3** suite",
+        "## 5. Après",
+        "- **X4** réel",
+        "```",
+        "<!--",
+        "```",
+        "## 6. Encore réel",
+    ]));
+    let keys: Vec<&str> = d.sections.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["1", "5", "6"]);
+    assert!(d.ids.contains_key("X4") && !d.ids.contains_key("X1") && !d.ids.contains_key("X2"));
+}
+
+/// #18, decided on the issue: a table row defines an identifier in its first two cells when the
+/// cell is only that identifier (a date-first table of decisions); other cells never do.
+#[test]
+fn identifiers_in_the_second_cell_of_a_table() {
+    let d = doc::parse(&text(&[
+        "## 7. Décisions",
+        "| 30/10 | AS-33 | décision un | AS-99 |",
+        "| 30/10 | **AS-34** | deux |",
+        "| 31/10 | `AS-35` | trois |",
+        "| 31/10 | AS-36 suite du texte | quatre |",
+        "| 31/10 | voir AS-37 | cinq |",
+        "| E5 | AS-40 | six |",
+    ]));
+    for id in ["AS-33", "AS-34", "AS-35", "E5"] {
+        assert!(d.defines(id, Some("7")), "{id}");
+    }
+    for id in ["AS-36", "AS-37", "AS-99", "AS-40"] {
+        assert!(!d.defines(id, None), "{id}");
+    }
+}
+
+/// H3: the list can only shrink, whatever the review of the PR.
+#[test]
+fn known_bad_entries_must_be_on_main() {
+    let main = "# note\na.rs | 3 | x.md §1 | raison | #12\nb.rs | 4 | y.md §2 | autre | #13\n";
+    assert!(grown_entries(main, main).is_empty());
+    // Removing an entry, reordering, changing blanks or comments: fine.
+    let shrunk = "  b.rs | 4 | y.md §2 | autre | #13  \n# autre commentaire\n";
+    assert!(grown_entries(shrunk, main).is_empty());
+    // A new entry, or a changed one (a moved line), is refused with its line number.
+    let grown = format!("{main}c.rs | 9 | z.md §3 | nouveau | #14\n");
+    assert_eq!(grown_entries(&grown, main).len(), 1);
+    assert!(grown_entries(&grown, main)[0].starts_with("known_bad.txt:4 :"));
+    let moved = main.replace("| 3 |", "| 5 |");
+    assert_eq!(grown_entries(&moved, main).len(), 1);
+    assert_eq!(grown_entries(main, "").len(), 2);
+}
+
+/// H6 and H5: `load` reads the tree through git, and fails rather than succeed on nothing.
+#[test]
+fn load_fails_closed_and_reads_every_encoding() {
+    use crate::carry::lab::Lab;
+    let check = |lab: &Lab| Ctx::new(lab.dir.clone(), false);
+
+    // No conception document.
+    let lab = Lab::new("sm-load-empty");
+    lab.commit(&[("crates/x/src/lib.rs", Some("// spec: a.md §1\n"))]);
+    let err = load(&check(&lab)).unwrap_err();
+    assert!(err.contains("aucun document de conception"), "{err}");
+
+    // Conception present, `origin/pilotage` absent.
+    let lab = Lab::new("sm-load-nopilotage");
+    let head = lab.commit(&[(
+        "docs/conception/domaines/combat.md",
+        Some("## 1. A\n- **D1** un\n"),
+    )]);
+    let err = load(&check(&lab)).unwrap_err();
+    assert!(err.contains("origin/pilotage absent"), "{err}");
+
+    // Both present: every encoding of a scripts is read, a carnet comes from the branch.
+    lab.git(&["update-ref", "refs/remotes/origin/pilotage", &head]);
+    let ps_bom = "\u{feff}# spec: combat.md D1\n";
+    lab.commit(&[
+        (
+            "crates/x/src/lib.rs",
+            Some("// spec: combat.md §1 D1\n// PROVISIONAL(design #5)\n"),
+        ),
+        ("tools/bom.ps1", Some(ps_bom)),
+    ]);
+    // Windows-1252 (a byte that is not UTF-8) and UTF-16 with a byte order mark: untracked is read too.
+    let cp1252 = b"# \xe9t\xe9 spec: combat.md D1\n# spec: combat.md \xa7 D1\n$a = 1  # PROVISOIRE(conception #6)\n";
+    crate::sys::write(&lab.dir.join("tools/cp1252.ps1"), cp1252).unwrap();
+    let utf16: Vec<u8> = [0xFF, 0xFE]
+        .into_iter()
+        .chain(
+            "# spec: combat.md D1\r\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        )
+        .collect();
+    crate::sys::write(&lab.dir.join("tools/utf16.ps1"), &utf16).unwrap();
+    // A binary file without extension is skipped; one with an analysed extension is an error.
+    crate::sys::write(&lab.dir.join("data"), &[0, 159, 146, 150]).unwrap();
+    let m = load(&check(&lab)).unwrap();
+    let cites: Vec<(&str, usize)> = m.cites.iter().map(|c| (c.file.as_str(), c.line)).collect();
+    assert!(cites.contains(&("tools/bom.ps1", 1)), "{cites:?}");
+    assert!(cites.contains(&("tools/utf16.ps1", 1)), "{cites:?}");
+    assert!(cites.contains(&("crates/x/src/lib.rs", 1)), "{cites:?}");
+    assert!(m.cites.iter().all(|c| c.file != "data"));
+    let marks: Vec<(&str, u64)> = m
+        .marks
+        .iter()
+        .filter_map(|k| Some((k.file.as_str(), *k.issue.as_ref().ok()?)))
+        .collect();
+    assert!(
+        marks.contains(&("tools/cp1252.ps1", 6)) && marks.contains(&("crates/x/src/lib.rs", 5)),
+        "{marks:?}"
+    );
+    crate::sys::write(&lab.dir.join("tools/bin.ps1"), &[0, 1, 2, 255]).unwrap();
+    let err = load(&check(&lab)).unwrap_err();
+    assert!(
+        err.contains("tools/bin.ps1") && err.contains("binary content"),
+        "{err}"
+    );
 }

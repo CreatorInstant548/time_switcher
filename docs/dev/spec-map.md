@@ -12,7 +12,7 @@ cargo xtask spec-map report [--json] [--file <nom>] # code vers sections, sectio
 cargo xtask spec-map diff <révision>                # code qui cite les sections modifiées depuis la révision
 ```
 
-- `check` rend 0 s'il n'y a aucun écart, 1 sinon. Il **échoue** sur un renvoi vers un fichier, une section ou un identifiant qui n'existe pas, sur un nom court ambigu, sur un renvoi illisible, sur une marque `PROVISOIRE` sans numéro et sur une entrée périmée de `known_bad.txt` (§4). Sans la conception, ou sans la branche `origin/pilotage` (message « git fetch origin pilotage »), il échoue aussi : jamais de réussite silencieuse.
+- `check` rend 0 s'il n'y a aucun écart, 1 sinon. Il **échoue** sur un renvoi vers un fichier, une section ou un identifiant qui n'existe pas, sur un nom court ambigu, sur un renvoi illisible, sur une marque provisoire sans numéro, sur un élément de renvoi fait seulement de parenthèses, sur un type de fichier suivi ni analysé ni classé (§2), et sur une entrée de `known_bad.txt` périmée ou absente d'`origin/main` (§4). Sans la conception, ou sans la branche `origin/pilotage` (message « git fetch origin pilotage »), il échoue aussi : jamais de réussite silencieuse.
 - `report` écrit en Markdown, ou en JSON avec `--json` (§3). `--file` limite le rapport à un fichier de conception, désigné comme dans un renvoi. Le filtre par phase est reporté (H8).
 - `diff` compare la conception de la révision à celle de l'arbre de travail et liste, pour chaque section ou identifiant modifié, ajouté ou supprimé, le code qui le cite. Un renvoi à une section couvre ses sous-sections. Seul `docs/conception/` est comparé, pas les carnets. La révision est vérifiée d'abord (`git rev-parse --verify --end-of-options <rév>^{commit}`) ; une valeur qui commence par `-` est refusée, et aucun argument n'est passé à Git sans `--end-of-options` (H4).
 
@@ -20,14 +20,15 @@ Toute commande lit les fichiers par `Ctx::files()` (fichiers ordinaires de l'arb
 
 ## 2. Ce qui est lu
 
-**Code analysé.** Les fichiers de l'arbre, sauf `*.md` et tout `docs/` (archives comprises). Seuls les types connus sont lus ; les autres sont ignorés.
+**Code analysé.** Les fichiers de l'arbre, sauf `*.md` et tout `docs/` (archives comprises). Les types connus sont lus ; un type que ni le tableau ci-dessous ni la liste `NOT_SCANNED` de `refs.rs` (données, binaires, fichiers générés : `.lock`, `.json`, `.txt`, images, `.parquet`…) ne classe est un **écart** de `check`, pour qu'un nouveau type soit classé au lieu d'être sauté en silence.
 
 | Marque de commentaire | Types de fichier |
 |---|---|
-| `//`, `//!`, `///` | `.rs`, `.cs`, `.ron` (RON se commente par `//`, H7), `.ts`, `.tsx`, `.js`, `.mjs` |
-| `#` | `.py`, `.toml`, `.yml`, `.yaml`, `.sh`, `.ps1`, `.psm1`, `.gd`, fichiers sans extension |
+| `//`, `//!`, `///`, `/* … */` | `.rs`, `.cs`, `.ron` (RON se commente par `//`, H7), `.ts`, `.tsx`, `.js`, `.mjs`, shaders (`.glsl`, `.wgsl`, `.hlsl`, `.gdshader`, `.frag`, `.vert`, `.shader`) |
+| `#` | `.py`, `.toml`, `.yml`, `.yaml`, `.sh`, `.ps1`, `.psm1`, `.psd1`, `.gd`, fichiers sans extension |
+| `--` | `.sql` |
 
-Un renvoi est un commentaire **seul sur sa ligne** dont le texte commence par `spec:`. Une marque provisoire est un commentaire, seul ou en fin de ligne, dont le texte commence par `PROVISOIRE`. Un commentaire dans une chaîne de caractères n'en est pas un.
+Un renvoi est un commentaire de ligne **seul sur sa ligne** dont le texte commence par `spec:` (dans un commentaire de bloc `/* */`, c'est une forme refusée). Une marque provisoire est un commentaire, seul, en fin de ligne ou de bloc, qui contient le mot `PROVISIONAL` ou `PROVISOIRE` : elle doit porter un numéro de remontée (§3). Un commentaire dans une chaîne de caractères n'en est pas un, et une apostrophe au milieu d'un mot (`l'étape`) n'ouvre pas une chaîne. Le fichier est lu en UTF-8 (un BOM en tête est ignoré), en UTF-16 avec marque d'ordre des octets, ou, à défaut, avec remplacement des octets illisibles (un `.ps1` en Windows-1252) ; un fichier à octets nuls est sauté s'il n'a pas d'extension, et c'est un écart sinon.
 
 **Documents cibles.**
 - `docs/conception/**/*.md`, désignés par un nom relatif à `docs/conception/` (`domaines/combat.md`) ou par un **nom court** résolu de façon unique (`combat.md`, `securite.md`, `05-architecture.md`). Un nom court qui désigne deux fichiers est une erreur ; le nom relatif lève l'ambiguïté.
@@ -37,7 +38,7 @@ Un renvoi est un commentaire **seul sur sa ligne** dont le texte commence par `s
 
 **Points numérotés (AS-19).** La conception cite les points d'une liste comme des sous-sections : `05-architecture.md §2.3` est le point `3. ` de la section `## 2`. Un élément de liste numérotée de **premier niveau** (`N. ` en début de ligne, sans retrait), placé directement sous un titre de numéro `k` (un titre sans numéro compte pour le dernier titre numéroté), définit la section `§k.N`. Les lignes en retrait qui suivent appartiennent au point ; une liste en retrait n'en crée pas. Si le titre a déjà un vrai sous-titre `k.N`, le sous-titre prime, sans doublon. Si deux listes sous le même titre définissent le même `§k.N`, un renvoi vers `§k.N` est **ambigu** et `check` échoue. Un titre dont la clé porte un suffixe (`5.3 bis`) ne porte pas de points.
 
-**Identifiants.** Forme `[A-Z][A-Z0-9]*(-[A-Z0-9]+)*-?\d+` (`S8`, `M28`, `SEC0-35`, `AS-12`, `R-ARCH-04`, `T0-06`, `F3`). Un identifiant est **défini dans le fichier cible** s'il est la première cellule d'une ligne de tableau, ou en gras en tête d'élément de liste (`- **X**`, `- **X.**`, `- **X — titre**`, `- [ ] **X**`, `1. **X**`) ou de ligne. Si le renvoi donne une section avant l'identifiant, celui-ci doit être défini dans cette section ou dans une de ses sous-sections.
+**Identifiants.** Forme `[A-Z][A-Z0-9]*(-[A-Z0-9]+)*-?\d+` (`S8`, `M28`, `SEC0-35`, `AS-12`, `R-ARCH-04`, `T0-06`, `F3`). Un titre ou un identifiant placé dans un commentaire HTML `<!-- … -->` ne compte pas. Un identifiant est **défini dans le fichier cible** s'il est la première cellule d'une ligne de tableau, **ou la deuxième cellule quand elle n'est faite que de lui** (éventuellement entre `**` ou accents graves : tableau des décisions qui commence par la date, `| 30/10 | AS-33 | … |`), ou en gras en tête d'élément de liste (`- **X**`, `- **X.**`, `- **X — titre**`, `- [ ] **X**`, `1. **X**`) ou de ligne. Si le renvoi donne une section avant l'identifiant, celui-ci doit être défini dans cette section ou dans une de ses sous-sections.
 
 ## 3. Grammaire d'un renvoi
 
@@ -48,9 +49,9 @@ Un renvoi est un commentaire **seul sur sa ligne** dont le texte commence par `s
 - `;` sépare les fichiers ; `,` sépare les éléments d'un même fichier. Un segment sans nom de fichier reprend celui du précédent (`… ; §9.5 F1 à F10`).
 - Un élément est `§n(.m)*` avec `bis`, `ter` ou une lettre en option (`§3.10 b`), un identifiant, une plage `X à Y` de même préfixe (`SEC0-29 à 31`, `F1 à F10`), ou une section qui situe un identifiant (`§9.5 F1 à F10`, `§4.4 A19`).
 - Un nombre seul reprend le préfixe de l'identifiant précédent (`SEC0-03, 06`).
-- Un texte entre parenthèses est ignoré (`(révisé)`).
+- Un texte entre parenthèses est ignoré (`(révisé)`), mais un élément qui n'est fait que de parenthèses (`combat.md, (§3)`) est refusé : il serait ignoré sans être vérifié.
 - Un renvoi sans élément (`// spec: combat.md`) cite le fichier seul.
-- `PROVISOIRE(conception #<n>)` : marque une valeur provisoire, `<n>` étant la remontée `role:conception`.
+- `PROVISIONAL(design #<n>)` : marque une valeur provisoire, `<n>` étant la remontée `role:design` ; l'ancienne forme `PROVISOIRE(conception #<n>)` reste reconnue jusqu'à sa traduction. Le mot seul, sans cette forme, est une marque sans numéro, donc un écart.
 
 Les bornes d'une plage doivent être définies ; les identifiants définis entre les deux sont comptés comme cités.
 
@@ -62,7 +63,7 @@ Les bornes d'une plage doivent être définies ; les identifiants définis entre
 fichier | ligne | texte du renvoi | raison | #issue
 ```
 
-L'issue est une issue `role:dev`. `check` ne tolère un renvoi faux que s'il correspond exactement à une entrée (fichier, ligne et texte), et il échoue sur toute entrée **périmée** (renvoi corrigé, déplacé ou disparu) : la liste ne peut que diminuer, et elle doit être vide à la fin de la phase 0.
+L'issue est une issue `role:dev`. `check` ne tolère un renvoi faux que s'il correspond exactement à une entrée (fichier, ligne et texte), et il échoue sur toute entrée **périmée** (renvoi corrigé, déplacé ou disparu) : la liste ne peut que diminuer, et elle doit être vide à la fin de la phase 0. `check` refuse aussi toute entrée **absente de la version d'`origin/main`** (ligne comparée sans blancs de bord) : ajouter ou modifier une entrée ne passe plus que par la correction du renvoi. Il échoue s'il ne peut pas lire le fichier d'`origin/main`.
 
 ## 5. Schéma de `report --json`
 
