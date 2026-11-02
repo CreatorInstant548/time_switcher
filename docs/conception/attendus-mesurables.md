@@ -128,7 +128,7 @@ Mesure : `ts-data check`, dès la phase 0. Le registre M40d naît avec la PR qui
 
 ### 10.3 Décodage des instantanés (`ts_persist`, #45)
 
-Ces bornes portent sur des **octets et des nombres d'éléments en entrée** du décodeur, plus le pic de mémoire qu'ils entraînent (M41h). Les bornes des valeurs décodées (compteurs, dates, `DayOrigin`, durée du tick, dans `ts_kernel`) sont fixées par construction dans le code et ne relèvent pas de M41.
+Ces bornes portent sur des **octets et des nombres d'éléments en entrée** du décodeur, plus le pic de mémoire du décodage (M41h) et la mémoire de l'état décodé par le noyau (M41i). Les bornes des valeurs décodées (compteurs, dates, `DayOrigin`, durée du tick, dans `ts_kernel`) sont fixées par construction dans le code et ne relèvent pas de M41.
 
 | N° | Borne | Valeur de départ |
 |---|---|---|
@@ -139,15 +139,19 @@ Ces bornes portent sur des **octets et des nombres d'éléments en entrée** du 
 | M41e | Nombre de parts | 65 536 |
 | M41f | Nom d'une part | 128 octets |
 | M41g | Fenêtre `zstd` | 8 Mio |
-| M41h | **Pic de mémoire du décodage** (tampons d'entrée, parts décompressées et état décodé, au plus haut) | ≤ 2 Gio au départ ; après calibrage, ≤ 3 fois la taille en mémoire du monde au plafond **[à calibrer]** |
+| M41h | **Pic de mémoire du décodage entier** (tampons d'entrée, parts décompressées et état décodé par le noyau, au plus haut) | ≤ 2 Gio au départ ; après calibrage, ≤ 3 fois la taille en mémoire du monde au plafond **[à calibrer]** |
+| M41i | **Mémoire de l'état décodé** par le décodeur canonique du noyau (`ts_kernel`), comptée par un majorant : chaque valeur à sa taille en mémoire, chaque collection à sa capacité réservée, chaque allocation sur le tas comprise | 512 Mio au départ (décidé le 02/11, A16) **[à calibrer]** |
 
-Les valeurs de départ de M41a à M41g sont celles du code ; M41h n'existe encore que dans la conception. Elles laissent de la marge à un monde de 10 000 habitants, sur l'estimation haute de [revues/architecture.md](revues/architecture.md) §12.3 (120 Mo compressés et 400 Mo en mémoire, cette dernière prise comme majorant du décompressé) : l'enveloppe tient jusqu'à ≈ 21 000 habitants, le total décompressé jusqu'à ≈ 26 000. Avec ces bornes, le pic de mémoire est d'environ 1,5 Gio ([#50](https://github.com/CreatorInstant548/time_switcher/issues/50), m5), sous le plafond de départ de M41h.
+Les valeurs de départ de M41a à M41g sont celles du code. Elles laissent de la marge à un monde de 10 000 habitants, sur l'estimation haute de [revues/architecture.md](revues/architecture.md) §12.3 (120 Mo compressés et 400 Mo en mémoire, cette dernière prise comme majorant du décompressé) : l'enveloppe tient jusqu'à ≈ 21 000 habitants, le total décompressé jusqu'à ≈ 26 000. Avec ces bornes, l'étape des parts (enveloppe, parts décompressées, tampon de la part en cours, fenêtre `zstd`, manifeste) est majorée par 1 939 865 600 octets (≈ 1,81 Gio, `Limits::decode_peak_bound`), et non 1,5 Gio comme l'estimait [#50](https://github.com/CreatorInstant548/time_switcher/issues/50), m5.
+
+**Étape du noyau** (décidé le 02/11, arbitrage A16, remontée [#125](https://github.com/CreatorInstant548/time_switcher/issues/125)) : la taille en octets d'une part ne borne pas la mémoire de l'état décodé, car l'amplification dépend des types de l'état (×3,53 mesuré sur des composants d'un octet, bien plus pour un `Vec<Option<Large>>`). Le décodeur canonique du noyau tient donc son propre budget M41i et refuse l'instantané dès que le majorant le dépasse, avant d'allouer. M41h couvre alors **tout** le décodage : la mémoire encore tenue quand l'étape du noyau commence, plus M41i, doit rester sous M41h, et le code le vérifie à la compilation comme pour l'étape des parts. Si la somme dépasse, on libère d'abord ce qui n'est plus lu avant l'étape du noyau (parts déjà consommées, tampons de décompression, enveloppe si l'hôte n'en a plus besoin) ; on ne réduit M41i qu'ensuite, et jamais M41a à M41g. *Pourquoi : seul le décodeur connaît la taille en mémoire de ce qu'il construit ; une borne plus petite sur la part d'état devrait supposer un pire type d'état, que les règles peuvent toujours dépasser. 512 Mio couvrent l'estimation haute de 400 Mo en mémoire pour 10 000 habitants.*
 
 **Calibrage** (décidé) :
 - **Deux mesures distinctes**, en phase 1, sur un monde réel au **plafond de calcul** fixé pour un serveur ([population](domaines/population.md) §7.6) :
   - la **taille en octets** de l'instantané : enveloppe compressée, total décompressé (forme canonique), plus grande part et manifeste ;
   - la **taille en mémoire après décodage** et le **pic de mémoire** du décodage. Elles donnent le **taux d'amplification** (un `Option<Large>` à `None` tient en un octet d'entrée) et dimensionnent la mémoire de l'hôte. Les entrées du fuzzing qui amplifient le plus servent à vérifier ce taux.
 - **Bornes d'octets (M41a à M41d)** : chacune vaut 2 fois sa propre mesure en octets au plafond, arrondie à la puissance de 2 supérieure. Elles croissent donc avec la population. M41e à M41g ne changent que si le découpage en parts ou la compression change.
+- **Mémoire de l'état décodé (M41i)** : 2 fois la taille en mémoire de l'état décodé, mesurée au plafond, arrondie à la puissance de 2 supérieure, sous réserve de M41h.
 - **Pic de mémoire (M41h)** : il doit rester sous 3 fois la taille en mémoire du monde au plafond, sur le plus gros instantané attendu comme sur les pires entrées du fuzzing. S'il dépasse, on change d'abord le décodage (décoder part par part, libérer chaque tampon décompressé dès qu'il est lu). À défaut, on réduit la marge des bornes d'octets sous 2 fois la mesure, sans jamais descendre sous 1,25 fois. On ne relève M41h qu'en dernier recours, par une PR de conception. *Pourquoi : un petit fichier ne doit jamais pouvoir réclamer plusieurs gigaoctets à un serveur ou à la machine d'un joueur.*
 - **Mêmes bornes en solo et en ligne.** Les mondes y ont la même taille, et une sauvegarde solo reçue d'un autre joueur doit être décodée avec la même prudence (S24). Un hôte peut toujours passer des bornes plus strictes.
 
