@@ -19,9 +19,10 @@ const HOSTED_RUNNERS: [&str; 2] = ["ubuntu-24.04", "windows-2025"];
 /// `repository_dispatch`, `merge_group`, `pull_request_target`, `workflow_run`…) runs in the
 /// context of the base repository on text written by third parties, and no workflow needs one.
 const ALLOWED_EVENTS: [&str; 4] = ["push", "pull_request", "schedule", "workflow_dispatch"];
-/// Seul contexte sûr dans une interpolation `${{ }}`. Tout autre (`github`, `inputs`, `matrix`,
-/// `env`, `steps`, `needs`, les fonctions) n'est permis que sous `env:`, sous `with:` et dans
-/// `if:` ; un `run:` le reçoit par `env:` et une variable citée (SEC0-31).
+/// Only safe context in a `${{ }}` interpolation. Any other (`github`, `inputs`, `matrix`, `env`,
+/// `steps`, `needs`, the functions) is allowed only under `env:`, under `with:` and in `if:`, and
+/// in the closed forms of `concurrency:` and `jobs.<id>.outputs` (#17); a `run:` receives it
+/// through `env:` and a quoted variable (SEC0-31).
 const SAFE_CONTEXTS: [&str; 1] = ["runner."];
 /// Clés dont les valeurs descendantes peuvent porter une interpolation non sûre.
 const DATA_KEYS: [&str; 2] = ["env", "with"];
@@ -44,6 +45,64 @@ fn unsafe_interpolation(line: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b));
         !(plain && SAFE_CONTEXTS.iter().any(|c| expr.starts_with(c)))
     })
+}
+
+/// Contexts a `concurrency` value may read (#17). GitHub evaluates them, never a shell, and none
+/// holds text chosen by a third party: `github.head_ref` is not one of them. `github.sha` keeps a
+/// run of its own for each push on `main`: one group for them would drop the runs left pending.
+const CONCURRENCY_CONTEXTS: [&str; 5] = [
+    "github.workflow",
+    "github.ref",
+    "github.sha",
+    "github.event_name",
+    "github.event.pull_request.number",
+];
+
+/// The expressions `${{ ... }}` of a line, in lower case (GitHub ignores the case); `None` when
+/// one of them is not closed on the line.
+fn expressions(line: &str) -> Option<Vec<String>> {
+    line.split("${{")
+        .skip(1)
+        .map(|rest| rest.split_once("}}").map(|(e, _)| e.to_ascii_lowercase()))
+        .collect()
+}
+
+/// Every expression of the line alternates operands, each one of [`CONCURRENCY_CONTEXTS`] or a
+/// quoted plain word, and the operators `||`, `&&`, `==`, `!=`, separated by blanks
+/// (`github.event_name == 'push'`). Reads the whole line, so a comment that holds another
+/// expression is refused too.
+fn concurrency_interpolation(line: &str) -> bool {
+    let operand = |w: &str| {
+        CONCURRENCY_CONTEXTS.contains(&w)
+            || w.strip_prefix('\'')
+                .and_then(|w| w.strip_suffix('\''))
+                .is_some_and(ident)
+    };
+    expressions(line).is_some_and(|list| {
+        list.iter().all(|expr| {
+            let tokens: Vec<&str> = expr.split_whitespace().collect();
+            tokens.len() % 2 == 1
+                && tokens.iter().enumerate().all(|(i, w)| match i % 2 {
+                    0 => operand(w),
+                    _ => ["||", "&&", "==", "!="].contains(w),
+                })
+        })
+    })
+}
+
+/// A value of `jobs.<id>.outputs` is exactly one `${{ steps.<id>.outputs.<name> }}`, and the line
+/// holds no other expression (#17). Its reader takes it through `env:` or `if:` like any other.
+fn job_output_interpolation(line: &str, value: &str) -> bool {
+    let inner = value
+        .strip_prefix("${{")
+        .and_then(|v| v.strip_suffix("}}"))
+        .map(|v| v.trim_matches(' ').to_ascii_lowercase());
+    let step_output = inner.is_some_and(|v| {
+        v.strip_prefix("steps.")
+            .and_then(|v| v.split_once(".outputs."))
+            .is_some_and(|(id, name)| ident(id) && ident(name))
+    });
+    step_output && expressions(line).is_some_and(|list| list.len() == 1)
 }
 
 fn indent(line: &str) -> usize {
@@ -579,9 +638,37 @@ pub fn check_workflow(text: &str) -> Vec<String> {
                 .iter()
                 .any(|lv| DATA_KEYS.contains(&lv.key.as_str()) && lv.col < l.col);
         let data = data && key != "run";
-        if unsafe_interpolation(raw) && !data {
+        // Two more places, evaluated by GitHub and never by a shell, each with its closed form
+        // (#17): the keys of a `concurrency:` of the workflow or of a job, and a job output.
+        let expression = raw.contains("${{");
+        let path: Vec<&str> = match expression {
+            true => stack.iter().map(|lv| lv.key.as_str()).collect(),
+            false => Vec::new(),
+        };
+        let concurrency = !l.item
+            && matches!(key, "group" | "cancel-in-progress")
+            && matches!(
+                path.as_slice(),
+                ["concurrency"] | ["jobs", _, "concurrency"]
+            );
+        let job_output = !l.item && matches!(path.as_slice(), ["jobs", _, "outputs"]);
+        if concurrency {
+            if !concurrency_interpolation(raw) {
+                errors.push(format!(
+                    "ligne {n} : concurrency expression other than {CONCURRENCY_CONTEXTS:?}, \
+                     operators and quoted words (#17)"
+                ));
+            }
+        } else if job_output {
+            if !job_output_interpolation(raw, v) {
+                errors.push(format!(
+                    "ligne {n} : a job output is exactly `${{{{ steps.<id>.outputs.<name> }}}}` (#17)"
+                ));
+            }
+        } else if unsafe_interpolation(raw) && !data {
             errors.push(format!(
-                "ligne {n} : interpolation non sûre hors de env:, with: et if: (SEC0-31)"
+                "ligne {n} : interpolation non sûre hors de env:, with:, if: et des formes \
+                 fermées de concurrency et de jobs.<id>.outputs (SEC0-31)"
             ));
         }
         let hidden = ["uses", "run"].iter().any(|k| {
@@ -1256,6 +1343,111 @@ mod tests {
             "      run: |\n        echo \"$TITLE\"\n        cargo",
         );
         assert_eq!(check_workflow(&flush), Vec::<String>::new());
+    }
+
+    /// #17: `concurrency` and job outputs take an expression, in a closed form only.
+    #[test]
+    fn concurrency_and_job_outputs_are_closed_forms() {
+        let top = |group: &str, cancel: &str| {
+            good().replace(
+                "jobs:\n",
+                &format!("concurrency:\n  group: {group}\n  cancel-in-progress: {cancel}\njobs:\n"),
+            )
+        };
+        let in_job = |group: &str| {
+            good().replace(
+                "    steps:\n",
+                &format!("    concurrency:\n      group: {group}\n    steps:\n"),
+            )
+        };
+        let output = |value: &str| {
+            good().replace(
+                "    steps:\n",
+                &format!("    outputs:\n      rust: {value}\n    steps:\n"),
+            )
+        };
+        let allowed =
+            "${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}";
+        let cancel = "${{ github.event_name == 'pull_request' }}";
+        for ok in [
+            top(allowed, cancel),
+            top("ci-${{ github.ref }}", "true"),
+            top("${{ GITHUB.REF }}", "false # comment"),
+            in_job(allowed),
+            output("${{ steps.zones.outputs.rust }}"),
+            output("${{steps.a-b.outputs.c_d}} # the zones"),
+        ] {
+            assert_eq!(check_workflow(&ok), Vec::<String>::new(), "{ok}");
+        }
+        for (bad, why) in [
+            (top("${{ github.head_ref }}", "true"), "concurrency"),
+            (
+                top("${{ github.event.pull_request.title }}", "true"),
+                "concurrency",
+            ),
+            (top("${{ github.ref", "true"), "concurrency"),
+            (top("${{ }}", "true"), "concurrency"),
+            (top("${{ toJSON(github) }}", "true"), "concurrency"),
+            (
+                top("${{ github.ref }}", "${{ github.ref == github.actor }}"),
+                "concurrency",
+            ),
+            (top("${{ github.ref == 'a b' }}", "true"), "concurrency"),
+            (top("${{ github.ref github.sha }}", "true"), "concurrency"),
+            (top("${{ || }}", "true"), "concurrency"),
+            (top("${{ github.ref == }}", "true"), "concurrency"),
+            (top("${{ 'a' 'b' }}", "true"), "concurrency"),
+            (top("${{ runner.os }}", "true"), "concurrency"),
+            (top("x # ${{ github.actor }}", "true"), "concurrency"),
+            (
+                top("${{ github.ref }} # ${{ github.actor }}", "true"),
+                "concurrency",
+            ),
+            (in_job("${{ inputs.group }}"), "concurrency"),
+            (output("${{ github.head_ref }}"), "job output"),
+            (output("${{ steps.a.conclusion }}"), "job output"),
+            (output("${{ steps.a.outputs.b }}-x"), "job output"),
+            (output("x-${{ steps.a.outputs.b }}"), "job output"),
+            (output("${{ steps.a.outputs.b.c }}"), "job output"),
+            (
+                output("${{ steps.a.outputs.b || github.ref }}"),
+                "job output",
+            ),
+            (
+                output("${{ steps.a.outputs.b }} # ${{ github.actor }}"),
+                "job output",
+            ),
+        ] {
+            let errors = check_workflow(&bad);
+            assert!(errors.iter().any(|e| e.contains(why)), "{bad}: {errors:?}");
+        }
+        // Elsewhere the rule does not move: a key named like these, or a block value, is refused.
+        for bad in [
+            good().replace("    steps:\n", "    group: ${{ github.ref }}\n    steps:\n"),
+            good().replace(
+                "    steps:\n",
+                "    concurrency: ${{ github.ref }}\n    steps:\n",
+            ),
+            good().replace(
+                "jobs:\n",
+                "concurrency:\n  group: |\n    ${{ github.actor }}\njobs:\n",
+            ),
+            good().replace(
+                "    steps:\n",
+                "    outputs:\n      rust: >\n        ${{ github.actor }}\n    steps:\n",
+            ),
+            good().replace(
+                "    steps:\n",
+                "    outputs:\n      rust:\n        deep: ${{ steps.a.outputs.b }}\n    steps:\n",
+            ),
+        ] {
+            assert!(
+                check_workflow(&bad)
+                    .iter()
+                    .any(|e| e.contains("interpolation non sûre")),
+                "{bad}"
+            );
+        }
     }
 
     /// `good()` with its trigger block replaced by `on`.
