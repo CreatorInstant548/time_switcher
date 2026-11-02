@@ -122,7 +122,7 @@ fn runner_refusal(value: &str) -> Option<String> {
     let allowed = literal_scalar(value).is_some_and(|v| HOSTED_RUNNERS.contains(&v));
     (!allowed).then(|| {
         format!(
-            "runs-on `{value}` is not one of the GitHub-hosted images {HOSTED_RUNNERS:?} \
+            "runs-on {value:?} is not one of the GitHub-hosted images {HOSTED_RUNNERS:?} \
              (self-hosted runners, labels, lists, groups and expressions are refused, #77)"
         )
     })
@@ -1032,6 +1032,13 @@ mod tests {
 
     /// `good()` with the job's `runs-on: ubuntu-24.04` line replaced by `runs_on`.
     fn with_runs_on(runs_on: &str) -> String {
+        assert!(
+            good().contains(
+                "    runs-on: ubuntu-24.04
+"
+            ),
+            "fixture drifted"
+        );
         good().replacen("    runs-on: ubuntu-24.04\n", runs_on, 1)
     }
 
@@ -1147,7 +1154,7 @@ mod tests {
         }
         // The refusal names the value.
         let errors = check_workflow(&with_runs_on("    runs-on: self-hosted\n"));
-        assert!(errors.iter().any(|e| e.contains("runs-on `self-hosted`")));
+        assert!(errors.iter().any(|e| e.contains("runs-on \"self-hosted\"")));
         // A second job on a self-hosted runner, a runner outside any job, a doubled key.
         let other = format!("{}  b:\n    runs-on: self-hosted\n    steps: []\n", good());
         assert!(!check_workflow(&other).is_empty());
