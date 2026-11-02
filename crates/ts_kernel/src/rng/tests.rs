@@ -332,3 +332,106 @@ fn block_cost_r5() {
 
 /// Number of blocks of the R5 measurement.
 const BLOCK_COST_ITERATIONS: u64 = 10_000_000;
+
+const HIT: DrawSite = DrawSite::new(Stream::Combat, 3, "test.hit");
+
+/// #26 m1, m5: a site draws exactly the raw triple of its stream and purpose, so moving a
+/// call to a site changes no value; its blocks and its iterator follow the key stream.
+#[test]
+fn sites_draw_the_raw_triple() {
+    let keys = keys();
+    let key = keys.get(Stream::Combat);
+    for i in 0..64_u64 {
+        let s = sid(i);
+        assert_eq!(keys.draw(HIT, s, i * 7), draw(key, s, i * 7, 3));
+        for block in [0, 1, u16::MAX] {
+            assert_eq!(
+                keys.draw_block(HIT, s, i, block),
+                draw_block_at(key, s, i, 3, block)
+            );
+        }
+    }
+    let first: Vec<u64> = keys.draws(HIT, sid(9), 4).take(24).collect();
+    let mut expected = Vec::new();
+    for block in 0..3 {
+        expected.extend(draw_block_at(key, sid(9), 4, 3, block));
+    }
+    assert_eq!(first, expected);
+    assert_eq!(first[0], keys.draw(HIT, sid(9), 4));
+    assert_eq!(
+        (HIT.stream(), HIT.purpose(), HIT.name()),
+        (Stream::Combat, 3, "test.hit")
+    );
+}
+
+/// #26 m5: the iterator stops after the last block, 2^19 values, and stays stopped.
+#[test]
+fn draws_end_after_the_last_block() {
+    let keys = keys();
+    let mut it = keys.draws(HIT, sid(1), 0);
+    let last = it.by_ref().nth((1 << 19) - 1);
+    assert_eq!(
+        last,
+        Some(draw_block_at(keys.get(Stream::Combat), sid(1), 0, 3, u16::MAX)[7])
+    );
+    assert_eq!(it.next(), None);
+    assert_eq!(it.next(), None);
+}
+
+/// #26 m6: the world subject is the last map index, out of reach of the allocator.
+#[test]
+fn world_subject_is_the_last_map_index() {
+    assert_eq!(Some(WORLD_SUBJECT), StableId::map(StableId::MAX_INDEX));
+    assert!(WORLD_SUBJECT.is_map());
+}
+
+/// #26 m2: an artifact seed gives the same draws as a world key of the same bytes on the
+/// artifact streams, and nothing else.
+#[test]
+fn artifact_keys_match_the_world_keys() {
+    let bytes = *b"time_switcher_t5";
+    let world = StreamKeys::derive(&WorldKey::from_bytes(bytes));
+    let artifact = ArtifactKeys::derive(&ArtifactSeed::from_bytes(bytes));
+    for (i, stream) in [
+        ArtifactStream::CityGen,
+        ArtifactStream::PopGen,
+        ArtifactStream::Furnish,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let site = ArtifactSite::new(stream, 2, "test.artifact");
+        assert_eq!(site.site().stream(), stream.stream());
+        let i = i as u64;
+        assert_eq!(
+            artifact.draw(site, sid(i), i),
+            world.draw(site.site(), sid(i), i)
+        );
+        assert_eq!(
+            artifact.draw_block(site, sid(i), i, 5),
+            world.draw_block(site.site(), sid(i), i, 5)
+        );
+        assert!(
+            artifact
+                .draws(site, sid(i), i)
+                .take(9)
+                .eq(world.draws(site.site(), sid(i), i).take(9))
+        );
+    }
+    assert_eq!(format!("{artifact:?}"), "ArtifactKeys(..)");
+    assert_eq!(
+        format!("{:?}", ArtifactSeed::from_bytes(bytes)),
+        "ArtifactSeed(..)"
+    );
+}
+
+/// #26 m3: a host refuses a constant key, the zero key included.
+#[test]
+fn checked_key_refuses_constant_bytes() {
+    assert!(WorldKey::checked([0; 16]).is_none());
+    assert!(WorldKey::checked([0xff; 16]).is_none());
+    let mut bytes = [7; 16];
+    bytes[15] = 8;
+    let key = WorldKey::checked(bytes).map(|k| k.0);
+    assert_eq!(key, Some(bytes));
+}

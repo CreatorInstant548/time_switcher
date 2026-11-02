@@ -5,13 +5,15 @@
 //! town.
 
 use bevy_tasks::ComputeTaskPool;
-use ts_kernel::rng::{Stream, StreamKeys, draw};
+use ts_kernel::rng::{DrawSite, Stream, StreamKeys};
 use ts_kernel::{StableId, StateHash, StateWriter};
 
 /// Draw purposes of the generator.
-const KIND: u32 = 1;
-const MEMBERS: u32 = 2;
-const WORKPLACE: u32 = 3;
+/// Draw sites of the generator: kind of each parcel (`CityGen`), size and workplaces of each
+/// household (`PopGen`).
+pub const KIND: DrawSite = DrawSite::new(Stream::CityGen, 1, "toy.parcel_kind");
+pub const MEMBERS: DrawSite = DrawSite::new(Stream::PopGen, 2, "toy.household_members");
+pub const WORKPLACE: DrawSite = DrawSite::new(Stream::PopGen, 3, "toy.workplace");
 
 /// Size of the toy town. **Test parameters**, not game values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,11 +145,9 @@ where
 /// work on a drawn workplace (`PopGen`). Same town for [`Execution::Inline`] and
 /// [`Execution::Pool`], with any number of threads.
 pub fn generate(spec: &TownSpec, keys: &StreamKeys, exec: Execution) -> Town {
-    let city = keys.get(Stream::CityGen);
-    let pop = keys.get(Stream::PopGen);
     let parcels = in_chunks(spec, exec, |a, b| {
         (a..b)
-            .map(|i| match draw(city, parcel_id(i), 0, KIND) % 3 {
+            .map(|i| match keys.draw(KIND, parcel_id(i), 0) % 3 {
                 0 => ParcelKind::Work,
                 _ => ParcelKind::Home,
             })
@@ -166,9 +166,9 @@ pub fn generate(spec: &TownSpec, keys: &StreamKeys, exec: Execution) -> Town {
             let mut out = Vec::new();
             for home in (a..b).filter(|&i| parcels[i as usize] == ParcelKind::Home) {
                 let id = parcel_id(home);
-                let members = 1 + draw(pop, id, 0, MEMBERS) % 4;
+                let members = 1 + keys.draw(MEMBERS, id, 0) % 4;
                 for m in 1..=members {
-                    let pick = draw(pop, id, m, WORKPLACE) % works.len() as u64;
+                    let pick = keys.draw(WORKPLACE, id, m) % works.len() as u64;
                     out.push(Resident {
                         home,
                         work: works[pick as usize],

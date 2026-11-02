@@ -8,6 +8,7 @@ use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule};
 use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::world::World;
 
+use crate::rng::DrawSite;
 use crate::state::StateEntry;
 use crate::{Phase, StateDecode, StateHash};
 
@@ -62,6 +63,14 @@ pub trait Plugin {
     /// that it is built first. They are checked before any [`Plugin::build`] runs, so a
     /// wrong order is a [`crate::BuildError`], never a panic in `build`.
     fn dependencies(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    // spec: carnet architecture-securite.md §9.9 K3
+    /// Draw sites of the plugin's systems. A system draws only at a site listed here, and
+    /// [`crate::Sim::build`] refuses two sites of the rules, active or not, with the same
+    /// stream and purpose ([`crate::BuildError::DrawSiteConflict`]).
+    fn draw_sites(&self) -> &'static [DrawSite] {
         &[]
     }
 

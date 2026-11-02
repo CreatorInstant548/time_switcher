@@ -423,3 +423,56 @@ fn thread_pool_is_fixed_per_process() {
         }
     );
 }
+
+struct Drawing(&'static str, &'static [DrawSite]);
+
+impl Plugin for Drawing {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    fn disableable(&self) -> bool {
+        true
+    }
+    fn draw_sites(&self) -> &'static [DrawSite] {
+        self.1
+    }
+    fn build(&self, _: &mut SimBuilder) {}
+}
+
+const LOCK: DrawSite = DrawSite::new(Stream::CityServer, 1, "city.lock");
+const CAMERA: DrawSite = DrawSite::new(Stream::CityServer, 1, "city.camera");
+const HIT: DrawSite = DrawSite::new(Stream::Combat, 1, "combat.hit");
+
+/// #26 m1: two sites of the rules with the same stream and purpose fail the build, even
+/// when one plugin is disabled; the same purpose in another stream is allowed.
+#[test]
+fn draw_sites_are_unique_in_the_rules() {
+    let ok: Vec<Box<dyn Plugin>> = vec![
+        Box::new(Drawing("locks", &[LOCK])),
+        Box::new(Drawing("combat", &[HIT])),
+    ];
+    assert!(build(&ok).is_ok());
+    let conflict = BuildError::DrawSiteConflict {
+        first: ("locks", LOCK),
+        second: ("cameras", CAMERA),
+    };
+    let rules: Vec<Box<dyn Plugin>> = vec![
+        Box::new(Drawing("locks", &[LOCK])),
+        Box::new(Drawing("cameras", &[HIT, CAMERA])),
+    ];
+    assert_eq!(build(&rules).unwrap_err(), conflict);
+    assert_eq!(build_with(&["cameras"], &rules).unwrap_err(), conflict);
+    assert_eq!(
+        conflict.to_string(),
+        "draw site city.camera of plugin cameras reuses stream CityServer and purpose 1 of \
+         site city.lock of plugin locks"
+    );
+    let twice: Vec<Box<dyn Plugin>> = vec![Box::new(Drawing("locks", &[LOCK, LOCK]))];
+    assert!(matches!(
+        build(&twice),
+        Err(BuildError::DrawSiteConflict { .. })
+    ));
+}

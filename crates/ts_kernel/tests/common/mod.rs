@@ -10,7 +10,7 @@ use std::sync::{Mutex, PoisonError};
 use std::thread::ThreadId;
 
 use bevy_ecs::prelude::{Commands, Component, Entity, Has, Query, Res, ResMut, Resource, With};
-use ts_kernel::rng::{Stream, WorldKey, draw, draw_block};
+use ts_kernel::rng::{DrawSite, Stream, WorldKey};
 use ts_kernel::{
     BuildError, CanonicalError, LodComplete, MemorySnapshot, PAR_ITER_FROM, ParallelPhases, Phase,
     Plugin, RestoreError, Sim, SimBuilder, SimClock, SimConfig, SnapshotScope, StableEntity,
@@ -22,6 +22,10 @@ use ts_kernel::{
 pub const EXPECTED: &str = "bbe5dc0e03104235bfeb179e14678e8179c46a6780558e31c733e727af58214e";
 /// Number of ticks.
 pub const TICKS: usize = 1000;
+/// Draw sites of the test worlds.
+const ACT: DrawSite = DrawSite::new(Stream::Ai, 3, "test.act");
+const CLIMB: DrawSite = DrawSite::new(Stream::Ai, 0, "test.climb");
+const TOGGLE: DrawSite = DrawSite::new(Stream::Ai, 1, "test.toggle");
 /// Number of entities.
 const ENTITIES: usize = 2000;
 
@@ -88,7 +92,7 @@ fn act(
     let slot = clock.now().as_millis().unsigned_abs();
     let ids = &roster.0;
     q.par_iter_mut().for_each(|(s, mut p, mut h)| {
-        let block = draw_block(streams.get(Stream::Ai), s.id(), slot, 3);
+        let block = streams.draw_block(ACT, s.id(), slot, 0);
         p.0 += (block[0] % 11) as i64 - 5;
         h.0 = h.0 * 0.75 + p.0 as f64 * 0.125;
         let msgs = (0..2).map(|i| Msg {
@@ -248,9 +252,9 @@ fn climb(
     mut q: Query<(&StableEntity, &mut Level), With<LodComplete>>,
 ) {
     let slot = clock.now().as_millis().unsigned_abs();
-    let key = streams.get(Stream::Ai);
+    let keys = &**streams;
     par_for_each_mut(&mut q, |(s, mut level)| {
-        level.0 += (draw(key, s.id(), slot, 0) % 7) as i64 - 3;
+        level.0 += (keys.draw(CLIMB, s.id(), slot) % 7) as i64 - 3;
     });
     let mut seen = placement.0.lock().unwrap_or_else(PoisonError::into_inner);
     seen.push(std::thread::current().id());
@@ -274,7 +278,7 @@ fn toggle(
     let tick = clock.now().as_millis().unsigned_abs() / clock.tick_millis().unsigned_abs();
     let target = (tick * 5) % (SWITCHING_ENTITIES + 1);
     for (e, s, complete) in &q {
-        let wanted = draw(streams.get(Stream::Ai), s.id(), tick, 1) % SWITCHING_ENTITIES < target;
+        let wanted = streams.draw(TOGGLE, s.id(), tick) % SWITCHING_ENTITIES < target;
         if wanted && !complete {
             commands.entity(e).insert(LodComplete);
         } else if !wanted && complete {

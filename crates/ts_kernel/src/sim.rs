@@ -3,7 +3,7 @@
 use core::fmt;
 use core::num::NonZeroU16;
 use core::ops::{Deref, DerefMut};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bevy_ecs::component::{Component, ComponentId};
 use bevy_ecs::entity::Entity;
@@ -14,7 +14,7 @@ use bevy_ecs::world::World;
 use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 
 use crate::phase::{ExecutorSwitch, phase_schedule};
-use crate::rng::{StreamKeys, WorldKey};
+use crate::rng::{DrawSite, Stream, StreamKeys, WorldKey};
 use crate::state::{
     StableIndex, StateEntry, StateWriter, hash_world, stable_entities, undeclared_components,
 };
@@ -305,6 +305,13 @@ pub enum BuildError {
         /// Required plugin, placed after it.
         dependency: &'static str,
     },
+    /// Two draw sites of the rules share a stream and a purpose (#26 m1).
+    DrawSiteConflict {
+        /// Site listed first, and its plugin.
+        first: (&'static str, DrawSite),
+        /// Site listed next, with the same stream and purpose, and its plugin.
+        second: (&'static str, DrawSite),
+    },
     /// A plugin switched off ambiguity detection (L7): `ambiguous_with_all` on a system of
     /// `phase`, or, with `phase: None`, `allow_ambiguous_component` or
     /// `allow_ambiguous_resource` on the world.
@@ -346,6 +353,16 @@ impl fmt::Display for BuildError {
                     "plugin {plugin} depends on {dependency}, which comes after it"
                 )
             }
+            Self::DrawSiteConflict { first, second } => write!(
+                f,
+                "draw site {} of plugin {} reuses stream {:?} and purpose {} of site {} of plugin {}",
+                second.1.name(),
+                second.0,
+                second.1.stream(),
+                second.1.purpose(),
+                first.1.name(),
+                first.0
+            ),
             Self::AmbiguityOptOut { phase: Some(phase) } => {
                 write!(
                     f,
@@ -458,6 +475,7 @@ fn active_plugins<'a>(
         .filter(|p| !cfg.disabled_plugins.contains(&p.name()))
         .map(|p| &**p)
         .collect();
+    check_draw_sites(rules)?;
     // Dependencies are checked before any `build` runs (T6a review m5).
     for (i, p) in active.iter().enumerate() {
         for &dependency in p.dependencies() {
@@ -475,6 +493,22 @@ fn active_plugins<'a>(
         }
     }
     Ok(active)
+}
+
+// spec: carnet architecture-securite.md §9.9 K3
+/// Refuses two draw sites of `rules` (active or not) with the same stream and purpose.
+fn check_draw_sites(rules: &[Box<dyn Plugin>]) -> Result<(), BuildError> {
+    let mut seen: BTreeMap<(Stream, u32), (&'static str, DrawSite)> = BTreeMap::new();
+    for p in rules {
+        for &site in p.draw_sites() {
+            let second = (p.name(), site);
+            if let Some(&first) = seen.get(&(site.stream(), site.purpose())) {
+                return Err(BuildError::DrawSiteConflict { first, second });
+            }
+            seen.insert((site.stream(), site.purpose()), second);
+        }
+    }
+    Ok(())
 }
 
 impl Sim {

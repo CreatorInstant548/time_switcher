@@ -8,7 +8,10 @@ mod common;
 
 use bevy_ecs::prelude::{Component, Query, Res};
 use common::{forge, stored};
-use ts_kernel::rng::{Stream, WorldKey, draw};
+use ts_kernel::rng::{DrawSite, Stream, WorldKey};
+
+const WALK: DrawSite = DrawSite::new(Stream::Population, 9, "test.walk");
+const SETTLE: DrawSite = DrawSite::new(Stream::Population, 0, "test.settle");
 use ts_kernel::{
     CanonicalError, CanonicalLimits, MemorySnapshot, Money, Phase, Plugin, Sim, SimBuilder,
     SimConfig, SnapshotScope, StableEntity, StableId, StableIds, StateDecode, StateHash,
@@ -67,7 +70,7 @@ impl StateDecode for Life {
 
 fn walk(streams: Res<WorldStreams>, mut q: Query<(&StableEntity, &mut Pos, &mut Life)>) {
     for (s, mut p, mut l) in &mut q {
-        let r = draw(streams.get(Stream::Population), s.id(), 0, 9);
+        let r = streams.draw(WALK, s.id(), 0);
         p.0 += i64::try_from(r % 201).unwrap() - 100;
         l.hunger = (l.hunger + 0.01).min(1.0);
     }
@@ -91,7 +94,7 @@ impl Plugin for Town {
         for i in 0..self.0 {
             let id = world.resource_mut::<StableIds>().allocate().unwrap();
             let streams = world.resource::<WorldStreams>();
-            let d = |slot| draw(streams.get(Stream::Population), id, slot, 0);
+            let d = |slot| streams.draw(SETTLE, id, slot);
             let pos = Pos(
                 i64::try_from(d(1) % 1_000_000).unwrap(),
                 i64::try_from(d(2) % 1_000_000).unwrap(),
