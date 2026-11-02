@@ -83,7 +83,9 @@ jobs:
       pull-requests: read
     steps:
       # fetch-depth: 0 brings origin/main and origin/pilotage (J4); verify-main skips git fetch
-      # in CI mode, so the job keeps no Git credentials (m2 of #52).
+      # origin in CI mode, so the job keeps no Git credentials (m2 of #52). Only an approval
+      # carried over by AS-55 fetches pull/<n>/head, anonymously (public repository), never for
+      # a PR from a fork (X4).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
