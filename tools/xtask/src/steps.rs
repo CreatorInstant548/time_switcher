@@ -209,8 +209,9 @@ pub fn clippy(cx: &Ctx) -> Outcome {
     if !tri!(run_live(&cx.root, &cargo(), &args)) {
         return Outcome::Fail("cargo clippy (profil public) a échoué".to_owned());
     }
-    // Crates de cœur avec chaque fonctionnalité de développement, l'une après l'autre (I2) :
-    // le code sous #[cfg(feature = "dev-…")] est vu aussi. Jamais --all-features (E3).
+    // Core crates with each development feature, one after the other (I2): the code under
+    // #[cfg(feature = "dev-…")] is seen too, in the kernel and in every core crate that relays
+    // the feature (#36). Never --all-features (E3).
     let core: Vec<&str> = meta
         .packages
         .iter()
@@ -218,7 +219,7 @@ pub fn clippy(cx: &Ctx) -> Outcome {
         .filter(|n| is_core(n))
         .collect();
     for f in DEV_FEATURES {
-        let args = dev_clippy_args(&core, f);
+        let args = dev_clippy_args(&core, &relays(meta, &core, f), f);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         if !tri!(run_live(&cx.root, &cargo(), &args)) {
             return Outcome::Fail(format!("cargo clippy (fonctionnalité {f}) a échoué"));
@@ -399,8 +400,31 @@ fn is_core(name: &str) -> bool {
     !TOOLS.contains(&name) && !HOSTS.contains(&name)
 }
 
-/// `cargo clippy` des crates de cœur avec une fonctionnalité de développement de `ts_kernel`.
-fn dev_clippy_args(core: &[&str], feature: &str) -> Vec<String> {
+/// The core crates other than `ts_kernel` that declare the development feature `feature`, a relay
+/// of the kernel's (`dev-commands = ["ts_kernel/dev-commands"]`, #36).
+fn relays<'a>(meta: &Metadata, core: &[&'a str], feature: &str) -> Vec<&'a str> {
+    core.iter()
+        .copied()
+        .filter(|c| *c != "ts_kernel")
+        .filter(|c| {
+            meta.package(c)
+                .is_some_and(|p| p.features.contains_key(feature))
+        })
+        .collect()
+}
+
+/// `--features` value that turns `feature` on in the kernel and in each relaying crate.
+fn dev_features_value(relays: &[&str], feature: &str) -> String {
+    std::iter::once("ts_kernel")
+        .chain(relays.iter().copied())
+        .map(|c| format!("{c}/{feature}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// `cargo clippy` of the core crates with a development feature of `ts_kernel`, and the same
+/// feature of the crates that relay it (#36).
+fn dev_clippy_args(core: &[&str], relays: &[&str], feature: &str) -> Vec<String> {
     let mut args = vec![
         "clippy".to_owned(),
         "--locked".to_owned(),
@@ -409,8 +433,20 @@ fn dev_clippy_args(core: &[&str], feature: &str) -> Vec<String> {
     for c in core {
         args.extend(["-p".to_owned(), (*c).to_owned()]);
     }
-    args.extend(["--features".to_owned(), format!("ts_kernel/{feature}")]);
+    args.extend(["--features".to_owned(), dev_features_value(relays, feature)]);
     args.extend(["--", "-D", "warnings"].map(str::to_owned));
+    args
+}
+
+/// `cargo test` of the crates that relay a development feature, with it (#36): their gated unit
+/// and doc tests. The kernel's own gated code is also compiled under `cfg(test)`, and its four
+/// extra test runs would cost more than they find (decided).
+fn dev_test_args(relays: &[&str], feature: &str) -> Vec<String> {
+    let mut args = vec!["test".to_owned(), "--locked".to_owned()];
+    for c in relays {
+        args.extend(["-p".to_owned(), (*c).to_owned()]);
+    }
+    args.extend(["--features".to_owned(), dev_features_value(relays, feature)]);
     args
 }
 
@@ -441,7 +477,32 @@ pub fn test(cx: &Ctx) -> Outcome {
     } else {
         args.push("--workspace");
     }
-    status(tri!(run_live(&cx.root, &cargo(), &args)), "cargo test")
+    if !tri!(run_live(&cx.root, &cargo(), &args)) {
+        return Outcome::Fail("cargo test failed".to_owned());
+    }
+    // #36: the crates that relay a development feature, tested with it, when they are tested.
+    let meta = tri!(cx.meta());
+    let core: Vec<&str> = meta
+        .packages
+        .iter()
+        .map(|p| p.name.as_str())
+        .filter(|n| is_core(n))
+        .collect();
+    let tested = |c: &&str| args.contains(&"--workspace") || args.contains(c);
+    let mut passes = 0;
+    for f in DEV_FEATURES {
+        let relays: Vec<&str> = relays(meta, &core, f).into_iter().filter(tested).collect();
+        if relays.is_empty() {
+            continue;
+        }
+        let extra = dev_test_args(&relays, f);
+        let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
+        if !tri!(run_live(&cx.root, &cargo(), &extra)) {
+            return Outcome::Fail(format!("cargo test (feature {f}) failed"));
+        }
+        passes += 1;
+    }
+    Outcome::Ok(format!("cargo test, {passes} development feature pass(es)"))
 }
 
 pub(crate) fn lock_value(lock: &str, key: &str) -> Result<String, String> {
@@ -1103,11 +1164,17 @@ mod tests {
     #[test]
     fn dev_feature_clippy_passes() {
         for f in crate::manifests::DEV_FEATURES {
-            let args = super::dev_clippy_args(&["ts_kernel", "ts_model"], f);
-            let feature = format!("ts_kernel/{f}");
+            let args = super::dev_clippy_args(&["ts_kernel", "ts_model"], &["ts_model"], f);
+            // #36: the relay of ts_model is turned on with the kernel's feature.
+            let feature = format!("ts_kernel/{f},ts_model/{f}");
             assert!(
                 args.windows(2)
                     .any(|w| w[0] == "--features" && w[1] == feature)
+            );
+            let test = super::dev_test_args(&["ts_model"], f);
+            assert_eq!(
+                test.join(" "),
+                format!("test --locked -p ts_model --features {feature}")
             );
             assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "ts_model"));
             assert!(
