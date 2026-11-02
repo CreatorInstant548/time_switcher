@@ -751,7 +751,7 @@ mod tests {
                 "gh api --paginate repos/o/r/commits/",
                 json!({"check_runs": [check]}).to_string(),
             ),
-            ("gh api repos/o/r/actions/runs", wfr.to_string()),
+            ("gh api --paginate repos/o/r/actions/runs", wfr.to_string()),
             (
                 "gh api --paginate repos/o/r/pulls/7/files",
                 json!([{"filename": "docs/a.md"}]).to_string(),
@@ -769,6 +769,7 @@ mod tests {
             dry_run,
             ci: false,
             cache: base.join("cache"),
+            ci_workflow: Default::default(),
             runner: Box::new(Fake {
                 calls: Rc::clone(&calls),
                 answers,
@@ -1029,6 +1030,7 @@ mod tests {
             dry_run: false,
             ci: true,
             cache: std::env::temp_dir(),
+            ci_workflow: Default::default(),
             runner: Box::new(Fake {
                 calls: Rc::clone(&calls),
                 answers: Vec::new(),

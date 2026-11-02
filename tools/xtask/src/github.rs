@@ -3,6 +3,7 @@
 //! réponse illisible est une erreur, jamais une réussite.
 //! spec: carnet architecture-securite.md SEC0-15, SEC0-17 ; §9.6 G3 ; §9.8 J3, J5
 
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -77,6 +78,8 @@ pub struct Repo {
     /// `TS_CACHE`, remplaçable en test.
     pub cache: PathBuf,
     pub runner: Box<dyn Run>,
+    /// Id of the `ci.yml` workflow, read once per run however many commits G3 judges (#55).
+    pub ci_workflow: OnceCell<u64>,
 }
 
 /// Même chemin une fois résolus les liens et les jonctions, sans tenir compte de la casse.
@@ -117,6 +120,19 @@ pub fn pages(text: &str) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
+/// Items of the list `key` in every page of a paginated object answer (`check_runs`,
+/// `workflow_runs`); a page without that list is unreadable.
+fn page_items(pages: &[Value], key: &str) -> Result<Vec<Value>, String> {
+    let mut out = Vec::new();
+    for p in pages {
+        let items = p[key]
+            .as_array()
+            .ok_or_else(|| format!("liste {key} illisible"))?;
+        out.extend(items.iter().cloned());
+    }
+    Ok(out)
+}
+
 impl Repo {
     /// `github` faux : distant hors de GitHub permis (essais dans un dépôt jetable) ; le
     /// `slug` reste vide et toute *issue* échoue.
@@ -148,6 +164,7 @@ impl Repo {
             ci: crate::steps::ci_mode(),
             cache: sys::ts_cache(),
             runner: Box::new(System),
+            ci_workflow: OnceCell::new(),
         })
     }
 
@@ -240,8 +257,14 @@ impl Repo {
                 }
             } else {
                 let status = http_status(&err);
+                // #55: an exhausted quota (403 or 429) is said plainly; it is never retried.
+                let quota = if err.to_ascii_lowercase().contains("rate limit") {
+                    "GitHub API quota exhausted (rate limit), retry after its reset: "
+                } else {
+                    ""
+                };
                 (
-                    format!("échec de « gh {} » : {}", args.join(" "), err.trim()),
+                    format!("{quota}échec de « gh {} » : {}", args.join(" "), err.trim()),
                     status.is_some_and(|s| TRANSIENT.contains(&s)),
                 )
             };
@@ -277,40 +300,48 @@ impl Repo {
     }
 
     /// `ci-ok` sur `sha` selon G3 : `Ok(None)` si vert, `Ok(Some(motif))` sinon ; `Err` si GitHub
-    /// ne répond pas.
+    /// ne répond pas. Two reads (#55): the `ci-ok` check runs of `sha`, then, only if there is one,
+    /// the workflow runs of `sha` in a single list (`head_sha`), never one read per check suite.
+    /// The `ci.yml` workflow id is read once per run ([`Repo::ci_workflow`]).
     pub fn ci_ok(&self, sha: &str) -> Result<Option<String>, String> {
         let s = &self.slug;
-        let wf = self.api(&format!("repos/{s}/actions/workflows/ci.yml"))?;
-        let wid = wf["id"]
-            .as_u64()
-            .ok_or("identifiant du workflow ci.yml illisible")?;
+        let wid = self.ci_workflow_id()?;
         let pages = self.api_all(&format!(
             "repos/{s}/commits/{sha}/check-runs?check_name=ci-ok&per_page=100"
         ))?;
-        let mut runs = Vec::new();
-        for p in &pages {
-            runs.extend(
-                p["check_runs"]
-                    .as_array()
-                    .ok_or("liste des contrôles illisible")?
-                    .iter()
-                    .cloned(),
-            );
+        let runs = page_items(&pages, "check_runs")?;
+        if runs.is_empty() {
+            return Ok(judge_ci(&runs, &[], sha, wid, s).err());
         }
+        let pages = self.api_all(&format!(
+            "repos/{s}/actions/runs?head_sha={sha}&per_page=100"
+        ))?;
+        let workflow_runs = page_items(&pages, "workflow_runs")?;
         let mut suites = Vec::new();
         for r in &runs {
             let id = r["check_suite"]["id"]
                 .as_u64()
                 .ok_or("check_suite illisible")?;
-            let w = self.api(&format!(
-                "repos/{s}/actions/runs?check_suite_id={id}&per_page=100"
-            ))?;
-            suites.push((
-                id,
-                w["workflow_runs"].as_array().cloned().unwrap_or_default(),
-            ));
+            let of_suite = workflow_runs
+                .iter()
+                .filter(|w| w["check_suite_id"].as_u64() == Some(id))
+                .cloned()
+                .collect();
+            suites.push((id, of_suite));
         }
         Ok(judge_ci(&runs, &suites, sha, wid, s).err())
+    }
+
+    /// Id of `.github/workflows/ci.yml`, read on GitHub the first time only (#55).
+    fn ci_workflow_id(&self) -> Result<u64, String> {
+        if let Some(id) = self.ci_workflow.get() {
+            return Ok(*id);
+        }
+        let wf = self.api(&format!("repos/{}/actions/workflows/ci.yml", self.slug))?;
+        let id = wf["id"]
+            .as_u64()
+            .ok_or("identifiant du workflow ci.yml illisible")?;
+        Ok(*self.ci_workflow.get_or_init(|| id))
     }
 
     /// Ouvre une *issue* d'anomalie `role:architecture`, ou réutilise celle, ouverte, qui porte
@@ -654,6 +685,7 @@ mod tests {
                 outs,
                 log: std::rc::Rc::clone(&log),
             }),
+            ci_workflow: OnceCell::new(),
         };
         (repo, log)
     }
@@ -692,9 +724,56 @@ mod tests {
             assert!(pauses.borrow().1.is_empty(), "{code}");
             assert_eq!(pauses.borrow().0.len(), 1, "{code}");
         }
+        // #55: an exhausted quota is named, and not retried.
+        let limited = (
+            Some(1),
+            Vec::new(),
+            "gh: API rate limit exceeded for installation ID 1. (HTTP 403)".to_owned(),
+        );
+        let (repo, pauses) = scripted(vec![limited, ok("{}")]);
+        let e = repo.api("repos/o/r/x").unwrap_err();
+        assert!(e.starts_with("GitHub API quota exhausted"), "{e}");
+        assert!(pauses.borrow().1.is_empty());
         assert_eq!(http_status("gh: Not Found (HTTP 404)"), Some(404));
         assert_eq!(http_status("gh: HTTP 5023"), None);
         assert_eq!(http_status("connection reset"), None);
+    }
+
+    /// #55: G3 reads the `ci.yml` workflow id once per run, then two lists per commit (check runs,
+    /// workflow runs of the SHA), and no workflow runs when there is no `ci-ok`.
+    #[test]
+    fn ci_ok_reads_the_workflow_id_once() {
+        let wid = 401414764;
+        let checks = ok(&json!({"check_runs": [run(7, "success")]}).to_string());
+        let ours = |suite| {
+            let mut w = wfr(suite, CI_WORKFLOW, wid);
+            w["repository"]["full_name"] = json!("o/r");
+            w
+        };
+        // Suite 8 is another run of the same SHA: it is filtered out by its check suite.
+        let wfrs = json!({"workflow_runs": [ours(8), ours(7)]});
+        let (repo, log) = scripted(vec![
+            ok(&json!({"id": wid}).to_string()),
+            checks.clone(),
+            ok(&wfrs.to_string()),
+            checks,
+            ok(&wfrs.to_string()),
+            ok(&json!({"check_runs": []}).to_string()),
+        ]);
+        assert_eq!(repo.ci_ok(SHA), Ok(None));
+        assert_eq!(repo.ci_ok(SHA), Ok(None));
+        let absent = repo.ci_ok(SHA).unwrap().unwrap_or_default();
+        assert!(absent.contains("ci-ok absent"), "{absent}");
+        let calls = log.borrow().0.clone();
+        let runs = format!("gh api --paginate repos/o/r/actions/runs?head_sha={SHA}&per_page=100");
+        assert_eq!(calls.len(), 6, "{calls:#?}");
+        assert_eq!(calls[0], "gh api repos/o/r/actions/workflows/ci.yml");
+        assert_eq!(
+            calls.iter().filter(|c| **c == runs).count(),
+            2,
+            "{calls:#?}"
+        );
+        assert!(calls[1..].iter().all(|c| !c.contains("workflows/ci.yml")));
     }
 
     /// V4: a write is never retried, even on a transient status.
