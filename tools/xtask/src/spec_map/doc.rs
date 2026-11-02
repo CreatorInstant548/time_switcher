@@ -74,7 +74,7 @@ pub fn parse(text: &str) -> Doc {
         // identifier there is not part of the document (#18).
         let hidden = !fence && (html || t.starts_with("<!--"));
         if !fence {
-            html = html_comment_open(line, html);
+            html = html_comment_open(&without_code_spans(line), html);
         }
         if hidden {
             // Only the text of the section grows, below.
@@ -142,6 +142,18 @@ pub fn parse(text: &str) -> Doc {
         }
     }
     doc
+}
+
+/// La ligne sans ce qui est entre accents graves : `<!--` écrit dans du code en ligne n'ouvre
+/// aucun commentaire.
+fn without_code_spans(line: &str) -> String {
+    let mut out = String::new();
+    for (k, part) in line.split('`').enumerate() {
+        if k % 2 == 0 {
+            out.push_str(part);
+        }
+    }
+    out
 }
 
 /// Le texte est, à la fin de `line`, à l'intérieur d'un commentaire HTML `<!-- … -->`, sachant
@@ -213,10 +225,10 @@ pub fn is_suffix(s: &str) -> bool {
 }
 
 /// Identifiant défini par la ligne : première cellule d'un tableau, ou gras en tête d'élément de
-/// liste (case à cocher admise) ou de ligne (H2). Dans un tableau dont la première colonne est une
-/// date (`| 30/10 | AS-33 | … |`), la deuxième cellule définit aussi un identifiant, mais
-/// seulement si elle n'est faite que de lui, éventuellement entre `**` ou accents graves ; les
-/// autres cellules n'en définissent jamais.
+/// liste (case à cocher admise) ou de ligne (H2). Dans un tableau, la deuxième cellule définit
+/// aussi un identifiant (`| 30/10 | AS-33 | … |`, tableau des décisions qui commence par la date),
+/// mais seulement si elle n'est faite que de lui, éventuellement entre `**` ou accents graves ;
+/// les autres cellules n'en définissent jamais.
 fn defined_id(line: &str) -> Option<String> {
     let t = line.trim_start();
     if let Some(row) = t.strip_prefix('|') {

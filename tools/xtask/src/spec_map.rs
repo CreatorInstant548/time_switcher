@@ -449,7 +449,7 @@ pub fn check(cx: &Ctx) -> Result<(Vec<String>, String), String> {
     let (mut errors, tolerated) = evaluate(&m, &known);
     let main = format!("origin/main:{KNOWN_BAD}");
     let on_main = sys::stdout_of(&cx.root, "git", &["show", "--end-of-options", &main])
-        .map_err(|_| format!("{KNOWN_BAD} unreadable on origin/main (H3)"))?;
+        .map_err(|_| format!("{KNOWN_BAD} unreadable on origin/main (H3): git fetch origin"))?;
     errors.extend(grown_entries(&known, &on_main));
     errors.extend(unknown_types(cx.files()?));
     let note = format!(

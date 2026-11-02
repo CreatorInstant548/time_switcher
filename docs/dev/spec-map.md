@@ -24,11 +24,11 @@ Toute commande lit les fichiers par `Ctx::files()` (fichiers ordinaires de l'arb
 
 | Marque de commentaire | Types de fichier |
 |---|---|
-| `//`, `//!`, `///`, `/* … */` | `.rs`, `.cs`, `.ron` (RON se commente par `//`, H7), `.ts`, `.tsx`, `.js`, `.mjs`, shaders (`.glsl`, `.wgsl`, `.hlsl`, `.gdshader`, `.frag`, `.vert`, `.shader`) |
+| `//`, `//!`, `///`, `/* … */` (`<# … #>` en PowerShell) | `.rs`, `.cs`, `.ron` (RON se commente par `//`, H7), `.ts`, `.tsx`, `.js`, `.mjs`, shaders (`.glsl`, `.wgsl`, `.hlsl`, `.gdshader`, `.frag`, `.vert`, `.shader`) |
 | `#` | `.py`, `.toml`, `.yml`, `.yaml`, `.sh`, `.ps1`, `.psm1`, `.psd1`, `.gd`, fichiers sans extension |
 | `--` | `.sql` |
 
-Un renvoi est un commentaire de ligne **seul sur sa ligne** dont le texte commence par `spec:` (dans un commentaire de bloc `/* */`, c'est une forme refusée). Une marque provisoire est un commentaire, seul, en fin de ligne ou de bloc, qui contient le mot `PROVISIONAL` ou `PROVISOIRE` : elle doit porter un numéro de remontée (§3). Un commentaire dans une chaîne de caractères n'en est pas un, et une apostrophe au milieu d'un mot (`l'étape`) n'ouvre pas une chaîne. Le fichier est lu en UTF-8 (un BOM en tête est ignoré), en UTF-16 avec marque d'ordre des octets, ou, à défaut, avec remplacement des octets illisibles (un `.ps1` en Windows-1252) ; un fichier à octets nuls est sauté s'il n'a pas d'extension, et c'est un écart sinon.
+Un renvoi est un commentaire de ligne **seul sur sa ligne** dont le texte commence par `spec:` (dans un commentaire de bloc, c'est une forme refusée). Plusieurs commentaires sur une ligne sont tous lus. Une marque provisoire est un commentaire, seul, en fin de ligne ou de bloc, qui contient le mot `PROVISIONAL` ou `PROVISOIRE` : elle doit porter un numéro de remontée (§3). Un commentaire dans une chaîne de caractères n'en est pas un, et une apostrophe au milieu d'un mot (`l'étape`) n'ouvre pas une chaîne. Le fichier est lu en UTF-8 (un BOM en tête est ignoré), en UTF-16 avec marque d'ordre des octets, ou, à défaut, avec remplacement des octets illisibles (un `.ps1` en Windows-1252) ; un fichier à octets nuls est sauté s'il n'a pas d'extension, et c'est un écart sinon.
 
 **Documents cibles.**
 - `docs/conception/**/*.md`, désignés par un nom relatif à `docs/conception/` (`domaines/combat.md`) ou par un **nom court** résolu de façon unique (`combat.md`, `securite.md`, `05-architecture.md`). Un nom court qui désigne deux fichiers est une erreur ; le nom relatif lève l'ambiguïté.

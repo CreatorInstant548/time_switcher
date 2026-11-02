@@ -12,6 +12,10 @@ struct Style {
     hash: bool,
     /// `--` : SQL.
     dashes: bool,
+    /// Commentaire de bloc : ouverture et fermeture (`/* */` ; `<# #>` en PowerShell).
+    block: Option<(&'static str, &'static str)>,
+    /// Chaîne entre accents graves (gabarit de JavaScript et de TypeScript).
+    backtick: bool,
     /// Caractère d'échappement dans une chaîne entre guillemets (PowerShell : l'accent grave).
     escape: u8,
 }
@@ -46,10 +50,17 @@ fn style(path: &str) -> Option<Style> {
         "sql" => (false, false, true, b'\\'),
         _ => return None,
     };
+    let block = match ext.as_str() {
+        "ps1" | "psm1" | "psd1" => Some(("<#", "#>")),
+        _ if slash => Some(("/*", "*/")),
+        _ => None,
+    };
     Some(Style {
         slash,
         hash,
         dashes,
+        block,
+        backtick: matches!(ext.as_str(), "ts" | "tsx" | "js" | "mjs"),
         escape,
     })
 }
@@ -58,10 +69,12 @@ fn style(path: &str) -> Option<Style> {
 /// fichiers générés). Liste fermée : tout autre type inconnu fait échouer `check`, pour qu'un
 /// nouveau type de fichier soit classé (analysé dans `style`, ou ici) au lieu d'être sauté en
 /// silence.
-const NOT_SCANNED: [&str; 30] = [
+const NOT_SCANNED: &[&str] = &[
     "lock", "json", "txt", "md", "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp",
     "parquet", "zip", "gz", "zst", "bin", "pdf", "woff", "woff2", "ttf", "otf", "wav", "ogg",
-    "mp3", "glb", "gltf", "exr", "hdr", "onnx",
+    "mp3", "glb", "gltf", "exr", "hdr", "onnx", "html", "htm", "css", "scss", "xml", "csv", "tsv",
+    "ini", "cfg", "tscn", "tres", "godot", "import", "uid", "csproj", "sln", "props", "targets",
+    "resx",
 ];
 
 /// Le type du fichier est connu : analysé, ou classé parmi ceux qui ne portent rien.
@@ -81,44 +94,77 @@ pub fn scannable(path: &str) -> bool {
 enum Block {
     /// `//`, `#` ou `--`.
     No,
-    /// `/* … */` fermé sur la ligne.
+    /// Commentaire de bloc fermé sur la ligne.
     Closed,
-    /// `/* …` ouvert : les lignes suivantes en font partie jusqu'à `*/`.
+    /// Commentaire de bloc ouvert : les lignes suivantes en font partie jusqu'à sa fermeture.
     Open,
 }
 
 /// Texte d'un commentaire de bloc : sans `*` ni `!` de tête ou de queue (`/** … */`, ` * …`).
 fn block_text(s: &str) -> &str {
     s.trim()
-        .trim_start_matches(['*', '!'])
+        .trim_start_matches(['*', '!', '#'])
         .trim()
-        .trim_end_matches('*')
+        .trim_end_matches(['*', '#'])
         .trim()
 }
 
 /// Une apostrophe au milieu d'un mot (`l'étape`) n'ouvre pas une chaîne, sauf après un préfixe de
-/// chaîne de Python (`r'…'`, `f'…'`).
+/// chaîne de Python (`r'…'`, `f'…'`, `rb'…'`, `br'…'`).
 fn apostrophe_in_word(b: &[u8], i: usize) -> bool {
     let word = |c: u8| c.is_ascii_alphanumeric() || c >= 0x80;
-    let prefix = matches!(
-        b[i - 1],
-        b'r' | b'R' | b'b' | b'B' | b'f' | b'F' | b'u' | b'U'
-    ) && (i < 2 || !word(b[i - 2]));
-    word(b[i - 1]) && !prefix
+    let letters = b[..i]
+        .iter()
+        .rev()
+        .take_while(|c| matches!(c, b'r' | b'R' | b'b' | b'B' | b'f' | b'F' | b'u' | b'U'))
+        .count();
+    let prefix = (1..=2).contains(&letters) && (i == letters || !word(b[i - letters - 1]));
+    i > 0 && word(b[i - 1]) && !prefix
 }
 
-/// Premier commentaire de la ligne hors d'une chaîne : son texte, s'il est seul sur la ligne, et
-/// sa nature.
-fn comment(line: &str, st: Style) -> Option<(&str, bool, Block)> {
+/// Tous les commentaires de la ligne hors d'une chaîne, dans l'ordre : leur texte, s'ils sont seuls
+/// sur la ligne, et leur nature. `in_block` : la ligne commence dans un commentaire de bloc.
+fn comments(line: &str, st: Style, in_block: bool) -> Vec<(&str, bool, Block)> {
     let b = line.as_bytes();
-    let (mut quoted, mut single, mut i) = (false, false, 0);
+    let mut out = Vec::new();
+    let (mut quoted, mut single, mut ticks, mut i) = (false, false, false, 0);
+    if in_block {
+        let close = st.block.map_or("*/", |(_, close)| close);
+        match line.find(close) {
+            Some(end) => {
+                out.push((block_text(&line[..end]), true, Block::Closed));
+                i = end + close.len();
+            }
+            None => return vec![(block_text(line), true, Block::Open)],
+        }
+    }
     while i < b.len() {
         let alone = || line[..i].trim().is_empty();
+        let quoted_any = quoted || ticks;
+        if let Some((open, close)) = st.block
+            && !quoted_any
+            && !single
+            && b[i..].starts_with(open.as_bytes())
+        {
+            let rest = &line[i + open.len()..];
+            match rest.find(close) {
+                Some(end) => {
+                    out.push((block_text(&rest[..end]), alone(), Block::Closed));
+                    i += open.len() + end + close.len();
+                    continue;
+                }
+                None => {
+                    out.push((block_text(rest), alone(), Block::Open));
+                    return out;
+                }
+            }
+        }
         match b[i] {
             c if c == st.escape && quoted => i += 1,
-            b'"' if !single => quoted = !quoted,
+            b'"' if !single && !ticks => quoted = !quoted,
+            b'`' if st.backtick && !quoted => ticks = !ticks,
             // Littéral de caractère de Rust : '"', 'x' ou '\"'.
-            b'\'' if st.slash && !quoted => {
+            b'\'' if st.slash && !quoted_any => {
                 if b.get(i + 2) == Some(&b'\'') {
                     i += 2;
                 } else if b.get(i + 1) == Some(&b'\\') && b.get(i + 3) == Some(&b'\'') {
@@ -126,24 +172,19 @@ fn comment(line: &str, st: Style) -> Option<(&str, bool, Block)> {
                 }
             }
             b'\'' if (st.hash || st.dashes) && !quoted => {
-                if single || i == 0 || !apostrophe_in_word(b, i) {
+                if single || !apostrophe_in_word(b, i) {
                     single = !single;
                 }
             }
-            b'/' if !quoted && st.slash && b.get(i + 1) == Some(&b'/') => {
+            b'/' if !quoted_any && st.slash && b.get(i + 1) == Some(&b'/') => {
                 let text = line[i + 2..].trim_start_matches(['/', '!']).trim();
-                return Some((text, alone(), Block::No));
-            }
-            b'/' if !quoted && st.slash && b.get(i + 1) == Some(&b'*') => {
-                let rest = &line[i + 2..];
-                return Some(match rest.find("*/") {
-                    Some(end) => (block_text(&rest[..end]), alone(), Block::Closed),
-                    None => (block_text(rest), alone(), Block::Open),
-                });
+                out.push((text, alone(), Block::No));
+                return out;
             }
             b'-' if !quoted && !single && st.dashes && b.get(i + 1) == Some(&b'-') => {
                 let text = line[i + 2..].trim_start_matches('-').trim();
-                return Some((text, alone(), Block::No));
+                out.push((text, alone(), Block::No));
+                return out;
             }
             b'#' if !quoted
                 && !single
@@ -151,17 +192,15 @@ fn comment(line: &str, st: Style) -> Option<(&str, bool, Block)> {
                 && (i == 0 || b[i - 1].is_ascii_whitespace())
                 && b.get(i + 1) != Some(&b'!') =>
             {
-                return Some((
-                    line[i + 1..].trim_start_matches('#').trim(),
-                    alone(),
-                    Block::No,
-                ));
+                let text = line[i + 1..].trim_start_matches('#').trim();
+                out.push((text, alone(), Block::No));
+                return out;
             }
             _ => {}
         }
         i += 1;
     }
-    None
+    out
 }
 
 /// Mots qui marquent une valeur provisoire : l'ancienne forme et la forme anglaise.
@@ -196,44 +235,36 @@ pub fn scan(path: &str, text: &str) -> Vec<Found> {
     let mut found = Vec::new();
     let mut in_block = false;
     for (i, line) in text.lines().enumerate() {
-        let (c, alone, block) = if in_block {
-            match line.find("*/") {
-                Some(end) => (block_text(&line[..end]), true, Block::Closed),
-                None => (block_text(line), true, Block::Open),
-            }
-        } else {
-            match comment(line, st) {
-                Some(x) => x,
-                None => continue,
-            }
-        };
-        in_block = block == Block::Open;
-        let near_miss = c
-            .to_ascii_lowercase()
-            .strip_prefix("spec")
-            .is_some_and(|r| r.trim_start().starts_with(':'));
-        let hit = match c.strip_prefix("spec:") {
-            _ if block != Block::No && near_miss => Hit::Bad(
-                c.to_owned(),
-                "renvoi spec: dans un commentaire de bloc : utiliser un commentaire de ligne"
-                    .to_owned(),
-            ),
-            Some(rest) if alone => Hit::Spec(rest.trim().to_owned()),
-            Some(_) => Hit::Bad(
-                c.to_owned(),
-                "renvoi spec: en fin de ligne : le mettre dans un commentaire seul sur sa ligne"
-                    .to_owned(),
-            ),
-            None if near_miss => Hit::Bad(
-                c.to_owned(),
-                "forme proche de spec: (minuscules, deux-points collés)".to_owned(),
-            ),
-            None => match find_mark(c) {
-                Some(at) => Hit::Mark(c[at..].to_owned()),
-                None => continue,
-            },
-        };
-        found.push(Found { line: i + 1, hit });
+        let all = comments(line, st, in_block);
+        in_block = all.last().is_some_and(|c| c.2 == Block::Open);
+        for (c, alone, block) in all {
+            let near_miss = c
+                .to_ascii_lowercase()
+                .strip_prefix("spec")
+                .is_some_and(|r| r.trim_start().starts_with(':'));
+            let hit = match c.strip_prefix("spec:") {
+                _ if block != Block::No && near_miss => Hit::Bad(
+                    c.to_owned(),
+                    "renvoi spec: dans un commentaire de bloc : utiliser un commentaire de ligne"
+                        .to_owned(),
+                ),
+                Some(rest) if alone => Hit::Spec(rest.trim().to_owned()),
+                Some(_) => Hit::Bad(
+                    c.to_owned(),
+                    "renvoi spec: en fin de ligne : le mettre dans un commentaire seul sur sa ligne"
+                        .to_owned(),
+                ),
+                None if near_miss => Hit::Bad(
+                    c.to_owned(),
+                    "forme proche de spec: (minuscules, deux-points collés)".to_owned(),
+                ),
+                None => match find_mark(c) {
+                    Some(at) => Hit::Mark(c[at..].to_owned()),
+                    None => continue,
+                },
+            };
+            found.push(Found { line: i + 1, hit });
+        }
     }
     found
 }
@@ -242,7 +273,7 @@ pub fn scan(path: &str, text: &str) -> Vec<Found> {
 /// forme anglaise `design #<n>`, ou ancienne forme `conception #<n>` (voir le message d'erreur).
 pub fn mark(c: &str) -> Result<u64, String> {
     let bad = || {
-        "PROVISOIRE sans numéro de remontée (attendu : PROVISIONAL(design #<n>), ou l'ancienne \
+        "PROVISOIRE/PROVISIONAL sans numéro de remontée (attendu : PROVISIONAL(design #<n>), ou l'ancienne \
          forme PROVISOIRE(conception #<n>))"
             .to_owned()
     };

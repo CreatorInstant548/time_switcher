@@ -466,7 +466,7 @@ fn provisional_marks_need_an_issue() {
     let m = model(&[("a.rs", both.join("\n"))]);
     let (errors, _) = evaluate(&m, "");
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].starts_with("a.rs:2 : PROVISOIRE sans numéro"));
+    assert!(errors[0].starts_with("a.rs:2 : PROVISOIRE/PROVISIONAL sans numéro"));
 }
 
 #[test]
@@ -674,6 +674,38 @@ fn scan_has_no_silent_successes() {
             (2, "mark PROVISOIRE(conception #8)".to_owned()),
             (3, "bad spec: a.md §1".to_owned())
         ]
+    );
+    // Several comments on one line, a PowerShell block, a TypeScript template and `rb''` strings.
+    assert_eq!(
+        marks(
+            "x.rs",
+            "let x = 1; /* a */ // PROVISIONAL(design #12)\n/* b */ /* PROVISOIRE\n */\n"
+        ),
+        [
+            (1, "mark PROVISIONAL(design #12)".to_owned()),
+            (2, "mark PROVISOIRE".to_owned())
+        ]
+    );
+    assert_eq!(
+        marks(
+            "tools/x.ps1",
+            "<# PROVISIONAL(design #4) #>\n<#\n spec: a.md §1\n#>\n"
+        ),
+        [
+            (1, "mark PROVISIONAL(design #4)".to_owned()),
+            (3, "bad spec: a.md §1".to_owned())
+        ]
+    );
+    assert_eq!(
+        marks("web/x.ts", "const g = `src/**/*.ts`;\n// spec: a.md §1\n"),
+        [(2, "spec a.md §1".to_owned())]
+    );
+    assert!(
+        marks(
+            "x.py",
+            "x = rb'#PROVISIONAL(design #1)' + br'# spec: a.md §1'\n"
+        )
+        .is_empty()
     );
     // SQL and shaders are analysed; `--` is not a comment in a Rust file.
     assert_eq!(
