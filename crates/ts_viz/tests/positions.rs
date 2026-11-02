@@ -189,6 +189,9 @@ fn ts_viz(cache: &Path, args: &[&Path]) -> Output {
         .unwrap()
 }
 
+/// The fixed words of the file: column names, metadata keys and fixed values, place labels.
+const FIXED_TEXT: &str = "positions day tick parcel place home to_work work to_home ts_viz.     format recording_id scenario scenario_blake3 seed_kind public_test seed seed_derivation     time_switcher public test seed v1 world toy_world (ts_toy, test plugin, d-dev-02),     townspec::phase0 days tick_millis sample_at_ms grid_width grid_height rules_fingerprint     state_hash parquet-rs version toy_short toy_year";
+
 /// The strings that would identify this machine or this user, long enough to mean something.
 fn local_strings(cache: &Path) -> Vec<String> {
     let mut found = vec![cache.to_string_lossy().into_owned()];
@@ -205,7 +208,9 @@ fn local_strings(cache: &Path) -> Vec<String> {
     }
     let host = Command::new("hostname").output().ok();
     found.extend(host.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()));
-    found.retain(|s| s.len() >= 3);
+    // Long enough to mean something, and not one of the fixed words of the file itself (a user
+    // or a host named `test` would otherwise fail the test for nothing).
+    found.retain(|s| s.len() >= 3 && !FIXED_TEXT.contains(&s.to_lowercase()));
     found
 }
 

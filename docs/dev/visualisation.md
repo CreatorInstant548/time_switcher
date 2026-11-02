@@ -53,9 +53,9 @@ cd python
 uv run --no-sync python -I viz/positions_to_rrd.py <TS_CACHE>/viz/toy_short/positions.parquet --out <TS_CACHE>/viz/toy_short/positions.rrd
 ```
 
-Le script ne fait que lire le Parquet et appeler `rr.save(<fichier>)` :
+Le script ne fait que lire le Parquet et appeler `rr.save(<fichier>)`, hors le refus de la télémétrie ci-dessous (sa seule écriture hors de `TS_CACHE`). Un échec en cours de route supprime le fichier partiel. Détails :
 - l'entrée et la sortie sont **strictement sous `TS_CACHE`** (sans `..`, sans lien), la sortie est un nouveau fichier `.rrd` ;
-- l'entrée est traitée comme non fiable : taille (512 Mo), schéma exact, nombre de lignes, métadonnées et valeurs sont contrôlés avant tout usage ;
+- l'entrée est traitée comme non fiable : taille (512 Mo), absence de compression, groupes de lignes, schéma exact, nombre de lignes (et par jour), métadonnées et valeurs sont contrôlés avant tout usage ;
 - jamais `spawn`, `connect_grpc`, `serve` ni `show` : le script n'ouvre pas le visualiseur et n'ouvre aucune connexion (un test lit son code pour le vérifier) ;
 - l'enregistrement a l'identifiant du fichier, deux lignes de temps (`day`, `tick`), les résidents en points 2D colorés par lieu, et les effectifs par lieu en séries. Ni heure murale (`log_time` coupée), ni propriétés d'enregistrement (`send_properties=False`).
 

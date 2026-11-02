@@ -78,15 +78,8 @@ pub fn recording_id(seed: u64, scenario_bytes: &[u8]) -> String {
     hex(&full[..16])
 }
 
-/// Label of a place, the text of the `place` column (the names of `ts_py.PLACES`).
-const fn place_label(place: Place) -> &'static str {
-    match place {
-        Place::Home => "home",
-        Place::ToWork => "to_work",
-        Place::Work => "work",
-        Place::ToHome => "to_home",
-    }
-}
+/// Text of the `place` column by place code (`Place as usize`): the names of `ts_py.PLACES`.
+const PLACE_LABELS: [&str; 4] = ["home", "to_work", "work", "to_home"];
 
 fn parquet_error(e: &ParquetError) -> String {
     format!("Parquet: {e}")
@@ -146,6 +139,8 @@ pub fn encode(scenario: &Scenario, scenario_bytes: &[u8], seed: u64) -> Result<E
         .build();
     let mut writer = SerializedFileWriter::new(Vec::new(), Arc::new(schema), Arc::new(props))
         .map_err(|e| parquet_error(&e))?;
+    // One shared buffer per label: pushing a clone does not allocate.
+    let labels = PLACE_LABELS.map(ByteArray::from);
     let mut rows = 0_usize;
     for day in 0..i64::from(days) {
         sim.run_until(StopCondition::At(day_start(day).add_millis(SAMPLE_AT_MS)));
@@ -166,7 +161,7 @@ pub fn encode(scenario: &Scenario, scenario_bytes: &[u8], seed: u64) -> Result<E
             for (column, value) in sample.ints.iter_mut().zip(values) {
                 column.push(value);
             }
-            sample.places.push(ByteArray::from(place_label(w.place)));
+            sample.places.push(labels[w.place as usize].clone());
         }
         rows += sample.places.len();
         let mut group = writer.next_row_group().map_err(|e| parquet_error(&e))?;

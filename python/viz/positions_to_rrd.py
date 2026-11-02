@@ -64,17 +64,21 @@ def scrub_environment(environ: dict[str, str] | None = None) -> list[str]:
 def disable_analytics() -> None:
     """`rerun analytics disable`, the documented opt-out (rerun-io/rerun, crates/utils/re_analytics).
 
-    It only writes the opt-out into the analytics configuration of the user; it opens no viewer
-    and sends nothing. Fails closed: the script stops if it cannot cut the telemetry.
+    It only writes the opt-out into the analytics configuration of the user (the one write of
+    the script outside TS_CACHE); it opens no viewer and sends nothing. Fails closed: the script
+    stops if it cannot cut the telemetry.
     """
-    done = subprocess.run(  # noqa: S603 - fixed arguments, scrubbed environment
-        [sys.executable, "-I", "-m", "rerun_cli", "analytics", "disable"],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
+    try:
+        done = subprocess.run(  # noqa: S603 - fixed arguments, scrubbed environment
+            [sys.executable, "-I", "-m", "rerun_cli", "analytics", "disable"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise VizError("cannot disable the Rerun analytics (the command did not run)") from None
     if done.returncode != 0:
         raise VizError("cannot disable the Rerun analytics (rerun analytics disable failed)")
 
@@ -140,6 +144,7 @@ def read_positions(path: Path) -> Positions:
     """Reads and validates the file. Raises `VizError` for anything not written by ts-viz."""
     import numpy as np
     import pyarrow as pa
+    import pyarrow.compute as pc
     import pyarrow.parquet as pq
 
     if not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
@@ -147,8 +152,9 @@ def read_positions(path: Path) -> Positions:
     try:
         parquet = pq.ParquetFile(path)
         schema = parquet.schema_arrow
-        rows = parquet.metadata.num_rows
-        raw = parquet.metadata.metadata or {}
+        footer = parquet.metadata
+        rows = footer.num_rows
+        raw = footer.metadata or {}
     except (pa.ArrowException, OSError, ValueError):
         raise VizError("input refused: not a readable Parquet file") from None
     expected = [(name, pa.int64()) for name in INT_COLUMNS] + [("place", pa.string())]
@@ -156,11 +162,25 @@ def read_positions(path: Path) -> Positions:
         raise VizError("input refused: the columns are not those of ts-viz")
     if not 0 < rows <= MAX_ROWS:
         raise VizError(f"input refused: rows must be between 1 and {MAX_ROWS}")
-    meta = {
-        k.decode()[len(META_PREFIX):]: v.decode()
-        for k, v in raw.items()
-        if k.startswith(META_PREFIX.encode())
-    }
+    # ts-viz writes no compression and one row group per day: anything else is not its file, and
+    # a compressed file could expand far beyond its size on the disk.
+    if footer.num_row_groups > MAX_DAYS or any(
+        footer.row_group(g).num_rows > MAX_RESIDENTS
+        or any(
+            footer.row_group(g).column(c).compression != "UNCOMPRESSED"
+            for c in range(footer.num_columns)
+        )
+        for g in range(footer.num_row_groups)
+    ):
+        raise VizError("input refused: row groups out of bounds or compressed")
+    try:
+        meta = {
+            k.decode()[len(META_PREFIX):]: v.decode()
+            for k, v in raw.items()
+            if k.startswith(META_PREFIX.encode())
+        }
+    except UnicodeDecodeError:
+        raise VizError("input refused: malformed metadata") from None
     if meta.get("format") != FORMAT:
         raise VizError("input refused: unknown format of positions.parquet")
     try:
@@ -173,15 +193,18 @@ def read_positions(path: Path) -> Positions:
         raise VizError("input refused: metadata out of bounds")
     table = parquet.read()
     columns = {name: table.column(name).to_numpy() for name in INT_COLUMNS}
-    place_names = table.column("place").to_pylist()
-    try:
-        place = np.array([PLACES.index(p) for p in place_names], dtype=np.int64)
-    except ValueError:
-        raise VizError("input refused: unknown place") from None
+    # Code of each place in PLACES, null for an unknown name (vectorised).
+    codes = pc.index_in(table.column("place"), value_set=pa.array(PLACES))
+    if codes.null_count:
+        raise VizError("input refused: unknown place")
+    place = codes.to_numpy().astype(np.int64)
     day = columns["day"]
     if not (
         day.min() >= 0
         and day.max() < days
+        and columns["tick"].min() >= 0
+        and columns["id"].min() >= 0
+        and np.unique(day, return_counts=True)[1].max() <= MAX_RESIDENTS
         and (columns["x"] >= 0).all()
         and (columns["x"] < width).all()
         and (columns["y"] >= 0).all()
@@ -248,6 +271,20 @@ def convert(positions: Positions, out: Path) -> int:
     return int(len(days))
 
 
+def _remove(path: Path) -> None:
+    """Best effort: the recording stream may still hold the file (Windows)."""
+    import rerun as rr
+
+    try:
+        rr.disconnect()
+    except Exception:  # noqa: BLE001 - cleaning up after a failure
+        pass
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="positions.parquet to Rerun .rrd (optional tool)")
     parser.add_argument("parquet", help="positions.parquet written by ts-viz, under TS_CACHE")
@@ -265,7 +302,15 @@ def main(argv: list[str] | None = None) -> int:
             raise VizError("output refused: the directory does not exist")
         positions = read_positions(source)
         disable_analytics()
-        days = convert(positions, out)
+        try:
+            days = convert(positions, out)
+        except BaseException as error:
+            # `rr.save` created the file, and it did not exist before: no partial recording stays.
+            _remove(out)
+            if isinstance(error, Exception):
+                # The name of the error only: a traceback would show local paths.
+                raise VizError(f"conversion failed ({type(error).__name__})") from None
+            raise
     except VizError as error:
         print(f"positions_to_rrd: {error}", file=sys.stderr)
         return 1

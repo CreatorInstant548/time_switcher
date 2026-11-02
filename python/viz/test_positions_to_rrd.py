@@ -175,3 +175,25 @@ def test_the_script_never_spawns_connects_serves_or_shows():
     # `rr.init` is told not to spawn the viewer, and `rr.save` is the only sink.
     assert "spawn=False" in source.replace(" ", "")
     assert "rr.save(" in source
+
+
+def test_a_failed_conversion_leaves_no_partial_recording(cache, monkeypatch):
+    source = cache / "a.parquet"
+    write_parquet(source)
+    monkeypatch.setattr(conv, "disable_analytics", lambda: None)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(rr, "send_columns", boom)
+    assert conv.main([str(source), "--out", str(cache / "a.rrd")]) == 1
+    assert not (cache / "a.rrd").exists()
+
+
+def test_a_compressed_file_is_refused(cache):
+    source = cache / "zstd.parquet"
+    write_parquet(source)
+    table = pq.read_table(source)
+    pq.write_table(table, source, compression="zstd")
+    with pytest.raises(conv.VizError):
+        conv.read_positions(source)
