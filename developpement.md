@@ -440,3 +440,8 @@ erun\datanalytics\` ; l'utilisateur en est informé.
   - Issues closes : #6, #48, #50, #63, #77, #98.
   - Mineurs reportés dans #85, #91 et #95.
 - Prochain lot : les issues de dette qui se ferment vite.
+- 02/11 : lots de dette.
+  - Fusionnées : #106 (#71), #107 (#56), #110 et #109, puis #112, qui ferment #26 et #31. Le relecteur a trouvé un contournement par `Deref` dans la #109 ; il est corrigé par le trait scellé `SiteDraw`.
+  - Lot xtask : #105 (#82) en cours de fusion ; #115 (#18) et #108 approuvées ; #111 refusée (trois trous rouverts par les macros, correction en cours) ; #114 à revoir après mise à jour.
+  - Issues ouvertes : #113 (bornes du compteur `StableId` et de l'horloge) ; le trou de lecture des ticks est noté dans #93.
+  - Constat : avec la règle « branche à jour », chaque fusion fait reculer les autres PR. Quand une PR partage un fichier avec `main`, le report AS-40 tombe, et il faut une relecture rapide du commit de fusion, plus un nouvel `archsec-ok`.
