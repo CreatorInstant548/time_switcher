@@ -91,11 +91,14 @@ struct ToyWorld {
 }
 
 impl ToyWorld {
-    /// Runs the world to `target` with the GIL released. `target` is already checked.
-    fn run_to(&mut self, py: Python<'_>, target: SimTime) -> (u64, u64) {
+    /// Runs the world to `target` with the GIL released. `target` is already checked; a
+    /// date the kernel still refuses (#113) is a `ValueError`.
+    fn run_to(&mut self, py: Python<'_>, target: SimTime) -> PyResult<(u64, u64)> {
         let sim = &mut self.sim;
-        let report = py.detach(|| sim.run_until(StopCondition::At(target)));
-        (report.ticks, report.skipped_ticks)
+        let report = py
+            .detach(|| sim.run_until(StopCondition::At(target)))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok((report.ticks, report.skipped_ticks))
     }
 
     /// `target` if it lies between the current date and day [`MAX_DAYS`], else `ValueError`.
@@ -164,7 +167,7 @@ impl ToyWorld {
             .and_then(|ms| ms.checked_add(now))
             .ok_or_else(|| PyValueError::new_err("ticks is out of range"))?;
         let target = self.checked_target(target)?;
-        Ok(self.run_to(py, target))
+        self.run_to(py, target)
     }
 
     /// Advances the world to the first tick start at or after `millis`, a date in
@@ -172,7 +175,7 @@ impl ToyWorld {
     /// `(ticks run, ticks skipped)`.
     fn advance_to(&mut self, py: Python<'_>, millis: &Bound<'_, PyAny>) -> PyResult<(u64, u64)> {
         let target = self.checked_target(int_arg(millis, "date")?)?;
-        Ok(self.run_to(py, target))
+        self.run_to(py, target)
     }
 
     /// Global state hash, in lower-case hexadecimal (the format of `data/golden/`).

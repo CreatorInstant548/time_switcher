@@ -104,7 +104,7 @@ fn build(threads: Threads) -> Sim {
 }
 
 fn run(sim: &mut Sim, until: SimTime) -> RunReport {
-    sim.run_until(StopCondition::At(until))
+    sim.run_until(StopCondition::At(until)).unwrap()
 }
 
 fn in_full_simulation(sim: &Sim) -> usize {
