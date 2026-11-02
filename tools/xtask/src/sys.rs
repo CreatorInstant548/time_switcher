@@ -73,22 +73,23 @@ pub fn cargo() -> String {
     env("CARGO").unwrap_or_else(|| "cargo".to_owned())
 }
 
-/// Makes every Git run by `cmd`, or by a tool it starts (gitleaks, cargo, uv), ignore the
-/// replacement objects (`refs/replace/`): a ref planted there could otherwise show xtask another
-/// commit, tree or blob than the one named by its SHA (#63). `GIT_NO_REPLACE_OBJECTS` is the
-/// environment form of `git --no-replace-objects`; it is set for every child, so that no call can
-/// forget it. Every child of xtask must be prepared by this function or by [`command`].
-pub fn harden_git_env(cmd: &mut Command) {
+/// The one place that creates a child process of xtask (apart from tests and the system probes
+/// of `slots`): every Git run by the child, or by a tool it starts (gitleaks, cargo, uv), ignores
+/// the replacement objects (`refs/replace/`). A ref planted there could otherwise show xtask
+/// another commit, tree or blob than the one named by its SHA (#63). `GIT_NO_REPLACE_OBJECTS` is
+/// the environment form of `git --no-replace-objects`.
+pub fn base_command(prog: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(prog);
     cmd.env("GIT_NO_REPLACE_OBJECTS", "1");
+    cmd
 }
 
 fn command(root: &Path, prog: &str, args: &[&str]) -> Command {
-    let mut cmd = Command::new(prog);
+    let mut cmd = base_command(prog);
     cmd.args(args).current_dir(root);
     for var in SCRUBBED_ENV {
         cmd.env_remove(var);
     }
-    harden_git_env(&mut cmd);
     cmd
 }
 
@@ -197,7 +198,9 @@ mod tests {
     /// is told apart from one which does not (#63).
     struct Replaced {
         lab: Lab,
-        /// Commit with `a` and `b`, replaced by the commit with `a` only.
+        /// The commit with `a` only.
+        only_a: String,
+        /// Commit with `a` and `b`, replaced by `only_a`.
         commit: String,
         /// Commit with `a` and `b`, whose tree is replaced by the tree with `a` only.
         tree_commit: String,
@@ -227,6 +230,7 @@ mod tests {
         lab.git(&["replace", &real_blob, &fake_blob]);
         Replaced {
             lab,
+            only_a,
             commit,
             tree_commit,
             blob_commit,
@@ -266,10 +270,10 @@ mod tests {
         assert!(ok);
         assert_eq!(text, "blob a\n");
         assert_eq!(stdout_of(&r.lab.dir, "git", &args).unwrap(), "blob a\n");
-        // `run_live` only shows its output: `hash-object` tells the real blob from the fake one.
-        let real = r.lab.git(&["rev-parse", &blob_spec]);
-        let check = ["rev-parse", "--verify", &format!("{real}^{{blob}}")];
-        assert_eq!(run_live(&r.lab.dir, "git", &check), Ok(true));
+        // `run_live` only shows its output, so the exit code tells: the commit differs from
+        // `only_a` unless the replace ref is honoured.
+        let diff = ["diff", "--quiet", &r.commit, &r.only_a];
+        assert_eq!(run_live(&r.lab.dir, "git", &diff), Ok(false));
     }
 
     /// The `Repo` reads of `merge` and `verify-main` (`git`, `blob`) go through the same launcher.
@@ -305,8 +309,6 @@ mod tests {
             let cmd = command(Path::new("."), prog, &["x"]);
             assert_eq!(value(&cmd), Some(Some("1".to_owned())), "{prog}");
         }
-        let mut uv = Command::new("uv");
-        harden_git_env(&mut uv);
-        assert_eq!(value(&uv), Some(Some("1".to_owned())));
+        assert_eq!(value(&base_command("uv")), Some(Some("1".to_owned())));
     }
 }
