@@ -157,10 +157,19 @@ fn out_rules() {
         Err(OutError::BadPath)
     );
     // Windows strips trailing dots and spaces while making a path absolute (`.git.` becomes
-    // `.git`), and a verbatim path can still name them: both forms are refused, and nothing is
-    // created. `raw` is a plain path (the one `absolute` rewrites), `cache` a verbatim one.
+    // `.git`), a verbatim path can still name them, and `:` opens an NTFS stream
+    // (`.git::$INDEX_ALLOCATION` creates a `.git` directory): all refused, nothing created.
+    // `raw` is a plain path (the kind `absolute` rewrites), `cache` a verbatim one.
     #[cfg(windows)]
-    for name in [".git.", ".git ", ".GIT. .", "x."] {
+    for name in [
+        ".git.",
+        ".git ",
+        ".GIT. .",
+        "x.",
+        ".git::$INDEX_ALLOCATION",
+        "a:b",
+        "a*",
+    ] {
         for base in [&raw, &cache] {
             for out in [
                 base.join("trail").join(name),
