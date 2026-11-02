@@ -2,6 +2,8 @@
 
 use core::fmt;
 
+use crate::canonical::MAX_COUNTER;
+
 /// Leading bit: marks the namespace reserved for the map (P28, K9).
 const MAP_BIT: u64 = 1 << 63;
 
@@ -9,8 +11,8 @@ const MAP_BIT: u64 = 1 << 63;
 /// Durable identity of a referenceable entity, never reused.
 ///
 /// Two namespaces, separated by **bit 63** (decided, K9):
-/// - bit 63 at 0: entities created in play, indices `0..=2^63 − 1`, handed out by
-///   [`StableIdAllocator`];
+/// - bit 63 at 0: entities created in play, handed out by [`StableIdAllocator`] with
+///   indices `0..2^62` (the counter stays within the bound of the snapshot decoder, #113);
 /// - bit 63 at 1: places of the generated map (parcels, buildings, streets...), only through
 ///   [`StableId::map`].
 ///
@@ -40,7 +42,8 @@ pub struct StableId(u64);
 crate::assert_size!(StableId, 8);
 
 impl StableId {
-    /// Largest index of a namespace: `2^63 − 1`.
+    /// Largest index of a namespace: `2^63 − 1`. The allocator hands out game indices
+    /// below [`StableIdAllocator::MAX_NEXT`] only (2^62, #113).
     pub const MAX_INDEX: u64 = MAP_BIT - 1;
 
     /// Identifier of the map place with index `index`, or `None` if `index` exceeds
@@ -88,9 +91,13 @@ impl fmt::Debug for StableId {
 /// It is neither `Clone` nor `Default`: a copy, or an implicit reset
 /// (`std::mem::take`, `unwrap_or_default`, `..Default::default()`, `#[derive(Default)]` on a
 /// state that contains it), would allocate identifiers that were already handed out again. A
-/// new world obtains it only through [`StableIdAllocator::for_new_world`]. It stops after
-/// `2^63 − 1` (K9): beyond that, [`StableIdAllocator::allocate`] returns `None`, and never
-/// overflows into the map namespace.
+/// new world obtains it only through [`StableIdAllocator::for_new_world`].
+///
+/// Its counter never exceeds [`StableIdAllocator::MAX_NEXT`] (2^62), the bound the snapshot
+/// decoder accepts (#113): the last index handed out is `2^62 − 1`, then
+/// [`StableIdAllocator::allocate`] refuses with `None`, without moving the counter. It never
+/// saturates, never wraps and never reaches the map namespace (K9), and every world it
+/// leaves can be saved and read back.
 ///
 /// Witness, then the two refusals:
 ///
@@ -109,20 +116,24 @@ impl fmt::Debug for StableId {
 /// ```
 #[derive(Debug, PartialEq, Eq)]
 pub struct StableIdAllocator {
-    /// Next index; `MAP_BIT` means "exhausted".
+    /// Next index; [`StableIdAllocator::MAX_NEXT`] means "exhausted".
     next: u64,
 }
 
 impl StableIdAllocator {
+    /// Largest counter: 2^62, the bound of the snapshot decoder (#113).
+    pub const MAX_NEXT: u64 = MAX_COUNTER;
+
     /// Allocator of a **new world**: the first identifier has index 0. A loaded world
     /// resumes its counter through [`StableIdAllocator::from_snapshot_raw`].
     pub const fn for_new_world() -> Self {
         Self { next: 0 }
     }
 
-    /// New identifier, never handed out before, or `None` if the namespace is exhausted.
+    /// New identifier, never handed out before, or `None` once the counter is at
+    /// [`StableIdAllocator::MAX_NEXT`]: refused, never saturated (#113).
     pub const fn allocate(&mut self) -> Option<StableId> {
-        if self.next <= StableId::MAX_INDEX {
+        if self.next < Self::MAX_NEXT {
             let id = StableId(self.next);
             self.next += 1;
             Some(id)
@@ -131,9 +142,10 @@ impl StableIdAllocator {
         }
     }
 
-    /// Decoding of a snapshot: `None` if `next` exceeds `2^63`. **Reserved to `ts_persist`.**
+    /// Decoding of a snapshot: `None` if `next` exceeds [`StableIdAllocator::MAX_NEXT`].
+    /// **Reserved to `ts_persist`.**
     pub const fn from_snapshot_raw(next: u64) -> Option<Self> {
-        if next <= MAP_BIT {
+        if next <= Self::MAX_NEXT {
             Some(Self { next })
         } else {
             None
@@ -161,22 +173,29 @@ mod tests {
         assert_eq!(alloc.to_snapshot_raw(), 2);
     }
 
+    /// #113: the counter stops at the decoder's bound, 2^62, with a refusal.
     #[test]
-    fn allocator_stops_at_last_index() {
-        let mut alloc = StableIdAllocator::from_snapshot_raw(StableId::MAX_INDEX).unwrap();
+    fn allocator_stops_at_the_decoder_bound() {
+        assert_eq!(StableIdAllocator::MAX_NEXT, 1 << 62);
+        let mut alloc = StableIdAllocator::from_snapshot_raw((1 << 62) - 1).unwrap();
         let last = alloc.allocate().unwrap();
-        assert_eq!(last.to_snapshot_raw(), (1 << 63) - 1);
+        assert_eq!(last.to_snapshot_raw(), (1 << 62) - 1);
         assert!(!last.is_map());
+        assert_eq!(alloc.to_snapshot_raw(), 1 << 62);
         assert_eq!(alloc.allocate(), None);
         assert_eq!(alloc.allocate(), None);
-        assert_eq!(alloc.to_snapshot_raw(), 1 << 63);
+        assert_eq!(alloc.to_snapshot_raw(), 1 << 62);
     }
 
     #[test]
-    fn allocator_snapshot_rejects_map_space() {
-        assert!(StableIdAllocator::from_snapshot_raw(1 << 63).is_some());
-        assert!(StableIdAllocator::from_snapshot_raw((1 << 63) + 1).is_none());
-        assert!(StableIdAllocator::from_snapshot_raw(u64::MAX).is_none());
+    fn allocator_snapshot_rejects_beyond_the_bound() {
+        assert!(StableIdAllocator::from_snapshot_raw(1 << 62).is_some());
+        for next in [(1 << 62) + 1, 1 << 63, (1 << 63) + 1, u64::MAX] {
+            assert!(
+                StableIdAllocator::from_snapshot_raw(next).is_none(),
+                "{next}"
+            );
+        }
     }
 
     #[test]

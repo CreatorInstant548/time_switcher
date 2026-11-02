@@ -215,7 +215,7 @@ impl<E> Scheduler<E> {
     /// read back: a date beyond [`SimTime::MAX_SAVED_ABS_MILLIS`] (a sentinel such as
     /// `i64::MAX` included), or a 2^62nd insertion.
     pub fn schedule(&mut self, at: SimTime, event: E) -> Result<u64, ScheduleError> {
-        if at.as_millis().unsigned_abs() > SimTime::MAX_SAVED_ABS_MILLIS.unsigned_abs() {
+        if !at.is_savable() {
             return Err(ScheduleError::DateOutOfRange(at));
         }
         let seq = self.next_seq;
