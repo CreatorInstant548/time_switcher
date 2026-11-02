@@ -104,6 +104,7 @@ impl Plugin for FuzzRules {
             let scheduled = world
                 .resource_mut::<EventQueue>()
                 .schedule(SimTime::from_millis(1000), event);
+            // A constant date of 1 s and a handful of events: never refused (no panic here).
             debug_assert!(scheduled.is_ok(), "a fixed date within the saved range");
         }
     }

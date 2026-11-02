@@ -242,7 +242,9 @@ fn on_events(
                 arg: day,
             };
             let scheduled = queue.schedule(when, event);
-            debug_assert!(scheduled.is_ok(), "toy dates stay within the saved range");
+            if let Err(e) = scheduled {
+                panic!("toy dates stay within the saved range: {e}");
+            }
         };
         let moved = |place: Place, at: &mut Whereabouts| {
             at.place = place;
@@ -385,7 +387,9 @@ impl Plugin for ToyWorld {
         let mut queue = world.resource_mut::<EventQueue>();
         for (at, event) in first {
             let scheduled = queue.schedule(at, event);
-            debug_assert!(scheduled.is_ok(), "toy dates stay within the saved range");
+            if let Err(e) = scheduled {
+                panic!("toy dates stay within the saved range: {e}");
+            }
         }
         b.add_systems(Phase::Scheduled, on_events);
         b.add_systems(Phase::Act, stroll);

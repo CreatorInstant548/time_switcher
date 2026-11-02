@@ -21,7 +21,8 @@ use ts_kernel::Plugin;
 /// **Enforced (#31):** the generic resume test `ts_toy::resume::check_resume` runs on this
 /// list (test below): a snapshot at several checkpoints after the first tick, through the
 /// bytes of a save, then restored, must give the uninterrupted run at every later
-/// checkpoint. Each rule crate also runs it on its own plugins. The draw sites of the list
+/// checkpoint. Each rule crate also runs it on its own plugins, and `clippy.toml` bans
+/// `Local`, `Added`, `Changed` and the other change-detection reads in rule crates. The draw sites of the list
 /// are unique, or the build fails (#26 m1).
 #[must_use]
 pub fn standard_rules() -> Vec<Box<dyn Plugin>> {

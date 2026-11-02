@@ -43,7 +43,8 @@ use crate::{Phase, StateDecode, StateHash};
 ///
 /// Enforced (#31, AS-27) by the generic resume test `ts_toy::resume::check_resume`, which
 /// `ts_game` runs on `standard_rules()` and each rule crate on its plugins, and by the
-/// `clippy.toml` bans on `Local`, `Added`, `Changed` and the other change-detection reads.
+/// `clippy.toml` bans on `Local`, `Added`, `Changed` and the other change-detection reads
+/// (tooling part of #31, merged with it).
 // spec: revues/architecture.md §11.1, §12.4
 pub trait Plugin {
     /// Stable, unique name of the plugin (for example `"economy"`).

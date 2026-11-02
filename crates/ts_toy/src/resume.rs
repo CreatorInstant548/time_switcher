@@ -83,22 +83,22 @@ pub fn check_resume(
     if checkpoints.len() < 2 || !increasing || checkpoints[0] <= SimTime::EPOCH {
         return Err(ResumeError::Checkpoints);
     }
-    let build = || Sim::build(cfg.clone(), rules, key).map_err(ResumeError::Build);
-    let mut straight = build()?;
-    let mut hashes = Vec::new();
+    let mut straight = Sim::build(cfg.clone(), rules, key).map_err(ResumeError::Build)?;
+    let limits = Limits::default();
+    let (mut hashes, mut saves) = (Vec::new(), Vec::new());
     for &at in checkpoints {
         straight.run_until(StopCondition::At(at));
         hashes.push(straight.state_hash());
+        let snap: MemorySnapshot = straight.snapshot(SnapshotScope::Full);
+        saves.push(encode_snapshot(&snap, Codec::Zstd, &limits).map_err(ResumeError::Encode)?);
     }
     let layout = StateLayout::of(cfg, rules).map_err(ResumeError::Build)?;
-    let limits = Limits::default();
     let mut resumes = 0;
-    for (i, &resumed_at) in checkpoints[..checkpoints.len() - 1].iter().enumerate() {
-        let mut sim = build()?;
-        sim.run_until(StopCondition::At(resumed_at));
-        let snap: MemorySnapshot = sim.snapshot(SnapshotScope::Full);
-        let bytes = encode_snapshot(&snap, Codec::Zstd, &limits).map_err(ResumeError::Encode)?;
-        let decoded = decode_snapshot(&bytes, &limits, &layout).map_err(ResumeError::Decode)?;
+    for (i, (&resumed_at, bytes)) in checkpoints.iter().zip(&saves).enumerate() {
+        if i + 1 == checkpoints.len() {
+            break;
+        }
+        let decoded = decode_snapshot(bytes, &limits, &layout).map_err(ResumeError::Decode)?;
         let mut resumed =
             Sim::restore(&decoded, cfg.clone(), rules, key).map_err(ResumeError::Restore)?;
         for (&at, expected) in checkpoints.iter().zip(&hashes).skip(i) {
