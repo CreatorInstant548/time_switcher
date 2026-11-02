@@ -26,6 +26,8 @@ const MARKER: &str = "ts-toy-result ";
 /// process must report (issue #68, m1). Counts that are not the expected ones, or equal ones,
 /// would reduce the proof to the same thread count twice.
 const PROCESSES: [(&str, u16); 2] = [("one_thread", 1), ("four_threads", 4)];
+// The proof compares a single thread with several: the two processes must differ.
+const _: () = assert!(PROCESSES[0].1 == 1 && PROCESSES[1].1 > 1);
 /// Key under which each process reports its effective thread count.
 const THREADS_KEY: &str = "process.threads";
 /// Keys specific to one process, never compared.
@@ -241,9 +243,9 @@ pub fn run(root: &Path, full: bool, bless_it: bool) -> Result<String, String> {
             return Err(format!("les tests {name} de ts_toy ont échoué"));
         }
         let results = parse_results(&out)?;
-        check_threads(name, &results, expected_threads)?;
         results.iter().for_each(|(k, v)| println!("    {k} = {v}"));
         println!("    durée : {secs:.1} s");
+        check_threads(name, &results, expected_threads)?;
         durations.push(format!("{name} {secs:.1} s"));
         runs.push((name, results));
     }
@@ -345,10 +347,6 @@ mod tests {
             missing.unwrap_err(),
             "one_thread did not report process.threads"
         );
-        // The proof compares a single thread with several: the processes must differ.
-        let counts: Vec<u16> = PROCESSES.iter().map(|&(_, n)| n).collect();
-        assert_eq!(counts.iter().min(), Some(&1));
-        assert!(counts.iter().max() > Some(&1));
     }
 
     #[test]
