@@ -136,22 +136,17 @@ fn main_copy(repo: &Repo) -> Result<bool, String> {
     ))
 }
 
-/// AS-50 AU2: the open anomaly issues of `verify-main` written by the owner (P3, the same filter
-/// as the approvals), by one paginated read of the open issues created by the owner's login,
-/// whatever their labels; the full P3 filter is applied again here, and a pull request is not an
-/// issue. Their numbers.
+/// AS-50 AU2 and AS-52 (AU8): the open anomaly issues, those of `verify-main` written by the
+/// owner (P3, the same filter as the approvals) and the nightly one of `github-actions[bot]`, by
+/// one paginated read of all the open issues, whatever their author and labels. [`is_anomaly`]
+/// is applied here; a pull request is not an issue. Their numbers. A failed read is a refusal.
 fn open_anomalies(repo: &Repo) -> Result<Vec<u64>, String> {
-    let owner = repo
-        .slug
-        .split_once('/')
-        .map(|(o, _)| o)
-        .unwrap_or_default();
     let list = repo.api_all(&format!(
-        "repos/{}/issues?state=open&creator={owner}&per_page=100",
+        "repos/{}/issues?state=open&per_page=100",
         repo.slug
     ))?;
     // The same definition as the reuse in `Repo::open_issue`: an anomaly that `verify-main`
-    // reported is always an issue counted here.
+    // reported is always an issue counted here, and so is the nightly one (AS-52).
     Ok(list
         .iter()
         .filter(|i| is_anomaly(i, &repo.slug))
@@ -324,28 +319,28 @@ fn run(repo: &Repo, pr: u64) -> Result<bool, String> {
     let main_ok = main_copy(repo)?;
     step(
         "2",
-        "aucune issue d'anomalie de verify-main ouverte par le propriétaire (AS-50 AU2)",
+        "no open anomaly issue: verify-main by the owner, or the nightly run (AS-50 AU2, AS-52)",
     );
     let open = open_anomalies(repo)?;
     let mut suspended = None;
     if open.is_empty() {
-        println!("  aucune");
+        println!("  none");
     } else {
         let list: Vec<String> = open.iter().map(|n| format!("#{n}")).collect();
         let why = refuse(
             format!(
-                "fusions suspendues : issue(s) d'anomalie de verify-main ouverte(s) : {}",
+                "merges suspended: open anomaly issue(s): {}",
                 list.join(", ")
             ),
-            "lever l'anomalie (J5, ou -Apply pour les réglages), puis fermer l'issue ; \
-             cargo xtask verify-main la revérifie",
+            "clear the anomaly (J5, -Apply for the settings; for the nightly issue, read its run \
+             and run cargo xtask verify-main locally), then close the issue (docs/dev/ci.md §4)",
         );
         if !repo.dry_run {
             return Err(why);
         }
         // --dry-run shows every other check; its result stays this refusal.
         println!(
-            "  REFUS : {why}\n  --dry-run poursuit les contrôles ; le résultat restera un refus."
+            "  REFUSED: {why}\n  --dry-run goes on with the other checks; the result stays a refusal."
         );
         suspended = Some(why);
     }
@@ -587,7 +582,7 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::github::{ANOMALY_TITLES, Output, Run, owner_item};
+    use crate::github::{ANOMALY_TITLES, NIGHTLY_ANOMALY_TITLE, Output, Run, owner_item};
 
     use super::*;
 
@@ -645,11 +640,18 @@ mod tests {
                 .filter(|(k, _)| line.starts_with(k.as_str()))
                 .max_by_key(|(k, _)| k.len());
             match best {
+                // A failed command: exit code 1, the rest of the answer on stderr.
+                Some((_, out)) if out.starts_with(FAILS) => {
+                    Ok((Some(1), Vec::new(), out[FAILS.len()..].to_owned()))
+                }
                 Some((_, out)) => Ok((Some(0), out.clone().into_bytes(), String::new())),
                 None => Err(format!("commande inattendue : {line}")),
             }
         }
     }
+
+    /// Prefix of a [`Fake`] answer that makes the command fail.
+    const FAILS: &str = "exit 1: ";
 
     const SHA: &str = "c41e984ba8594dedd592744fcb69a70f3716cd87";
     const MAIN: &str = "43b3509aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -889,7 +891,7 @@ mod tests {
         for title in ANOMALY_TITLES {
             let (result, calls) = scenario_with(false, issues(json!([titled(title)])));
             let e = result.unwrap_err();
-            assert!(e.contains("fusions suspendues") && e.contains("#41"), "{e}");
+            assert!(e.contains("merges suspended") && e.contains("#41"), "{e}");
             assert!(
                 !calls
                     .iter()
@@ -916,6 +918,63 @@ mod tests {
         other["number"] = json!(42);
         let (result, calls) = scenario_with(false, issues(json!([stranger, pr, other])));
         assert_eq!(result, Ok(true), "{calls:#?}");
+    }
+
+    /// AS-52 (AU8): the issue that the nightly `report` job opens, written by `github-actions[bot]`
+    /// under [`NIGHTLY_ANOMALY_TITLE`], stops the merge; another bot, another title, another
+    /// account or a pull request does not. All open issues are read once, without the `creator`
+    /// filter; a failed read refuses the merge.
+    #[test]
+    fn nightly_anomaly_issue_stops_merges() {
+        let read = "gh api --paginate repos/o/r/issues?state=open&per_page=100";
+        let issues = |list: Value| vec![(read.to_owned(), list.to_string())];
+        let bot = || {
+            json!({"title": NIGHTLY_ANOMALY_TITLE, "number": 43, "body": "Run: u",
+                   "user": {"login": "github-actions[bot]", "type": "Bot"},
+                   "author_association": "NONE",
+                   "labels": [{"name": "nightly-failure"}, {"name": "role:architecture"}]})
+        };
+        let (result, calls) = scenario_with(false, issues(json!([bot()])));
+        let e = result.unwrap_err();
+        assert!(e.contains("merges suspended") && e.contains("#43"), "{e}");
+        assert_eq!(
+            calls.iter().filter(|c| c.contains("/issues?")).count(),
+            1,
+            "{calls:#?}"
+        );
+        assert!(calls.iter().any(|c| c == read), "{calls:#?}");
+        assert!(!calls.iter().any(|c| c.contains("creator=")), "{calls:#?}");
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.starts_with("gh pr view") || c.starts_with("gh pr merge")),
+            "{calls:#?}"
+        );
+        let mut other_bot = bot();
+        other_bot["user"]["login"] = json!("dependabot[bot]");
+        let mut other_title = bot();
+        other_title["title"] = json!("Tâche périodique en échec");
+        let mut user = bot();
+        user["user"] = json!({"login": "someone", "type": "User"});
+        let mut owner = owner_item("x");
+        owner["title"] = json!(NIGHTLY_ANOMALY_TITLE);
+        owner["number"] = json!(44);
+        let mut pr = bot();
+        pr["pull_request"] = json!({});
+        let harmless = json!([other_bot, other_title, user, owner, pr]);
+        let (result, calls) = scenario_with(false, issues(harmless));
+        assert_eq!(result, Ok(true), "{calls:#?}");
+        // A failed read of the issues refuses the merge before the PR is read (4xx: no retry).
+        let failed = vec![(read.to_owned(), format!("{FAILS}gh: Not Found (HTTP 404)"))];
+        let (result, calls) = scenario_with(false, failed);
+        let e = result.unwrap_err();
+        assert!(e.contains("HTTP 404"), "{e}");
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.starts_with("gh pr view") || c.starts_with("gh pr merge")),
+            "{calls:#?}"
+        );
     }
 
     /// What remains of J2 (AS-50): a main copy behind `origin/main` at launch is updated by
