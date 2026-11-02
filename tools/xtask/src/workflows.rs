@@ -2,10 +2,12 @@
 //! sans dépendance YAML. **Toute ligne non reconnue est refusée** (I1) : on n'accepte que
 //! `clé: valeur`, `- clé: valeur`, `- scalaire`, les commentaires et le contenu des blocs `|`/`>`.
 
-/// Actions permises (SEC0-30), épinglées par SHA de 40 caractères.
-const ALLOWED_ACTIONS: [&str; 4] = [
+/// Allowed actions (SEC0-30), pinned by a 40-character SHA. The whole path before the `@` must be
+/// one of them, in lower case (#17 m1): a sub-action, `.` or `..` is another action.
+const ALLOWED_ACTIONS: [&str; 5] = [
     "actions/checkout",
-    "actions/cache",
+    "actions/cache/restore",
+    "actions/cache/save",
     "swatinem/rust-cache",
     "actions/upload-artifact",
 ];
@@ -149,14 +151,23 @@ fn quoted_end(v: &str) -> Option<usize> {
 }
 
 /// Byte index of the bracket that closes the flow collection starting `v`, brackets matched and
-/// quoted scalars skipped; `None` when it does not close on this line.
+/// quoted scalars skipped; `None` when it does not close on this line. A `#` outside a quoted
+/// scalar is refused, whatever precedes it: YAML reads one at the start of a token as a comment,
+/// which keeps the flow open on the next line, and no workflow needs one (#95). So is a quote that
+/// does not start a token: YAML reads it as text, and what follows it as more of the flow.
 fn flow_end(v: &str) -> Option<usize> {
+    let bytes = v.as_bytes();
     let mut open = Vec::new();
     let mut i = 0;
+    // The last character read that is not a blank.
+    let mut last = 0_u8;
     while i < v.len() {
-        let c = v.as_bytes()[i];
+        let c = bytes[i];
         match c {
-            b'"' | b'\'' => i += quoted_end(&v[i..])?,
+            b'"' | b'\'' if matches!(last, b'[' | b'{' | b',' | b':') => {
+                i += quoted_end(&v[i..])?;
+            }
+            b'"' | b'\'' | b'#' => return None,
             b'[' => open.push(b']'),
             b'{' => open.push(b'}'),
             b']' | b'}' => {
@@ -168,6 +179,9 @@ fn flow_end(v: &str) -> Option<usize> {
                 }
             }
             _ => {}
+        }
+        if bytes[i] != b' ' {
+            last = bytes[i];
         }
         i += 1;
     }
@@ -263,6 +277,16 @@ fn event_refusal(name: &str) -> Option<String> {
     })
 }
 
+/// An open block scalar `|` or `>`.
+struct OpenBlock {
+    /// Column of its key.
+    col: usize,
+    /// Unsafe interpolations are allowed in it.
+    data: bool,
+    /// Indentation of its first content line, which is the indentation of the block in YAML (#95).
+    first: Option<usize>,
+}
+
 /// Niveau ouvert de la pile d'indentation : clé, ou élément de liste (`key` = `-`).
 struct Level {
     col: usize,
@@ -333,35 +357,40 @@ fn step_block<'b, 'a>(lines: &'b [&'a str], i: usize, col: usize) -> &'b [&'a st
     &lines[start..end]
 }
 
-/// `uses:` d'une étape : action de la liste, épinglée ; `persist-credentials: false` sous le
-/// `with:` d'un `actions/checkout`.
+/// `uses:` of a step: an action of the list, pinned; `persist-credentials: false` as a direct
+/// child of the `with:` of an `actions/checkout`. The text of a block scalar under `with:` is
+/// deeper than its children, so it does not count (`sparse-checkout: |`, review of #17 m1).
 fn check_uses(lines: &[&str], i: usize, l: &Line, errors: &mut Vec<String>) {
     let n = i + 1;
     let v = strip_comment(l.value).trim_matches(['"', '\'']);
-    let (repo, sha) = v.split_once('@').unwrap_or((v, ""));
-    let owner_repo = repo.splitn(3, '/').take(2).collect::<Vec<_>>().join("/");
-    let owner_repo = owner_repo.to_ascii_lowercase();
+    let (action, sha) = v.split_once('@').unwrap_or((v, ""));
+    let action = action.to_ascii_lowercase();
     let pinned = sha.len() == 40 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    if !ALLOWED_ACTIONS.contains(&owner_repo.as_str()) || !pinned {
+    if !ALLOWED_ACTIONS.contains(&action.as_str()) || !pinned {
         errors.push(format!(
-            "ligne {n} : action hors liste ou non épinglée par SHA (SEC0-30)"
+            "ligne {n} : action not in the list or not pinned by SHA (SEC0-30)"
         ));
     }
     let mut under_with = false;
+    let mut child = None;
     let persist = step_block(lines, i, l.col).iter().any(|s| {
         let Some(s) = parse(s) else { return false };
         let key = s.key.as_deref().unwrap_or_default();
         if s.col == l.col {
-            under_with = key == "with";
+            under_with = key == "with" && strip_comment(s.value).is_empty();
+            child = None;
+            return false;
         }
-        s.col > l.col
-            && under_with
+        if s.col < l.col || !under_with {
+            return false;
+        }
+        s.col == *child.get_or_insert(s.col)
             && key == "persist-credentials"
             && strip_comment(s.value) == "false"
     });
-    if owner_repo == "actions/checkout" && !persist {
+    if action == "actions/checkout" && !persist {
         errors.push(format!(
-            "ligne {n} : actions/checkout sans persist-credentials: false sous with:"
+            "ligne {n} : actions/checkout without persist-credentials: false under with:"
         ));
     }
 }
@@ -466,8 +495,7 @@ pub fn check_workflow(text: &str) -> Vec<String> {
     let mut errors = unreadable_chars(text);
     let mut top_permissions = false;
     let mut stack: Vec<Level> = Vec::new();
-    // Bloc `|` ou `>` ouvert : (colonne de sa clé, interpolations non sûres permises).
-    let mut block: Option<(usize, bool)> = None;
+    let mut block: Option<OpenBlock> = None;
     // Jobs under the top-level `jobs:`, each with the line of its `runs-on:` (#77).
     let mut jobs: Vec<(String, usize, Option<usize>)> = Vec::new();
     // Number of top-level `on:` keys: exactly one is expected (#77).
@@ -487,14 +515,26 @@ pub fn check_workflow(text: &str) -> Vec<String> {
                 errors.push(format!("ligne {n} : {bad} interdit"));
             }
         }
-        if let Some((col, data)) = block {
-            if raw.trim_matches(' ').is_empty() || indent(raw) > col {
-                if unsafe_interpolation(raw) && !data {
+        if let Some(open) = block.as_mut() {
+            let empty = raw.trim_matches(' ').is_empty();
+            if empty || indent(raw) > open.col {
+                if unsafe_interpolation(raw) && !open.data {
                     errors.push(format!(
                         "ligne {n} : interpolation non sûre hors de env:, with: et if: (SEC0-31)"
                     ));
                 }
-                continue; // contenu d'un bloc : seules les interpolations y comptent
+                // YAML takes the indentation of a block from its leading blank lines as well.
+                if empty && open.first.is_none() && !raw.is_empty() {
+                    errors.push(format!(
+                        "ligne {n} : blanks on a line before the first line of a block scalar (#95)"
+                    ));
+                }
+                if !empty && indent(raw) < *open.first.get_or_insert(indent(raw)) {
+                    errors.push(format!(
+                        "ligne {n} : less indented than the first line of its block scalar (#95)"
+                    ));
+                }
+                continue; // content of a block: only the above counts
             }
             block = None;
         }
@@ -573,6 +613,12 @@ pub fn check_workflow(text: &str) -> Vec<String> {
                 _ => {}
             }
         }
+        // `uses:` directly under a job calls a reusable workflow, with its own steps (#17 m1).
+        if key == "uses" && !l.item && stack.len() == 2 && stack[0].key == "jobs" {
+            errors.push(format!(
+                "ligne {n} : `uses:` at job level (reusable workflow) refused (#17)"
+            ));
+        }
         // Les ancêtres sont en pile ; la ligne elle-même n'y est que si c'est une clé d'élément.
         let data = key == "if"
             || stack
@@ -600,7 +646,11 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             errors.push(format!("ligne {n} : collection en ligne refusée"));
         }
         if v.starts_with(['|', '>']) {
-            block = Some((l.col, data));
+            block = Some(OpenBlock {
+                col: l.col,
+                data,
+                first: None,
+            });
         }
         if l.key.is_some() {
             let open = v.is_empty();
@@ -1256,6 +1306,162 @@ mod tests {
             "      run: |\n        echo \"$TITLE\"\n        cargo",
         );
         assert_eq!(check_workflow(&flush), Vec::<String>::new());
+    }
+
+    /// #17 m1: the list is exact, sub-actions and path tricks included.
+    #[test]
+    fn actions_are_an_exact_list() {
+        let with_uses = |path: &str| {
+            good().replace(
+                "      - name: t",
+                &format!("      - uses: {path}@{SHA}\n      - name: t"),
+            )
+        };
+        for ok in [
+            "actions/cache/restore",
+            "actions/cache/save",
+            "Swatinem/rust-cache",
+            "actions/upload-artifact",
+        ] {
+            assert_eq!(check_workflow(&with_uses(ok)), Vec::<String>::new(), "{ok}");
+        }
+        for bad in [
+            "actions/cache",
+            "actions/cache/evil",
+            "actions/cache/restore/",
+            "actions/cache/restore/.",
+            "actions/cache/../checkout",
+            "actions/upload-artifact/merge",
+            "swatinem/rust-cache/sub",
+            "./.github/actions/x",
+            "../x",
+            ".",
+            "evil/rust-cache",
+        ] {
+            let errors = check_workflow(&with_uses(bad));
+            assert!(
+                errors.iter().any(|e| e.contains("not in the list")),
+                "{bad}: {errors:?}"
+            );
+        }
+        // A sub-path of checkout does not escape persist-credentials either.
+        let sub = good().replace("actions/checkout@", "actions/checkout/x@");
+        assert!(
+            check_workflow(&sub)
+                .iter()
+                .any(|e| e.contains("not in the list"))
+        );
+        // At job level, `uses:` is a reusable workflow, even from an allowed repository.
+        let reusable = good().replace(
+            "    steps:\n",
+            &format!("    uses: actions/checkout@{SHA}\n    steps:\n"),
+        );
+        let errors = check_workflow(&reusable);
+        assert!(
+            errors.iter().any(|e| e.contains("at job level")),
+            "{errors:?}"
+        );
+    }
+
+    /// `persist-credentials: false` counts only as a direct child of `with:` (review of #17 m1).
+    #[test]
+    fn persist_credentials_is_a_direct_child_of_with() {
+        let with_body = |body: &str| {
+            good().replace(
+                "        with:\n          persist-credentials: false\n",
+                &format!("        with:{body}\n"),
+            )
+        };
+        assert_ne!(with_body("x"), good());
+        for ok in [
+            "\n          lfs: false\n          persist-credentials: false",
+            "\n          sparse-checkout: |\n            x\n          persist-credentials: false",
+        ] {
+            let text = with_body(ok);
+            assert_eq!(check_workflow(&text), Vec::<String>::new(), "{ok}");
+        }
+        for bad in [
+            "\n          sparse-checkout: |\n            persist-credentials: false",
+            "\n          sparse-checkout: >\n            persist-credentials: false",
+            " |\n          persist-credentials: false",
+            "\n          a:\n            persist-credentials: false",
+        ] {
+            let errors = check_workflow(&with_body(bad));
+            assert!(
+                errors.iter().any(|e| e.contains("persist-credentials")),
+                "{bad}: {errors:?}"
+            );
+        }
+    }
+
+    /// #95: a `#` outside a quoted scalar, or a quote inside a plain one, keeps a flow open for
+    /// YAML, so it is not closed for this check either.
+    #[test]
+    fn a_comment_inside_a_flow_is_not_closed() {
+        for bad in [
+            "[ #]",
+            "{ #}",
+            "[#]",
+            "{#}",
+            "[a,#]",
+            "[a#b]",
+            "[a, #b]",
+            "[\"a\" #]",
+            "['a', { #}]",
+            "[a', #']",
+            "[a\", #\"]",
+        ] {
+            assert!(read_value(bad).is_err(), "{bad}");
+        }
+        for ok in [
+            "[\"a #b\"]",
+            "['a #b', c]",
+            "[ 'a', \"b\" ]",
+            "{a: 'b'}",
+            "[a] # c",
+            "{}",
+            "[]",
+        ] {
+            assert!(read_value(ok).is_ok(), "{ok}");
+        }
+    }
+
+    /// #95: the first content line sets the indentation of a block scalar.
+    #[test]
+    fn a_block_scalar_keeps_the_indentation_of_its_first_line() {
+        let block = |body: &str| {
+            good().replace(
+                "        run: |\n          echo \"$TITLE\"\n",
+                &format!("        run: |\n{body}"),
+            )
+        };
+        assert_ne!(block("x"), good());
+        for ok in [
+            "          a\n          b\n",
+            "          a\n            deeper\n          b\n",
+            "          a\n\n          b\n",
+            "\n          a\n",
+        ] {
+            let text = block(ok);
+            assert_eq!(check_workflow(&text), Vec::<String>::new(), "{ok}");
+        }
+        for bad in [
+            "            a\n          b\n",
+            "            a\n         b\n",
+            "\n            a\n\n          b\n",
+        ] {
+            let errors = check_workflow(&block(bad));
+            assert!(
+                errors.iter().any(|e| e.contains("less indented")),
+                "{bad}: {errors:?}"
+            );
+        }
+        // Blanks before the first line: YAML would take its indentation from them.
+        let errors = check_workflow(&block("              \n          a\n"));
+        assert!(
+            errors.iter().any(|e| e.contains("before the first line")),
+            "{errors:?}"
+        );
     }
 
     /// `good()` with its trigger block replaced by `on`.
