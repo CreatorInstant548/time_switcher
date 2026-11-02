@@ -30,7 +30,8 @@ pub trait Run {
     }
 }
 
-/// HTTP statuses of a failed `gh api` read that are retried as transient (V4).
+/// HTTP statuses of a failed `gh api` read that are retried as transient (V4). A failure with
+/// exit code 1 and no HTTP status is a transport error, retried too (#85).
 const TRANSIENT: [u16; 4] = [500, 502, 503, 504];
 /// Pauses before the 2nd and 3rd attempts: 3 attempts at most (V4).
 const BACKOFF: [u64; 2] = [2, 5];
@@ -127,7 +128,7 @@ fn page_items(pages: &[Value], key: &str) -> Result<Vec<Value>, String> {
     for p in pages {
         let items = p[key]
             .as_array()
-            .ok_or_else(|| format!("liste {key} illisible"))?;
+            .ok_or_else(|| format!("unreadable {key} list"))?;
         out.extend(items.iter().cloned());
     }
     Ok(out)
@@ -232,9 +233,11 @@ impl Repo {
         })
     }
 
-    /// A `gh api` `GET`, retried with bounded backoff on HTTP 500, 502, 503 or 504 and on an
-    /// empty or unparsable (truncated) response; never on 4xx, never for a write (V4). After the
-    /// last attempt the error stays a refusal. `parse` must only decode JSON.
+    /// A `gh api` `GET`, retried with bounded backoff on HTTP 500, 502, 503 or 504, on a transport
+    /// error (exit code 1 without any HTTP status: `net/http: TLS handshake timeout`, connection
+    /// reset, timeout; #85), and on an empty or unparsable (truncated) response. Never on 4xx, on a
+    /// missing login (`gh` exit code 4) or a killed `gh`, never for a write (V4). After the last
+    /// attempt the error stays a refusal. `parse` must only decode JSON.
     fn read_api<T>(
         &self,
         args: &[&str],
@@ -257,15 +260,21 @@ impl Repo {
                 }
             } else {
                 let status = http_status(&err);
-                // #55: an exhausted quota (403 or 429) is said plainly; it is never retried.
-                let quota = if err.to_ascii_lowercase().contains("rate limit") {
-                    "GitHub API quota exhausted (rate limit), retry after its reset: "
+                // #55: a rate limit (HTTP 403 or 429, primary or secondary) is said plainly; those
+                // statuses are never retried.
+                let limited = matches!(status, Some(403 | 429))
+                    && err.to_ascii_lowercase().contains("rate limit");
+                let quota = if limited {
+                    "GitHub API rate limit reached, retry after its reset: "
                 } else {
                     ""
                 };
                 (
-                    format!("{quota}échec de « gh {} » : {}", args.join(" "), err.trim()),
-                    status.is_some_and(|s| TRANSIENT.contains(&s)),
+                    format!("{quota}gh {} failed: {}", args.join(" "), err.trim()),
+                    match status {
+                        Some(s) => TRANSIENT.contains(&s),
+                        None => code == Some(1),
+                    },
                 )
             };
             let Some(wait) = BACKOFF.get(attempt).filter(|_| retry && transient) else {
@@ -299,20 +308,20 @@ impl Repo {
             .collect()
     }
 
-    /// `ci-ok` sur `sha` selon G3 : `Ok(None)` si vert, `Ok(Some(motif))` sinon ; `Err` si GitHub
-    /// ne répond pas. Two reads (#55): the `ci-ok` check runs of `sha`, then, only if there is one,
-    /// the workflow runs of `sha` in a single list (`head_sha`), never one read per check suite.
-    /// The `ci.yml` workflow id is read once per run ([`Repo::ci_workflow`]).
+    /// `ci-ok` on `sha` by G3: `Ok(None)` if green, `Ok(Some(reason))` otherwise; `Err` if GitHub
+    /// does not answer. #55: the `ci-ok` check runs of `sha`, then, only if there is one, the
+    /// `ci.yml` workflow id (read once per run, [`Repo::ci_workflow`]) and the workflow runs of
+    /// `sha` in a single list (`head_sha`), never one read per check suite.
     pub fn ci_ok(&self, sha: &str) -> Result<Option<String>, String> {
         let s = &self.slug;
-        let wid = self.ci_workflow_id()?;
         let pages = self.api_all(&format!(
             "repos/{s}/commits/{sha}/check-runs?check_name=ci-ok&per_page=100"
         ))?;
         let runs = page_items(&pages, "check_runs")?;
         if runs.is_empty() {
-            return Ok(judge_ci(&runs, &[], sha, wid, s).err());
+            return Ok(judge_ci(&runs, &[], sha, 0, s).err());
         }
+        let wid = self.ci_workflow_id()?;
         let pages = self.api_all(&format!(
             "repos/{s}/actions/runs?head_sha={sha}&per_page=100"
         ))?;
@@ -321,7 +330,7 @@ impl Repo {
         for r in &runs {
             let id = r["check_suite"]["id"]
                 .as_u64()
-                .ok_or("check_suite illisible")?;
+                .ok_or("unreadable check_suite")?;
             let of_suite = workflow_runs
                 .iter()
                 .filter(|w| w["check_suite_id"].as_u64() == Some(id))
@@ -340,7 +349,7 @@ impl Repo {
         let wf = self.api(&format!("repos/{}/actions/workflows/ci.yml", self.slug))?;
         let id = wf["id"]
             .as_u64()
-            .ok_or("identifiant du workflow ci.yml illisible")?;
+            .ok_or("unreadable id of the ci.yml workflow")?;
         Ok(*self.ci_workflow.get_or_init(|| id))
     }
 
@@ -702,11 +711,26 @@ mod tests {
         )
     }
 
-    /// V4: GET retried on 5xx and on an empty or truncated answer, at most 3 attempts with growing
-    /// pauses, then a refusal; never on 4xx.
+    /// A failed `gh` run without any HTTP status, as `gh` reports a transport error.
+    fn transport(stderr: &str) -> Output {
+        (Some(1), Vec::new(), format!("{stderr}\n"))
+    }
+
+    /// V4: GET retried on 5xx, on a transport error without HTTP status (#85) and on an empty or
+    /// truncated answer, at most 3 attempts with growing pauses, then a refusal; never on 4xx, on
+    /// a missing login or on a killed `gh`.
     #[test]
     fn retries_transient_reads_only() {
-        for first in [http(502), http(500), ok(""), ok("{\"id\":"), ok("[1]\n[")] {
+        let tls = "Get \"https://api.github.com/x\": net/http: TLS handshake timeout";
+        let transports = [
+            transport(tls),
+            transport("read tcp 10.0.0.1:5->140.82.1.1:443: read: connection reset by peer"),
+            transport("Get \"https://api.github.com/x\": context deadline exceeded"),
+        ];
+        for first in [http(502), http(500), ok(""), ok("{\"id\":"), ok("[1]\n[")]
+            .into_iter()
+            .chain(transports)
+        {
             let (repo, pauses) = scripted(vec![first, ok("{\"id\":9}\n")]);
             assert_eq!(repo.api("repos/o/r/x").unwrap()["id"], 9);
             assert_eq!(pauses.borrow().1, [2]);
@@ -718,22 +742,47 @@ mod tests {
         assert!(e.contains("HTTP 502"), "{e}");
         assert_eq!(pauses.borrow().1, [2, 5]);
         assert_eq!(pauses.borrow().0.len(), 3);
+        // #85: a transport error that lasts is a refusal after the same 3 attempts.
+        let (repo, pauses) = scripted(vec![transport(tls)]);
+        let e = repo.api_all("repos/o/r/x").unwrap_err();
+        assert!(e.contains("TLS handshake timeout"), "{e}");
+        assert_eq!(pauses.borrow().1, [2, 5]);
+        assert_eq!(pauses.borrow().0.len(), 3);
+        // #85: no HTTP status, but not a transport error: a missing login, a killed `gh`.
+        let login = "To get started with GitHub CLI, please run:  gh auth login".to_owned();
+        for permanent in [
+            (Some(4), Vec::new(), login),
+            (None, Vec::new(), String::new()),
+        ] {
+            let (repo, pauses) = scripted(vec![permanent, ok("{}")]);
+            assert!(repo.api("repos/o/r/x").is_err());
+            assert!(pauses.borrow().1.is_empty());
+            assert_eq!(pauses.borrow().0.len(), 1);
+        }
         for code in [404, 403, 422, 501] {
             let (repo, pauses) = scripted(vec![http(code), ok("{}")]);
             assert!(repo.api_all("repos/o/r/x").is_err(), "{code}");
             assert!(pauses.borrow().1.is_empty(), "{code}");
             assert_eq!(pauses.borrow().0.len(), 1, "{code}");
         }
-        // #55: an exhausted quota is named, and not retried.
-        let limited = (
-            Some(1),
-            Vec::new(),
-            "gh: API rate limit exceeded for installation ID 1. (HTTP 403)".to_owned(),
-        );
-        let (repo, pauses) = scripted(vec![limited, ok("{}")]);
-        let e = repo.api("repos/o/r/x").unwrap_err();
-        assert!(e.starts_with("GitHub API quota exhausted"), "{e}");
-        assert!(pauses.borrow().1.is_empty());
+        // #55: a rate limit (403 or 429, primary or secondary) is named, and not retried; the
+        // words alone, on another status, are not.
+        let failed = |stderr: &str| (Some(1), Vec::new(), stderr.to_owned());
+        for limited in [
+            "gh: API rate limit exceeded for installation ID 1. (HTTP 403)",
+            "gh: You have exceeded a secondary rate limit. (HTTP 403)",
+            "gh: rate limit (HTTP 429)",
+        ] {
+            let (repo, pauses) = scripted(vec![failed(limited), ok("{}")]);
+            let e = repo.api("repos/o/r/x").unwrap_err();
+            assert!(e.starts_with("GitHub API rate limit reached"), "{e}");
+            assert!(pauses.borrow().1.is_empty());
+        }
+        for other in ["gh: Forbidden (HTTP 403)", "gh: HTTP 503: rate limit proxy"] {
+            let (repo, _) = scripted(vec![failed(other)]);
+            let e = repo.api("repos/o/r/x").unwrap_err();
+            assert!(!e.contains("rate limit reached"), "{e}");
+        }
         assert_eq!(http_status("gh: Not Found (HTTP 404)"), Some(404));
         assert_eq!(http_status("gh: HTTP 5023"), None);
         assert_eq!(http_status("connection reset"), None);
@@ -753,8 +802,8 @@ mod tests {
         // Suite 8 is another run of the same SHA: it is filtered out by its check suite.
         let wfrs = json!({"workflow_runs": [ours(8), ours(7)]});
         let (repo, log) = scripted(vec![
-            ok(&json!({"id": wid}).to_string()),
             checks.clone(),
+            ok(&json!({"id": wid}).to_string()),
             ok(&wfrs.to_string()),
             checks,
             ok(&wfrs.to_string()),
@@ -767,13 +816,18 @@ mod tests {
         let calls = log.borrow().0.clone();
         let runs = format!("gh api --paginate repos/o/r/actions/runs?head_sha={SHA}&per_page=100");
         assert_eq!(calls.len(), 6, "{calls:#?}");
-        assert_eq!(calls[0], "gh api repos/o/r/actions/workflows/ci.yml");
+        assert_eq!(calls[1], "gh api repos/o/r/actions/workflows/ci.yml");
         assert_eq!(
             calls.iter().filter(|c| **c == runs).count(),
             2,
             "{calls:#?}"
         );
-        assert!(calls[1..].iter().all(|c| !c.contains("workflows/ci.yml")));
+        let ids = calls.iter().filter(|c| c.contains("workflows/ci.yml"));
+        assert_eq!(ids.count(), 1, "{calls:#?}");
+        // No ci-ok at all: neither the workflow id nor the workflow runs are read.
+        let (repo, log) = scripted(vec![ok(&json!({"check_runs": []}).to_string())]);
+        assert!(repo.ci_ok(SHA).unwrap().is_some());
+        assert_eq!(log.borrow().0.len(), 1);
     }
 
     /// V4: a write is never retried, even on a transient status.
@@ -789,16 +843,19 @@ mod tests {
         ] {
             assert!(!is_get(w), "{w:?}");
         }
-        let (repo, pauses) = scripted(vec![ok("[]"), http(502), ok("u")]);
-        assert!(repo.open_issue("k", DRIFT_TITLE, "b").is_err());
-        assert!(pauses.borrow().1.is_empty());
-        let calls = pauses.borrow().0.clone();
-        let creates = calls
-            .iter()
-            .filter(|c| c.starts_with("gh issue create"))
-            .count();
-        assert_eq!(creates, 1, "{calls:?}");
-        let _ = std::fs::remove_dir_all(&repo.cache); // temporary issue body of this test only
+        // Neither on 502 nor on a transport error without HTTP status (#85).
+        for failure in [http(502), transport("net/http: TLS handshake timeout")] {
+            let (repo, pauses) = scripted(vec![ok("[]"), failure, ok("u")]);
+            assert!(repo.open_issue("k", DRIFT_TITLE, "b").is_err());
+            assert!(pauses.borrow().1.is_empty());
+            let calls = pauses.borrow().0.clone();
+            let creates = calls
+                .iter()
+                .filter(|c| c.starts_with("gh issue create"))
+                .count();
+            assert_eq!(creates, 1, "{calls:?}");
+            let _ = std::fs::remove_dir_all(&repo.cache); // temporary issue body of this test only
+        }
     }
 
     /// AS-45 P3: the same approval text counts only from the owner; another account, a bot, or

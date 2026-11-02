@@ -413,9 +413,17 @@ fn quota(v: &Value) -> Result<(u64, u64, bool), String> {
 }
 
 /// AS-39 (#55): the GitHub API quota left after the pass, in the log and, when it is low, as a
-/// warning in the job summary. `rate_limit` costs no quota. Never changes the result.
+/// warning in the job summary. `rate_limit` costs no quota; it is read once, without the V4
+/// retries, since this line never changes the result.
 fn report_quota(repo: &Repo) {
-    match repo.api("rate_limit").and_then(|v| quota(&v)) {
+    let read = repo
+        .runner
+        .run(&repo.main, "gh", &["api", "rate_limit"])
+        .and_then(|(code, out, err)| match code {
+            Some(0) => serde_json::from_slice(&out).map_err(|e| format!("unreadable answer: {e}")),
+            _ => Err(err.trim().to_owned()),
+        });
+    match read.and_then(|v| quota(&v)) {
         Ok((left, limit, low)) => {
             println!("  GitHub API quota: {left} of {limit} requests left this hour");
             if low {
@@ -530,17 +538,19 @@ pub fn main(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     let result = Repo::open(dry_run, true).and_then(|repo| {
-        refresh(&repo)?;
-        match origin {
-            Some(Origin::All) => println!("  --origin all: J3 on every commit (AS-42)"),
-            Some(Origin::Since(t)) => {
-                println!(
-                    "  --origin: J3 and G3 on every commit since Unix time {t} (AS-42, AS-44)"
-                );
+        let result = refresh(&repo).and_then(|()| {
+            match origin {
+                Some(Origin::All) => println!("  --origin all: J3 on every commit (AS-42)"),
+                Some(Origin::Since(t)) => {
+                    println!(
+                        "  --origin: J3 and G3 on every commit since Unix time {t} (AS-42, AS-44)"
+                    );
+                }
+                None => {}
             }
-            None => {}
-        }
-        let result = verify_or_report(&repo, origin);
+            verify_or_report(&repo, origin)
+        });
+        // Whatever the result, a failure included (#55).
         report_quota(&repo);
         result
     });
@@ -1015,15 +1025,9 @@ mod tests {
             ));
         }
         let (r, calls) = origin_check("docs/a.md", false, Some(origin), &over);
-        // #55: the `ci.yml` workflow id is read once per pass, however many commits G3 judges.
-        let ids = calls
-            .iter()
-            .filter(|c| c.contains("workflows/ci.yml"))
-            .count();
-        assert!(ids <= 1, "{calls:#?}");
         let first = |s: &str| s.chars().next().unwrap();
         let bad = r.unwrap().iter().map(|(s, _)| first(s)).collect();
-        let read = commits
+        let read: Vec<char> = commits
             .iter()
             .filter(|c| {
                 calls
@@ -1032,6 +1036,14 @@ mod tests {
             })
             .map(|c| c.0)
             .collect();
+        // #55: the `ci.yml` workflow id is read once per pass when G3 finds a `ci-ok` (a squash
+        // read on the `<n>d` window), however many commits it judges; never otherwise.
+        let g3 = matches!(origin, Origin::Since(_))
+            && commits
+                .iter()
+                .any(|c| matches!(c.2, Via::Squash) && read.contains(&c.0));
+        let ids = calls.iter().filter(|c| c.contains("workflows/ci.yml"));
+        assert_eq!(ids.count(), usize::from(g3), "{calls:#?}");
         (bad, read)
     }
 
