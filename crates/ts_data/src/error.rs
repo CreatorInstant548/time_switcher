@@ -37,14 +37,30 @@ pub enum Code {
     UnknownKind,
     /// A length does not fit the canonical encoding (a `u32`).
     EncodingOverflow,
-    /// The identifier does not follow the identifier grammar.
+    /// The identifier does not follow the identifier grammar (M40a).
     InvalidId,
-    /// The name is empty, too long or contains a control character.
+    /// The name is empty, too long, not in NFC, has a control character, or leading or
+    /// trailing whitespace (M40e).
     InvalidName,
     /// Two cards have the same identifier.
     DuplicateId,
     /// A reference does not resolve to an item card.
     BrokenReference,
+    /// The first segment of the identifier is not the namespace of the card's kind (M40b).
+    WrongNamespace,
+    /// A line of the identifier registry is malformed (M40d).
+    RegistrySyntax,
+    /// An identifier is listed twice in the registry (M40d).
+    RegistryDuplicate,
+    /// An identifier of the pack is missing from the registry (M40d).
+    Unregistered,
+    /// A retired identifier is used again by a card (M40d).
+    RetiredReused,
+    /// An identifier active in the registry has no card: mark it retired (M40d).
+    ActiveWithoutCard,
+    /// A registry line was removed, moved or changed other than from active to retired
+    /// (M40d: append-only).
+    RegistryRewritten,
 }
 
 impl Code {
@@ -70,6 +86,13 @@ impl Code {
             Self::InvalidName => "DATA_INVALID_NAME",
             Self::DuplicateId => "DATA_DUPLICATE_ID",
             Self::BrokenReference => "DATA_BROKEN_REFERENCE",
+            Self::WrongNamespace => "DATA_WRONG_NAMESPACE",
+            Self::RegistrySyntax => "DATA_REGISTRY_SYNTAX",
+            Self::RegistryDuplicate => "DATA_REGISTRY_DUPLICATE",
+            Self::Unregistered => "DATA_UNREGISTERED_ID",
+            Self::RetiredReused => "DATA_RETIRED_ID_REUSED",
+            Self::ActiveWithoutCard => "DATA_ACTIVE_ID_WITHOUT_CARD",
+            Self::RegistryRewritten => "DATA_REGISTRY_REWRITTEN",
         }
     }
 
@@ -95,6 +118,19 @@ impl Code {
             Self::InvalidName => "nom invalide",
             Self::DuplicateId => "identifiant déjà utilisé",
             Self::BrokenReference => "référence vers une fiche objet introuvable",
+            Self::WrongNamespace => {
+                "l'identifiant ne commence pas par l'espace de noms de sa sorte"
+            }
+            Self::RegistrySyntax => "ligne du registre des identifiants mal formée",
+            Self::RegistryDuplicate => "identifiant présent deux fois dans le registre",
+            Self::Unregistered => "identifiant absent du registre ids.lock",
+            Self::RetiredReused => "identifiant retiré réutilisé",
+            Self::ActiveWithoutCard => {
+                "identifiant actif sans fiche : le marquer retiré dans le registre"
+            }
+            Self::RegistryRewritten => {
+                "registre réécrit : ligne supprimée, déplacée ou modifiée (ajout seul)"
+            }
         }
     }
 }

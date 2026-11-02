@@ -151,8 +151,17 @@ impl SimBuilder {
     }
 
     // spec: revues/architecture.md §12.5 ; carnet architecture-securite.md §9.10 L5
-    /// Declares that the plugin being built can resume a snapshot of its version
-    /// `version`. Without this declaration, another version makes the restore refuse.
+    /// Declares that the plugin being built can resume a snapshot of its version `version`
+    /// **whose state encoding is unchanged** (only rules changed). Without this declaration,
+    /// another version makes the restore refuse.
+    ///
+    /// There is no migration function yet (#59): the recorded values are read by the current
+    /// [`StateDecode`]s, and the restore compares their re-encoding with the **recorded**
+    /// bytes. An encoding change that the current decoders cannot read back to the same bytes
+    /// (another length, another tag) is refused. One they read back identically (fields
+    /// swapped, a `u64` split into two `u32`, a change of unit) is **misread**: nothing can
+    /// tell it from the old encoding. Changing the encoding or the meaning of a state type
+    /// therefore needs the versioned decoders of architecture §12.5 first (#59).
     pub fn migrates_from(&mut self, version: u32) -> &mut Self {
         self.migrations.push((self.current, version));
         self
