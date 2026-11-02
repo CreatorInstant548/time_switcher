@@ -455,14 +455,15 @@ struct Finding {
 fn findings(report: &str, scan: Option<&Path>) -> Result<Vec<String>, String> {
     let list: Vec<Finding> =
         serde_json::from_str(report).map_err(|e| format!("gitleaks report unreadable: {e}"))?;
-    let base = scan.map(|p| p.to_string_lossy().replace('\\', "/"));
+    // Paths of the report, normalised to `/`; a file under the scanned folder is shown relative to it.
     let relative = |file: &str| {
         let file = file.replace('\\', "/");
-        let rest = base
-            .as_deref()
-            .and_then(|b| file.strip_prefix(b))
-            .map(|r| r.trim_start_matches('/').to_owned());
-        rest.unwrap_or(file)
+        let under = scan.and_then(|s| sys::relative_to(Path::new(&file), s));
+        match (under, Path::new(&file).is_absolute()) {
+            (Some(rel), _) => rel,
+            (None, true) => sys::shown(Path::new(&file)),
+            (None, false) => file,
+        }
     };
     Ok(list
         .iter()
@@ -622,7 +623,7 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
         if let Err(e) =
             sys::read_text(Path::new(src)).and_then(|t| manifests::check_unsafe_root(name, &t))
         {
-            errors.push(format!("{name} ({}) : {e}", sys::shown(Path::new(src))));
+            errors.push(format!("{name} ({}): {e}", sys::shown(Path::new(src))));
         }
     }
     // ts_py : chaque allow ou expect de unsafe_code, dans tout fichier, suit un // SAFETY:.
@@ -697,7 +698,7 @@ pub fn features(cx: &Ctx) -> Outcome {
         errors.extend(
             manifests::patch_sections(&text)
                 .into_iter()
-                .map(|l| format!("{} : {l} interdit (E7)", sys::shown(&m))),
+                .map(|l| format!("{}: {l} forbidden (E7)", sys::shown(&m))),
         );
     }
     for host in HOSTS.iter().filter(|h| meta.package(h).is_some()) {

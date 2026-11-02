@@ -59,6 +59,17 @@ fn strip(path: &Path, base: &Path) -> Option<PathBuf> {
     Some(rest.as_path().to_path_buf())
 }
 
+/// `path` relative to `base` with `/`, if it lies under it (component-wise, so `a/tree` does not
+/// match `a/tree2/x`).
+pub fn relative_to(path: &Path, base: &Path) -> Option<String> {
+    let rel = strip(path, base)?;
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    Some(parts.join("/"))
+}
+
 /// A path as shown in a message: relative to `root` with `/`, `$TS_CACHE/…` under the cache,
 /// otherwise its file name only. An absolute path would give the home folder away (m6, SEC0-26).
 fn display_path(path: &Path, root: Option<&Path>, cache: &Path) -> String {
@@ -168,7 +179,7 @@ pub fn run_live(root: &Path, prog: &str, args: &[&str]) -> Result<bool, String> 
     let status = command(root, prog, args)
         .stdin(Stdio::null())
         .status()
-        .map_err(|e| format!("{prog} introuvable ou impossible à lancer : {e}"))?;
+        .map_err(|e| format!("cannot run {}: {e}", shown_arg(prog)))?;
     Ok(status.success())
 }
 
@@ -177,7 +188,7 @@ pub fn run_captured(root: &Path, prog: &str, args: &[&str]) -> Result<(bool, Str
     let out = command(root, prog, args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("{prog} introuvable ou impossible à lancer : {e}"))?;
+        .map_err(|e| format!("cannot run {}: {e}", shown_arg(prog)))?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
     Ok((out.status.success(), text))
@@ -189,9 +200,9 @@ pub fn stdout_of(root: &Path, prog: &str, args: &[&str]) -> Result<String, Strin
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .output()
-        .map_err(|e| format!("{prog} introuvable ou impossible à lancer : {e}"))?;
+        .map_err(|e| format!("cannot run {}: {e}", shown_arg(prog)))?;
     if !out.status.success() {
-        return Err(format!("échec de « {prog} {} »", args.join(" ")));
+        return Err(format!("{} {} failed", shown_arg(prog), args.join(" ")));
     }
     String::from_utf8(out.stdout).map_err(|_| format!("sortie non UTF-8 de {prog}"))
 }
@@ -205,7 +216,7 @@ pub fn outputs(
     let out = command(root, prog, args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("{prog} introuvable ou impossible à lancer : {e}"))?;
+        .map_err(|e| format!("cannot run {}: {e}", shown_arg(prog)))?;
     Ok((
         out.status.code(),
         out.stdout,
@@ -220,6 +231,27 @@ pub fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 /// Name of the file that marks a [`Scratch`] folder as created by this run.
 const SCRATCH_MARKER: &str = ".xtask-scratch";
+
+/// Folders of earlier runs left by a killed process: `xtask-<label>-*` under `base` whose marker
+/// is more than a day old. Only folders that carry the marker are touched.
+#[allow(clippy::disallowed_methods)] // tool: lists its own scratch folders.
+fn sweep(base: &Path, label: &str) {
+    let prefix = format!("xtask-{label}-");
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let (dir, name) = (
+            entry.path(),
+            entry.file_name().to_string_lossy().into_owned(),
+        );
+        let stale = age(&dir.join(SCRATCH_MARKER)).is_some_and(|a| a > Duration::from_secs(86_400));
+        let plain = std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir());
+        if name.starts_with(&prefix) && plain && stale {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
 
 /// A folder made for one run under `TS_CACHE/tmp` (m8). It is created exclusively under a name that
 /// no earlier run can have (process id, clock and counter), holds a marker with a token, and is
@@ -248,16 +280,18 @@ impl Scratch {
         let dir = base.join(format!("xtask-{label}-{token}"));
         // `create_dir` fails when the folder exists: this run owns the one it creates.
         std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", shown(&dir)))?;
+        sweep(base, label);
         let this = Self { dir, token };
         let marker = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(this.dir.join(SCRATCH_MARKER));
-        std::io::Write::write_all(
-            &mut marker.map_err(|e| format!("{}: {e}", shown(&this.dir)))?,
-            this.token.as_bytes(),
-        )
-        .map_err(|e| format!("{}: {e}", shown(&this.dir)))?;
+            .open(this.dir.join(SCRATCH_MARKER))
+            .and_then(|mut f| std::io::Write::write_all(&mut f, this.token.as_bytes()));
+        if let Err(e) = marker {
+            // Created just above by this run, so it is ours to remove even without a marker.
+            let _ = std::fs::remove_dir_all(&this.dir);
+            return Err(format!("{}: {e}", shown(base)));
+        }
         Ok(this)
     }
 
@@ -468,6 +502,37 @@ mod tests {
         let bare = c.path(".");
         drop(c);
         assert!(bare.is_dir());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A folder of a killed run (marker older than a day) is swept by the next run; a young one,
+    /// or one without a marker, is not.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // test: ages a file by setting its modification time.
+    fn scratch_sweeps_only_old_marked_folders() {
+        let base = std::env::temp_dir().join("xtask-sweep-test");
+        let old = Scratch::new_in(&base, "s").unwrap();
+        let (old_dir, young_dir, bare_dir) = (
+            old.path("."),
+            base.join("xtask-s-young"),
+            base.join("xtask-s-bare"),
+        );
+        std::mem::forget(old); // as if killed
+        for d in [&young_dir, &bare_dir] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        write(&young_dir.join(SCRATCH_MARKER), b"x").unwrap();
+        let aged = std::time::SystemTime::now() - Duration::from_secs(2 * 86_400);
+        let marker = std::fs::File::options()
+            .write(true)
+            .open(old_dir.join(SCRATCH_MARKER))
+            .unwrap();
+        marker.set_modified(aged).unwrap();
+        drop(marker);
+        let next = Scratch::new_in(&base, "s").unwrap();
+        assert!(!old_dir.exists());
+        assert!(young_dir.is_dir() && bare_dir.is_dir());
+        drop(next);
         std::fs::remove_dir_all(&base).unwrap();
     }
 
