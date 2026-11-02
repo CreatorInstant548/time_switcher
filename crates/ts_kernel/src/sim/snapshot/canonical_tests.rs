@@ -4,7 +4,8 @@
 use super::tests::{Pos, Total, build, restore};
 use super::*;
 use crate::{
-    CanonicalError, CanonicalLimits, Phase, SimBuilder, StateDecode, StateLayout, StateReader,
+    CanonicalError, CanonicalLimits, Phase, ScheduleError, SimBuilder, StateDecode, StateLayout,
+    StateReader,
 };
 
 /// One stable entity with `Pos(-2)`, a resource `Total(7)`, one pending event.
@@ -31,7 +32,8 @@ impl Plugin for Small {
         };
         world
             .resource_mut::<EventQueue>()
-            .schedule(SimTime::from_millis(120), event);
+            .schedule(SimTime::from_millis(120), event)
+            .unwrap();
         b.add_systems(Phase::Act, |mut q: bevy_ecs::system::Query<&mut Pos>| {
             for mut p in &mut q {
                 p.0 -= 1;
@@ -524,10 +526,12 @@ fn counters_and_tick_are_bounded() {
         subject: StableId::from_snapshot_raw(0),
         arg: 0,
     };
-    let seq = sim
+    // #31: the event counter is at the bound, so a new event is refused rather than making
+    // a save that could not be read back.
+    let refused = sim
         .world
         .resource_mut::<EventQueue>()
         .schedule(SimTime::from_millis(500), event);
-    assert_eq!(seq, 1 << 62);
+    assert_eq!(refused, Err(ScheduleError::CounterExhausted));
     sim.step();
 }

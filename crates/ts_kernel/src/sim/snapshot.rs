@@ -104,9 +104,8 @@ impl std::error::Error for RestoreError {}
 ///   `Message`s written and read within the same tick with an explicit phase order, no
 ///   undeclared game resource or entity, and rebuildable caches declared with
 ///   `transient_component` (AS-27, see [`Plugin`]);
-/// - enforced before the first rule plugin merges (phase 1) by a generic restore test and
-///   `clippy.toml` bans, see #31 (AS-27).
-// TODO(#31): enforce the no-hidden-state contract automatically.
+/// - enforced (#31, AS-27) by the generic resume test `ts_toy::resume::check_resume`, run
+///   on `standard_rules()` by `ts_game`, and by the `clippy.toml` bans.
 // spec: revues/architecture.md §11.1, §12.4
 pub trait Snapshot: Sized {
     /// Takes the snapshot.

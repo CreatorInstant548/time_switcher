@@ -156,6 +156,34 @@ fn out_rules() {
         prepare(&cache.join("x").join(".GIT").join("y"), &cache, false),
         Err(OutError::BadPath)
     );
+    // Windows strips trailing dots and spaces while making a path absolute (`.git.` becomes
+    // `.git`), a verbatim path can still name them, and `:` opens an NTFS stream
+    // (`.git::$INDEX_ALLOCATION` creates a `.git` directory): all refused, nothing created.
+    // `raw` is a plain path (the kind `absolute` rewrites), `cache` a verbatim one.
+    #[cfg(windows)]
+    for name in [
+        ".git.",
+        ".git ",
+        ".GIT. .",
+        "x.",
+        ".git::$INDEX_ALLOCATION",
+        "a:b",
+        "a*",
+    ] {
+        for base in [&raw, &cache] {
+            for out in [
+                base.join("trail").join(name),
+                base.join("trail").join(name).join("y"),
+            ] {
+                assert_eq!(
+                    prepare(&out, &cache, true),
+                    Err(OutError::BadPath),
+                    "{out:?}"
+                );
+            }
+        }
+    }
+    assert!(!cache.join("trail").exists());
     // Inside a Git working copy: refused, even with the option (A6), and nothing created.
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("never_written");
     assert_eq!(prepare(&repo, &cache, true), Err(OutError::InRepository));

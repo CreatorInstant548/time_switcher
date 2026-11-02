@@ -11,5 +11,9 @@ publish = false
 ts_kernel = { path = "../ts_kernel" }
 ts_model = { path = "../ts_model" }
 
+# The generic resume test of every rule plugin (#31): a test crate, never a normal dependency.
+[dev-dependencies]
+ts_toy = { path = "../ts_toy" }
+
 [lints]
 workspace = true
