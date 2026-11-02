@@ -520,3 +520,16 @@ erun\datanalytics\` ; l'utilisateur en est informé.
   - lancer ensuite les agents sur #133, #141, #144, puis #145 ;
   - traiter #19 (Dependabot, `.github/`), #130, #139, #119 et le lot C de #91 ;
   - fin de phase : T12 et l'audit SEC0-28.
+
+### 02/11 (suite 5) : `/security-review` inopérant dans les worktrees manuels
+
+- **Constat** : le skill calcule son diff depuis la copie principale. Dans un worktree créé à la main, il ne voit rien. Les mentions « aucun constat » des PR de mes agents sont donc non prouvées (#120, #122 et #132 confirmées par leur auteur ; les autres non vérifiées PR par PR).
+- **Décidé** : les auteurs ne l'annoncent plus ; le relecteur neuf fait la passe de sécurité et le dit dans son `review-ok`. Remplacement de la règle de CLAUDE.md et revue a posteriori soumis à l'architecture et sécurité.
+- **Revue a posteriori de #120, #122, #132** : aucun constat sur ces PR. Défaut antérieur trouvé : #153 (instantané forgé, panique au premier tick), établi par lecture, non exécuté.
+- **Fusions** : #149 (`ts-data check`) et #143.
+- **PR en relecture** : #121 (`9fdfa4f`, `archsec-ok` déjà posté), #147, #148, #151.
+- **Nouvelles issues** : #152 (suites de #143, dont U+200E/U+200F), #153, #154 (`.git/shallow`, commit-graph).
+- **À lancer** :
+  - après #121 : agent neuf sur le noyau (#133, #141, #144, #153) ;
+  - après le lot 3A : lot C (#152, reste de #91, #130, #139, #119) ;
+  - #19 (Dependabot) et #154.
