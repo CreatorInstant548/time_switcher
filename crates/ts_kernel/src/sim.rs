@@ -9,7 +9,8 @@ use bevy_ecs::component::{Component, ComponentId};
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::{QueryState, With};
 use bevy_ecs::resource::Resource;
-use bevy_ecs::schedule::{Schedule, Schedules};
+use bevy_ecs::schedule::{ConditionWithAccess, Schedule, Schedules};
+use bevy_ecs::system::System;
 use bevy_ecs::world::World;
 use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 
@@ -388,6 +389,14 @@ pub enum BuildError {
         /// Phase concerned.
         phase: Phase,
     },
+    /// A run condition of `phase` (`run_if`, on a system or on a set) has deferred buffers
+    /// (`Commands`, `Deferred<T>`): the single-threaded executor applies them as soon as the
+    /// condition is evaluated, the parallel one never does, so the result would depend on
+    /// the executor (AS-57, #93).
+    DeferredCondition {
+        /// Phase concerned.
+        phase: Phase,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -438,6 +447,10 @@ impl fmt::Display for BuildError {
                     "a system of phase {phase:?} opts out of ambiguity detection"
                 )
             }
+            Self::DeferredCondition { phase } => write!(
+                f,
+                "a run condition of phase {phase:?} has deferred buffers"
+            ),
             Self::DeferredExclusive { phase } => write!(
                 f,
                 "a system of phase {phase:?} has exclusive world access and deferred buffers"
@@ -692,6 +705,16 @@ impl Sim {
         for (schedule, &phase) in phases.iter_mut().zip(Phase::ALL.iter()) {
             if !schedule.graph().ambiguous_with_all.is_empty() {
                 return Err(BuildError::AmbiguityOptOut { phase: Some(phase) });
+            }
+            // AS-57 (#93 review): conditions move into the executable schedule when it is
+            // built, so they are initialized (which sets their flags) and checked before.
+            schedule.graph_mut().initialize(&mut world);
+            let graph = schedule.graph();
+            let deferred = |cs: &[ConditionWithAccess]| cs.iter().any(|c| c.has_deferred());
+            if graph.systems.iter().any(|(_, _, cs)| deferred(cs))
+                || graph.system_sets.iter().any(|(_, _, cs)| deferred(cs))
+            {
+                return Err(BuildError::DeferredCondition { phase });
             }
             if let Err(e) = schedule.initialize(&mut world) {
                 let message = e.to_string(schedule.graph(), &world);

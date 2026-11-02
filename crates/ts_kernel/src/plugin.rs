@@ -51,7 +51,10 @@ use crate::{Phase, StateDecode, StateHash};
 /// phase. An exclusive system (`&mut World`) carries no deferred buffer (`Commands`,
 /// `Deferred<T>`, also through `pipe` or another combinator): the parallel executor would
 /// apply them as soon as it ends, the single-threaded one at the end of the phase, and
-/// [`crate::Sim::build`] refuses it ([`crate::BuildError::DeferredExclusive`]).
+/// [`crate::Sim::build`] refuses it ([`crate::BuildError::DeferredExclusive`]). Nor does a run
+/// condition (`run_if`, on a system or a set): the single-threaded executor applies its
+/// buffers when it evaluates it, the parallel one never, and [`crate::Sim::build`] refuses
+/// it ([`crate::BuildError::DeferredCondition`]).
 ///
 /// **Ticks** (AS-27, AS-57 K-d): a rule never reads a change tick; `clippy.toml` bans every
 /// method that yields one. Known limit, accepted (AS-57): `Tick` values can still be

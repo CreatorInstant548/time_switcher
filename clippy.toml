@@ -11,6 +11,7 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 
 disallowed-methods = [
+    { path = "bevy_ecs::change_detection::AtomicTick::get", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::change_detection::CheckChangeTicks::present_tick", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::change_detection::ComponentTicks::is_added", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::change_detection::ComponentTicks::is_changed", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
@@ -58,11 +59,13 @@ disallowed-methods = [
     { path = "bevy_ecs::entity::Entities::entity_get_spawn_or_despawn_tick", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::schedule::IntoScheduleConfigs::ambiguous_with", reason = "arête d'ambiguïté non détectée à la construction (L7) : ordonner les systèmes explicitement (architecture §9.2, issue #12)", allow-invalid = true },
     { path = "bevy_ecs::schedule::Schedule::apply_deferred", reason = "no sync point inside a phase (AS-57 K-b, #93): the commands of a phase apply at its end, visible from the next phase", allow-invalid = true },
+    { path = "bevy_ecs::storage::Column::get_summary_tick", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::storage::ComponentSparseSet::get_ticks", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::storage::NonSendData::get_ticks", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::storage::Table::get_summary_tick", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::system::System::apply_deferred", reason = "no sync point inside a phase (AS-57 K-b, #93): the commands of a phase apply at its end, visible from the next phase", allow-invalid = true },
     { path = "bevy_ecs::system::System::get_last_run", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
+    { path = "bevy_ecs::system::SystemMeta::get_last_run", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::world::DeferredWorld::change_tick", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::world::EntityMut::get_change_ticks", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::world::EntityMut::get_change_ticks_by_id", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
@@ -84,6 +87,7 @@ disallowed-methods = [
     { path = "bevy_ecs::world::FilteredEntityRef::get_change_ticks_by_id", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::world::FilteredEntityRef::spawn_tick", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::world::World::change_tick", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
+    { path = "bevy_ecs::world::World::check_change_ticks", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::world::World::get_resource_change_ticks", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::world::World::get_resource_change_ticks_by_id", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::world::World::increment_change_tick", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
@@ -135,6 +139,7 @@ disallowed-methods = [
 
 disallowed-types = [
     { path = "bevy_ecs::archetype::ComponentIndex", reason = "bevy collection reachable through the ts_kernel re-export, whose order depends on hashing or insertion history: use BTreeMap/BTreeSet or a sorted Vec (architecture §9.2, issue #12)", allow-invalid = true },
+    { path = "bevy_ecs::change_detection::CheckChangeTicks", reason = "restore contract (AS-27, AS-57 K-d, #93): change ticks restart on restore, so a rule never reads their value, even by inference", allow-invalid = true },
     { path = "bevy_ecs::change_detection::ComponentTicks", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
     { path = "bevy_ecs::change_detection::Tick", reason = "restore contract (AS-27, #31): a restore rebuilds the systems and restarts change detection, so a rule keeps no state between ticks outside its declared state", allow-invalid = true },
     { path = "bevy_ecs::entity::EntityEquivalentHashMap", reason = "bevy collection reachable through the ts_kernel re-export, whose order depends on hashing or insertion history: use BTreeMap/BTreeSet or a sorted Vec (architecture §9.2, issue #12)", allow-invalid = true },

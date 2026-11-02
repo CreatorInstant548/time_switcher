@@ -760,3 +760,66 @@ fn exclusive_systems_with_deferred_buffers_are_refused() {
     let [single, parallel] = under_both_executors(plain);
     assert_eq!(single.unwrap(), parallel.unwrap());
 }
+
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md AS-57
+/// Second review of #93: a run condition with deferred buffers (`Commands` or `Deferred<T>`,
+/// on a system or on a set) is refused at build time, identically under both executors: the
+/// single-threaded one would apply its buffers when it evaluates it, the parallel one never.
+/// A condition without buffers gives the same world under both executors.
+#[test]
+fn run_conditions_with_deferred_buffers_are_refused() {
+    use bevy_ecs::system::{Commands, Deferred};
+
+    fn with_commands(mut c: Commands) -> bool {
+        c.insert_resource(Counter(1));
+        true
+    }
+    fn with_deferred(mut d: Deferred<InsertCounter>) -> bool {
+        let _ = &mut *d;
+        true
+    }
+    fn plain() -> bool {
+        true
+    }
+    fn noop() {}
+    fn reads(c: Option<Res<Counter>>, mut seen: ResMut<SeenCounter>) {
+        seen.0 += u64::from(c.is_some());
+    }
+    let refused = Err(BuildError::DeferredCondition { phase: Phase::Act });
+    let forms: [fn(&mut SimBuilder); 4] = [
+        |b| {
+            b.state_resource::<SeenCounter>("probe")
+                .insert_resource(SeenCounter::default());
+            b.add_systems(Phase::Act, reads.run_if(with_commands));
+        },
+        |b| {
+            b.state_resource::<SeenCounter>("probe")
+                .insert_resource(SeenCounter::default());
+            b.add_systems(Phase::Act, reads.run_if(with_deferred));
+        },
+        |b| {
+            b.state_resource::<SeenCounter>("probe")
+                .insert_resource(SeenCounter::default());
+            b.add_systems(Phase::Act, (reads, noop).run_if(with_commands));
+        },
+        |b| {
+            b.state_resource::<SeenCounter>("probe")
+                .insert_resource(SeenCounter::default());
+            b.add_systems(Phase::Act, (reads, noop).run_if(with_deferred));
+        },
+    ];
+    for (i, form) in forms.into_iter().enumerate() {
+        assert_eq!(
+            under_both_executors(form),
+            [refused.clone(), refused.clone()],
+            "form {i}"
+        );
+    }
+    let control: fn(&mut SimBuilder) = |b| {
+        b.state_resource::<SeenCounter>("probe")
+            .insert_resource(SeenCounter::default());
+        b.add_systems(Phase::Act, (reads, noop).run_if(plain));
+    };
+    let [single, parallel] = under_both_executors(control);
+    assert_eq!(single.unwrap(), parallel.unwrap());
+}
