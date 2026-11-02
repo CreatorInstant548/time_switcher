@@ -41,21 +41,6 @@ pub enum Code {
     InvalidId,
     /// The name is empty, too long, not in NFC, or has leading or trailing whitespace (M40e).
     InvalidName,
-    /// The name has a control character, category Cc (M40e, A17).
-    NameControl,
-    /// The name has a format character, category Cf: writing-direction marks, zero-width
-    /// characters... (M40e, A17).
-    NameFormat,
-    /// The name has a private-use character, category Co (M40e, A17).
-    NamePrivateUse,
-    /// The name has an unassigned code point, category Cn (M40e, A17).
-    NameUnassigned,
-    /// The name has a line or paragraph separator, category Zl or Zp (M40e, A17).
-    NameLineSeparator,
-    /// The name has a space other than U+0020, U+00A0 and U+202F (M40e, A17).
-    NameSpace,
-    /// The name has more than two combining marks in a row (M40e, A17).
-    NameMarkRun,
     /// Two cards have the same identifier.
     DuplicateId,
     /// A reference does not resolve to an item card.
@@ -75,6 +60,21 @@ pub enum Code {
     /// A registry line was removed, moved or changed other than from active to retired
     /// (M40d: append-only).
     RegistryRewritten,
+    /// The name has a control character, category Cc (M40e, A17).
+    NameControl,
+    /// The name has a format character, category Cf: writing-direction marks, zero-width
+    /// characters... (M40e, A17).
+    NameFormat,
+    /// The name has a private-use character, category Co (M40e, A17).
+    NamePrivateUse,
+    /// The name has an unassigned code point, category Cn (M40e, A17).
+    NameUnassigned,
+    /// The name has a line or paragraph separator, category Zl or Zp (M40e, A17).
+    NameLineSeparator,
+    /// The name has a space other than U+0020, U+00A0 and U+202F (M40e, A17).
+    NameSpace,
+    /// The name has more than two combining marks in a row (M40e, A17).
+    NameMarkRun,
 }
 
 impl Code {
@@ -169,12 +169,12 @@ impl Code {
     }
 }
 
-/// Text from the input made safe to print on a log line: every control character and every
-/// non-printable character is escaped (`escape_debug`, so no newline or terminal escape
-/// survives), every `#` is escaped (the Actions runner reads `##[` and `##vso[` commands
-/// anywhere in a line), and a `:` that would come first on the line, after optional
-/// whitespace, is escaped too (it reads a `::` command there and trims leading whitespace).
-/// Used by [`Diagnostic::new`] and by hosts that print paths themselves.
+/// Text from the input made safe to print inside a log line: every control character and
+/// every non-printable character is escaped (`escape_debug`, so no newline or terminal escape
+/// survives), and every `#` is escaped (the Actions runner reads the `##[` and `##vso[`
+/// commands anywhere in a line). Used by [`Diagnostic::new`] and by hosts that print paths
+/// themselves. A text that may come first on a line also needs [`Diagnostic::new`]'s rule for
+/// a leading `:`.
 pub fn escape_for_log(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for c in text.chars().flat_map(char::escape_debug) {
@@ -183,13 +183,21 @@ pub fn escape_for_log(text: &str) -> String {
         }
         escaped.push(c);
     }
-    let rest = escaped.trim_start();
-    if rest.starts_with(':') {
-        let lead = escaped.len().saturating_sub(rest.len());
-        let (space, command) = escaped.split_at(lead);
-        return format!("{space}\\{command}");
-    }
     escaped
+}
+
+/// [`escape_for_log`] for a text that comes first on a line (the file of a [`Diagnostic`]): a
+/// `:` that is first after optional whitespace is escaped too, because the runner trims
+/// leading whitespace and reads a `::` command at the start of a line.
+fn escape_line_start(text: &str) -> String {
+    let escaped = escape_for_log(text);
+    let rest = escaped.trim_start();
+    if !rest.starts_with(':') {
+        return escaped;
+    }
+    let lead = escaped.len().saturating_sub(rest.len());
+    let (space, command) = escaped.split_at(lead);
+    format!("{space}\\{command}")
 }
 
 /// Longest `detail` kept: text from the input is never copied whole into an error.
@@ -216,13 +224,13 @@ pub struct Diagnostic {
 
 impl Diagnostic {
     /// Builds a diagnostic; `file` and `detail` are escaped by [`escape_for_log`] (no newline,
-    /// terminal escape or workflow command survives, even a file named `::warning::x.ron`
-    /// that a [`fmt::Display`] line would start with), and `detail` is cut to its first 80
-    /// characters first.
+    /// terminal escape or workflow command survives), `file` also for a leading `:` since the
+    /// [`fmt::Display`] line starts with it (a file named `::warning::x.ron` is not a
+    /// workflow command), and `detail` is cut to its first 80 characters first.
     pub fn new(code: Code, file: &str, position: (u32, u32), detail: &str) -> Self {
         Self {
             code,
-            file: escape_for_log(file),
+            file: escape_line_start(file),
             line: position.0,
             column: position.1,
             // Input text is escaped: no newline or terminal escape can forge a line of output.

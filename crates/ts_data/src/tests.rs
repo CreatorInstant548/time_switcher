@@ -466,6 +466,9 @@ fn file_name_cannot_start_a_workflow_command() {
     // An ordinary path, with `:` inside, is kept as it is.
     let d = Diagnostic::new(Code::RonSyntax, "dir/a:b.ron", (1, 1), "");
     assert_eq!(d.file, "dir/a:b.ron");
+    // A detail is never first on a line: its colons are kept.
+    let d = Diagnostic::new(Code::RonSyntax, "a.ron", (1, 1), ":x");
+    assert_eq!(d.detail, ":x");
 }
 
 #[test]
