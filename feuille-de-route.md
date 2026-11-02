@@ -46,6 +46,14 @@ Ce sont les *issues* reportées (organisation.md §5, point 5). Seul le travail 
 |---|---|---|---|---|
 | [#50](https://github.com/CreatorInstant548/time_switcher/issues/50) | Faire signer par le manifeste de `ts_persist` tout l'en-tête de l'enveloppe ; la politique de signature appartient à l'hôte (exigence AS-37) | dev, avec `archsec-ok` | La signature des artefacts et du client n'arrive qu'en phase 5 (S27, securite.md §7). Les petits points m4 et m7 sont corrigés en phase 0. m5 est suivi dans #45. | 02/11 |
 
+### Déclencheurs à surveiller (sans phase)
+
+Ce travail n'a lieu que si un événement précis se produit. La session dont la PR provoque cet événement le fait dans la même PR.
+
+| Déclencheur | Travail à faire | Origine | Inscrit le |
+|---|---|---|---|
+| Un `.gitattributes` de `main` déclare un pilote `merge=` | Figer la source des attributs du rejeu X2 de `tools/xtask/src/carry.rs`, par exemple avec `--attr-source` | AS-55, m2 (archi-sécu), PR #116 | 02/11 |
+
 ## Outils déjà installés
 
 | Outil | Version | Emplacement | Date |

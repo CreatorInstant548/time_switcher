@@ -233,3 +233,9 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
   - #43 à #45 (conception, PR #87) ;
   - #7 et #8, qui dépendent d'AU1 et donc de l'utilisateur.
 - **#71** : la PR #106 règle la dette. Le reste de §19.2 (`--seeds`, `--jobs`, `events.parquet`, `snapshots/`, `report.html`) est du travail neuf : il est reporté au reliquat de la phase 1 (décidé).
+- **Lot de dette du dev**, fusionnées :
+  - #105 (#82), #106 (#71), #107 (#56) ;
+  - #108, #109, #110 ;
+  - #112 (#26, #31), #115 (#18).
+- **#116 (AS-55)** est en cours de fusion. **#111 et #114** sont en correction. **#113** a été ouverte entre-temps.
+- **Reliquat** : nouvelle section « Déclencheurs à surveiller ». Premier déclencheur, AS-55 m2 : figer `--attr-source` du rejeu X2 le jour où un `.gitattributes` déclarera `merge=`.
