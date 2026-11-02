@@ -158,7 +158,8 @@ impl Default for SimConfig {
 
 // spec: revues/architecture.md §6.5, §8.1 ; carnet architecture-securite.md §9.10 L2
 /// "Full simulation" marker of an entity. Defined here only, it serves the time skip;
-/// `ts_model` re-exports it with `LodSimplified` and `LodStatistical`.
+/// `ts_model` re-exports it with `LodSimplified` and `LodStatistical`. It counts only on an
+/// entity that carries [`StableEntity`] (#31 m2).
 #[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LodComplete;
 
@@ -474,7 +475,8 @@ pub struct Sim {
     tick_ms: i64,
     active: Vec<(&'static str, u32)>,
     rules: RulesFingerprint,
-    complete: QueryState<Entity, With<LodComplete>>,
+    /// Stable entities in full simulation: the only ones the fingerprint sees (#31 m2).
+    complete: QueryState<Entity, (With<LodComplete>, With<StableEntity>)>,
     state: Vec<StateEntry>,
     migrations: Vec<(&'static str, u32)>,
     /// Components allowed on stable entities (M2).
@@ -663,7 +665,7 @@ impl Sim {
             .collect();
         let active: Vec<_> = plugins.iter().map(|p| (p.name(), p.version())).collect();
         let rules = RulesFingerprint::of(&active);
-        let complete = world.query_filtered::<Entity, With<LodComplete>>();
+        let complete = world.query_filtered::<Entity, (With<LodComplete>, With<StableEntity>)>();
         Ok(Self {
             world,
             phases,
@@ -752,7 +754,7 @@ impl Sim {
                 ParallelPhases::Always => true,
                 ParallelPhases::FromWork(from) => {
                     *systems >= 2 && {
-                        // Exact and cheap: `With<LodComplete>` is an archetype filter, so the
+                        // Exact and cheap: both `With` filters are archetype filters, so the
                         // lower bound is the sum of the matched table sizes.
                         let complete = self.complete.iter(&self.world).size_hint().0;
                         complete.saturating_add(due_events) >= from as usize
@@ -764,7 +766,9 @@ impl Sim {
         self.phases[phase.index()].run(&mut self.world);
     }
 
-    /// True if an entity carries [`LodComplete`].
+    /// True if a stable entity carries [`LodComplete`]. Only stable entities count, as in the
+    /// fingerprint and the snapshot: a marker on another entity, which a restore drops, must
+    /// not change the choice between ticking and skipping (#31 m2).
     fn has_complete_entities(&mut self) -> bool {
         self.complete.iter(&self.world).next().is_some()
     }
@@ -779,7 +783,7 @@ impl Sim {
     // spec: revues/architecture.md §8.1, §8.5
     /// Advances to the first tick start at or after the stop date.
     ///
-    /// **Time skip**: while no entity carries [`LodComplete`], the loop stops ticking and
+    /// **Time skip**: while no stable entity carries [`LodComplete`], the loop stops ticking and
     /// jumps straight to the tick that contains the next event. The skipped ticks are empty:
     /// an event is therefore handled in the same tick, with or without a skip.
     /// This relies on the time-skip contract stated on [`Plugin`].

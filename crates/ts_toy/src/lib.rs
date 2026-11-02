@@ -12,9 +12,12 @@
 //! - [`town`]: the toy generator, a grid of parcels and households drawn from keyed streams,
 //!   computed in parallel chunks merged in a fixed order (architecture §9.2).
 //! - [`world`]: the toy world plugin, which follows the kernel contracts (time skip, AS-27).
+//! - [`resume`]: the generic resume test of the restore contract, for every rule plugin
+//!   (AS-27, #31).
 
 #![forbid(unsafe_code)]
 
+pub mod resume;
 pub mod town;
 pub mod world;
 

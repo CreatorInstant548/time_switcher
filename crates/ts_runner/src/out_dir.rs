@@ -2,8 +2,10 @@
 //! The run directory of `ts-sim run` (`--out`). Rules (Y3):
 //! - `TS_CACHE` is a real directory (not a link), at least two levels below the root of the
 //!   disk, outside any Git working copy; its canonical form is the reference;
-//! - `--out` has no `..`, and **no existing component of it is a link** (symbolic link or
-//!   junction, any reparse point on Windows): nothing is followed;
+//! - `--out` has no `..`, no `.git` name, and on Windows no name ending in a dot or a space
+//!   (checked again after `absolute`, which rewrites such names); **no existing component of
+//!   it is a link** (symbolic link or junction, any reparse point on Windows): nothing is
+//!   followed;
 //! - its canonical form must be **strictly under** `TS_CACHE`; with the explicit option it may
 //!   be elsewhere, but **never inside a Git working copy** (A6: no artefact in the repository);
 //! - missing directories are created one by one, each checked afterwards; files are created
@@ -29,7 +31,8 @@ pub enum OutError {
     /// `TS_CACHE` is missing, a link, not a directory, too close to the root, or in a Git
     /// working copy.
     BadCache,
-    /// `--out` has a `..` component, no final name, or is not a directory.
+    /// `--out` has a `..` or `.git` component, on Windows a name that Win32 rewrites or reads
+    /// as something else (trailing dot or space, `:`, ...), no final name, or is not a directory.
     BadPath,
     /// An existing component of `--out` is a symbolic link or a junction.
     Link,
@@ -50,7 +53,10 @@ impl fmt::Display for OutError {
                 "TS_CACHE refusé : absent, lien, pas un dossier, trop près de la \
                                racine du disque, ou dans une copie de travail Git"
             }
-            Self::BadPath => "--out invalide : composant `..`, pas de nom final, ou pas un dossier",
+            Self::BadPath => {
+                "invalid --out: `..`, `.git`, a Windows-rewritten name (trailing dot or space, `:`), \
+                 no final name, or not a directory"
+            }
             Self::Link => "--out passe par un lien symbolique ou une jonction : refusé",
             Self::OutsideCache => {
                 "--out n'est pas strictement sous TS_CACHE (option --allow-outside-cache)"
@@ -102,20 +108,62 @@ pub fn cache_root(cache: &Path) -> Result<PathBuf, OutError> {
     Ok(canon)
 }
 
+/// Whether `c` is a component that `--out` never allows: `..`, a `.git` name (it would turn the
+/// run directory into a working copy for [`in_repository`]), and on Windows a name that Win32
+/// rewrites or reads as something else (see [`is_win32_odd_name`]).
+fn is_refused(c: Component<'_>) -> bool {
+    // In a verbatim path (`\?\`), `.` and `..` are plain names to `components`, not to Windows.
+    match c {
+        Component::ParentDir => true,
+        Component::Normal(n) => {
+            n == "." || n == ".." || n.eq_ignore_ascii_case(".git") || is_win32_odd_name(n)
+        }
+        _ => false,
+    }
+}
+
+/// A name ending in a dot or a space (Win32 strips them: `.git.` is `.git`), or holding a
+/// character Windows reserves, such as `:` (`.git::$INDEX_ALLOCATION` creates a `.git` directory).
+#[cfg(windows)]
+fn is_win32_odd_name(name: &std::ffi::OsStr) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    const RESERVED: &[u8] = b"<>:\"|?*";
+    let units: Vec<u16> = name.encode_wide().collect();
+    units
+        .last()
+        .is_some_and(|&u| u == u16::from(b'.') || u == u16::from(b' '))
+        || units
+            .iter()
+            .any(|&u| u < 0x20 || u8::try_from(u).is_ok_and(|b| RESERVED.contains(&b)))
+}
+
+#[cfg(not(windows))]
+fn is_win32_odd_name(_: &std::ffi::OsStr) -> bool {
+    false
+}
+
 /// Checks `out` against the canonical `cache` (from [`cache_root`]), creates the missing
 /// directories, and returns the canonical run directory.
 pub fn prepare(out: &Path, cache: &Path, outside_allowed: bool) -> Result<PathBuf, OutError> {
-    // In a verbatim path (`\\?\`), `.` and `..` are plain names to `components`, not to Windows.
-    // A `.git` name would turn the run directory into a working copy for `in_repository`.
-    let refused = |c: Component<'_>| match c {
-        Component::ParentDir => true,
-        Component::Normal(n) => n == "." || n == ".." || n.eq_ignore_ascii_case(".git"),
-        _ => false,
-    };
-    if out.components().any(refused) {
+    if out.components().any(is_refused) {
         return Err(OutError::BadPath);
     }
+    let normal = |c: &Component<'_>| matches!(c, Component::Normal(_));
+    let given = out.components().filter(normal).count();
     let out = std::path::absolute(out).map_err(|_| OutError::BadPath)?;
+    // `absolute` rewrites names on Windows (it strips trailing dots and spaces: `.git.` becomes
+    // `.git`), so the same check runs again on what it returns, which is what gets created. Only
+    // on the trailing components the caller gave: the current directory, prepended to a relative
+    // `--out`, is not ours to judge.
+    if out
+        .components()
+        .rev()
+        .filter(normal)
+        .take(given)
+        .any(is_refused)
+    {
+        return Err(OutError::BadPath);
+    }
     // A link is refused at the deepest existing prefix, and anywhere at or under `TS_CACHE`; a
     // system link above it (`/var` on some systems) is resolved by `canonicalize` below.
     let in_cache = |p: &Path| {

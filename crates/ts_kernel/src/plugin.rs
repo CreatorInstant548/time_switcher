@@ -20,7 +20,7 @@ use crate::{Phase, StateDecode, StateHash};
 /// not change the rules of the others; the build fails if an active plugin depends on a
 /// disabled one.
 ///
-/// **Time-skip contract** (architecture §8.1): while no entity carries
+/// **Time-skip contract** (architecture §8.1): while no stable entity carries
 /// [`crate::LodComplete`], [`crate::Sim::run_until`] skips the ticks that have no due event.
 /// A system must therefore leave the state unchanged on a tick with no due event and no
 /// entity in full simulation: no per-tick counter, no `Local` accumulator, no polling of the
@@ -42,9 +42,10 @@ use crate::{Phase, StateDecode, StateHash};
 /// - a cache that can be rebuilt from the state is declared with
 ///   [`SimBuilder::transient_component`].
 ///
-/// Enforced before the first rule plugin merges (phase 1) by a generic restore test and
-/// `clippy.toml` bans, see #31 (AS-27).
-// TODO(#31): enforce this contract automatically.
+/// Enforced (#31, AS-27) by the generic resume test `ts_toy::resume::check_resume`, which
+/// `ts_game` runs on `standard_rules()` and each rule crate on its plugins, and by the
+/// `clippy.toml` bans on `Local`, `Added`, `Changed` and the other change-detection reads
+/// (tooling part of #31, merged with it).
 // spec: revues/architecture.md §11.1, §12.4
 pub trait Plugin {
     /// Stable, unique name of the plugin (for example `"economy"`).
