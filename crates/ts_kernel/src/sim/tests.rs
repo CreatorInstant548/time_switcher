@@ -558,7 +558,8 @@ impl Plugin for Locks {
 fn undeclared_sites_are_refused_on_every_path() {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    let rules: Vec<Box<dyn Plugin>> = vec![Box::new(Drawing("cameras", &[CAMERA])), Box::new(Locks)];
+    let rules: Vec<Box<dyn Plugin>> =
+        vec![Box::new(Drawing("cameras", &[CAMERA])), Box::new(Locks)];
     let mut sim = build(&rules).unwrap();
     let who = StableId::from_snapshot_raw(4);
     let streams = sim.world().resource::<WorldStreams>();

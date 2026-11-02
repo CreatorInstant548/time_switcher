@@ -316,7 +316,6 @@ impl WorldStreams {
     }
 }
 
-
 // spec: revues/architecture.md §5.3, §7.1, §9.2
 /// Failure to build a [`Sim`].
 #[derive(Debug, Clone, PartialEq, Eq)]
