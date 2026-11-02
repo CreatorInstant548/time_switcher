@@ -51,6 +51,7 @@ Elles sont à compléter **dans la PR qui crée la crate concernée** :
 - `manifests::HOSTS` : crates d'hôte (`ts_host`, `ts_server`, `ts_client_native`) ;
 - `manifests::TOOLS` : crates d'outil (`ts_py`, `ts_runner`, `ts_viz`, `xtask`). Les hôtes et les outils sont les seules crates qui peuvent s'exempter des interdictions de clippy. Les outils sont aussi les seules qui peuvent dépendre de `ts_toy`. **Toute autre crate est traitée comme une crate de cœur ou de règles** (refus par défaut) ;
 - `scan::LOCAL_PATH_EXEMPT` : fichiers exemptés des motifs de chemins fixes, c'est-à-dire seulement le fichier qui définit et teste ces motifs. Les noms d'utilisateur et de machine y restent recherchés.
+- `macros::ALLOWED` (AS-56) : liste fermée des `macro_rules!` des crates de cœur et de règles, une entrée par crate, fichier (relatif à la crate), nom et nombre de définitions : `not_public` (deux fois, `ts_kernel/src/build_profile.rs`), `state_decode_int`, `assert_size`, `state_hash_int` (`ts_kernel`), `leaf` et `flat_schema` (`ts_persist/src/schema.rs`). L'étape `clippy-exemptions` refuse toute autre définition dans ces crates (tests compris), tout compte qui diffère et toute entrée sans définition. Une macro est le seul moyen d'assembler un attribut, que l'étape ne peut pas suivre en général : toute nouvelle macro passe donc par la relecture d'archi-sécu, propriétaire de la liste (chemin sensible). Filet contre l'erreur, comme `reserved.rs`.
 
 ## 3. Dépendances et exemptions
 
