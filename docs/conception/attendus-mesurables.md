@@ -3,7 +3,7 @@
 > Fichier tenu par le responsable conception. Créé le 30/10/2026, à la demande de l'orchestrateur ([../pilotage/organisation.md](../pilotage/organisation.md), §3.1).
 > Il rassemble les **valeurs cibles** écrites dans la conception, pour que le responsable qualité et essais les suive. La source fait foi : en cas d'écart, c'est le fichier cité qui a raison, et ce tableau doit être corrigé.
 > Les valeurs marquées **[à mesurer]** ou **[à calibrer]** dans leur source sont des objectifs de départ. Un objectif manqué remonte au responsable conception comme une remontée `role:design` de type `deviation` ; s'il touche à la technique, il va au responsable architecture et sécurité.
-> Règle 6 du [README](README.md) : les lignes ne sont jamais renumérotées. Une nouvelle ligne prend le numéro suivant, et une ligne retirée garde son numéro avec la mention « supprimée ».
+> Règle 6 du [README](README.md) : les lignes ne sont jamais renumérotées. Une nouvelle ligne prend le numéro suivant, et une ligne retirée garde son numéro avec la mention « supprimée ». Une famille de bornes de même source partage un numéro, et chaque borne y prend une lettre (M39a, M39b…).
 
 ## 1. Simulation et performances
 
@@ -90,20 +90,20 @@
 
 ## 10. Bornes et formats des données (décidé le 01/11)
 
-Valeurs de départ pour les remontées [#43](https://github.com/CreatorInstant548/time_switcher/issues/43), [#44](https://github.com/CreatorInstant548/time_switcher/issues/44) et [#45](https://github.com/CreatorInstant548/time_switcher/issues/45), avec leur **méthode de calibrage**. Une borne n'est pas une cible : c'est un plafond de sécurité, choisi assez large pour ne jamais gêner un contenu ou un monde légitime.
+Valeurs de départ pour les remontées [#43](https://github.com/CreatorInstant548/time_switcher/issues/43), [#44](https://github.com/CreatorInstant548/time_switcher/issues/44) et [#45](https://github.com/CreatorInstant548/time_switcher/issues/45), avec leur **méthode de calibrage**. Une borne n'est pas une cible : c'est un plafond de sécurité, choisi assez large pour ne jamais gêner un contenu ou un monde légitime. Chaque borne a sa propre lettre (M39a, M39b…), pour être relevée ou retirée seule.
 
-**Méthode commune** (décidé) : chaque borne a sa **mesure** (outil cité ci-dessous), qui rapporte la part utilisée de la borne. La CI **alerte à 50 %**. On relève alors la borne par une PR de conception, à **4 fois** la plus grande valeur mesurée, arrondie à la puissance de 2 supérieure. Une borne ne baisse jamais en dessous de 4 fois le maximum mesuré. *Pourquoi : une alerte à mi-chemin laisse le temps de décider ; une marge de 4 absorbe une phase de contenus sans rouvrir la question à chaque PR.*
+**Méthode commune** (décidé) : chaque borne a sa **mesure** (outil cité ci-dessous), qui rapporte la part utilisée de la borne. La CI **alerte à 50 %**. On relève alors la borne par une PR de conception, à **4 fois** la plus grande valeur mesurée, arrondie à la puissance de 2 supérieure. Une borne ne baisse jamais en dessous de 4 fois le maximum mesuré. *Pourquoi : une alerte à mi-chemin laisse le temps de décider ; une marge de 4 absorbe une phase de contenus sans rouvrir la question à chaque PR.* Les bornes du décodage des instantanés (§10.3) ont leur propre calibrage, lié à la population.
 
 ### 10.1 Chargement des contenus (`ts_data`, #43)
 
 | N° | Borne | Valeur | Raison |
 |---|---|---|---|
-| M39 | Taille d'un fichier `.ron` | 1 Mio | Un fichier écrit à la main reste très en dessous ; les grandes tables (prénoms, noms, taux) se découpent par thème |
-| M39 | Taille totale d'un paquet | 64 Mio | Borne la mémoire d'un chargement |
-| M39 | Nombre de fichiers d'un paquet | 4 096 | Un fichier par nature, par rôle ou par famille de pièces |
-| M39 | Nombre de fiches d'un paquet | 65 536 | Catalogues prévus jusqu'en phase 3 : quelques centaines d'actes et de rôles, quelques milliers de pièces de garde-robe, de recettes et de lignes de tables |
-| M39 | Profondeur d'imbrication RON | 16 | Les fiches s'imbriquent sur 3 à 6 niveaux |
-| M39 | Profondeur des sous-dossiers | 8 | `data/content/<domaine>/<famille>/…` en utilise 3 ou 4 |
+| M39a | Taille d'un fichier `.ron` | 1 Mio | Un fichier écrit à la main reste très en dessous ; les grandes tables (prénoms, noms, taux) se découpent par thème |
+| M39b | Taille totale d'un paquet | 64 Mio | Borne la mémoire d'un chargement |
+| M39c | Nombre de fichiers d'un paquet | 4 096 | Un fichier par nature, par rôle ou par famille de pièces |
+| M39d | Nombre de fiches d'un paquet | 65 536 | Catalogues prévus jusqu'en phase 3 : quelques centaines d'actes et de rôles, quelques milliers de pièces de garde-robe, de recettes et de lignes de tables |
+| M39e | Profondeur d'imbrication RON | 16 | Les fiches s'imbriquent sur 3 à 6 niveaux |
+| M39f | Profondeur des sous-dossiers | 8 | `data/content/<domaine>/<famille>/…` en utilise 3 ou 4 |
 
 Mesure : `ts-data check` rapporte, pour chaque borne, la plus grande valeur du paquet. Dès la phase 0.
 
@@ -111,36 +111,44 @@ Mesure : `ts-data check` rapporte, pour chaque borne, la plus grande valeur du p
 
 | N° | Règle | Valeur |
 |---|---|---|
-| M40 | Grammaire d'un identifiant | Segments `[a-z][a-z0-9_]*` séparés par un point, **au moins deux** ; 1 à 64 octets ; en anglais, comme le code |
-| M40 | Premier segment | **Espace de noms de la sorte de fiche** (`act`, `role`, `item`, `recipe`, `table`, `appearance`, `conduct`…), pris dans une liste fermée tenue par `ts_data` et cohérente avec le dossier du fichier |
-| M40 | Unicité | Unique dans tout le paquet, toutes sortes confondues |
-| M40 | Stabilité | Un identifiant n'est **jamais renommé ni réutilisé** : une fiche retirée laisse son identifiant dans une liste des identifiants retirés, que `ts-data check` refuse de voir réapparaître (comme la règle 6 du [README](README.md) pour les sections) |
-| M40 | Nom affiché | 1 à 256 octets d'UTF-8, en **forme normalisée NFC**, sans caractère de contrôle ni espace en tête ou en fin ; en français, comme toute la fiction |
+| M40a | Grammaire d'un identifiant | Segments `[a-z][a-z0-9_]*` séparés par un point, **au moins deux** ; 1 à 64 octets ; en anglais, comme le code |
+| M40b | Premier segment | **Espace de noms de la sorte de fiche** : le nom de la sorte en minuscules (`Activity` donne `activity`, `Item` donne `item`). La liste est celle des sortes de fiches de `ts_data` : aujourd'hui `activity` et `item` ; à venir, par exemple `role`, `recipe`, `garment` ou `table`. Elle s'allonge quand une PR de conception ajoute une sorte. L'espace de noms suit la **sorte**, jamais le dossier : un dossier peut regrouper plusieurs sortes, et les fichiers peuvent rester à plat (`data/content/items.ron`) |
+| M40c | Unicité | Unique dans tout le paquet, toutes sortes confondues |
+| M40d | Stabilité | Un identifiant n'est **jamais renommé ni réutilisé**. Le registre est **un seul fichier**, `data/content/ids.lock`, en ajout seul, pour toutes les sortes : c'est celui que prévoit [direction-artistique](domaines/direction-artistique.md) pour les pièces de vêtement et les familles. Chaque ligne donne un identifiant et son état, actif ou retiré. `ts-data check` refuse un identifiant du paquet absent du registre, un identifiant retiré qui réapparaît, et une ligne supprimée ou modifiée autrement que par le passage d'actif à retiré. C'est l'équivalent, pour les fiches, de la règle 6 des « Règles pour les sessions de domaine » du [README](README.md), qui interdit de renuméroter les sections |
+| M40e | Nom affiché | 1 à 256 octets d'UTF-8, en **forme normalisée NFC**, sans caractère de contrôle ni espace en tête ou en fin ; en français, comme toute la fiction |
 
 *Pourquoi :*
 - les identifiants entrent dans l'empreinte du paquet, et l'espace de noms en tête évite les collisions entre domaines sans préfixe numérique ;
+- lier l'espace de noms à la sorte plutôt qu'au dossier laisse chaque domaine ranger ses fichiers comme il veut, sans que le contrôle dépende de ce rangement ;
+- un registre unique évite que deux fichiers gardent le même invariant ;
 - la forme NFC garantit qu'un même nom donne une même empreinte, quel que soit l'éditeur ;
 - la longueur d'affichage relève de l'interface : un nom long est abrégé à l'écran, jamais refusé au chargement.
 
-Mesure : `ts-data check`. Dès la phase 0.
+Mesure : `ts-data check`, dès la phase 0. Le registre M40d naît avec la PR qui ajoute son contrôle, en phase 0 ; il reprend alors tous les identifiants existants, à l'état actif.
 
 ### 10.3 Décodage des instantanés (`ts_persist`, #45)
 
+Ces bornes portent sur des **octets et des nombres d'éléments en entrée** du décodeur, plus le pic de mémoire qu'ils entraînent (M41h). Les bornes des valeurs décodées (compteurs, dates, `DayOrigin`, durée du tick, dans `ts_kernel`) sont fixées par construction dans le code et ne relèvent pas de M41.
+
 | N° | Borne | Valeur de départ |
 |---|---|---|
-| M41 | Enveloppe stockée (fichier entier) | 256 Mio |
-| M41 | Total décompressé, toutes parts | 1 Gio |
-| M41 | Taille décompressée d'une part | 512 Mio |
-| M41 | Manifeste | 4 Mio |
-| M41 | Nombre de parts | 65 536 |
-| M41 | Nom d'une part | 128 octets |
-| M41 | Fenêtre `zstd` | 8 Mio |
+| M41a | Enveloppe stockée (fichier entier, compressé) | 256 Mio |
+| M41b | Total décompressé, toutes parts | 1 Gio |
+| M41c | Taille décompressée d'une part | 512 Mio |
+| M41d | Manifeste | 4 Mio |
+| M41e | Nombre de parts | 65 536 |
+| M41f | Nom d'une part | 128 octets |
+| M41g | Fenêtre `zstd` | 8 Mio |
+| M41h | **Pic de mémoire du décodage** (tampons d'entrée, parts décompressées et état décodé, au plus haut) | ≤ 2 Gio au départ ; après calibrage, ≤ 3 fois la taille en mémoire du monde au plafond **[à calibrer]** |
 
-Les valeurs de départ sont celles du code ; elles valent pour un monde jusqu'à ≈ 12 000 habitants, sur l'estimation de [revues/architecture.md](revues/architecture.md) §12.3 (250 à 400 Mo en mémoire et 60 à 120 Mo compressés pour 10 000 habitants).
+Les valeurs de départ sont celles du code. Elles laissent de la marge à un monde de 10 000 habitants, sur l'estimation haute de [revues/architecture.md](revues/architecture.md) §12.3 (120 Mo compressés et 400 Mo en mémoire, cette dernière prise comme majorant du décompressé) : l'enveloppe tient jusqu'à ≈ 21 000 habitants, le total décompressé jusqu'à ≈ 26 000. Avec ces bornes, le pic de mémoire est d'environ 1,5 Gio ([#50](https://github.com/CreatorInstant548/time_switcher/issues/50), m5), sous le plafond de départ de M41h.
 
-**Calibrage :**
-- **Taille de référence** : en phase 1, on mesure un monde réel au **plafond de calcul** fixé pour un serveur ([population](domaines/population.md) §7.6). La mesure porte sur la taille en mémoire *après décodage*, pas seulement sur l'entrée, pour tenir compte de l'amplification (un `Option<Large>` à `None` tient en un octet d'entrée). Les entrées du fuzzing qui amplifient le plus servent à vérifier cette mesure.
-- **Valeur des bornes** : 2 fois la mesure au plafond, arrondie à la puissance de 2 supérieure. Les bornes de taille croissent donc avec la population ; les autres ne changent que si le découpage en parts change.
+**Calibrage** (décidé) :
+- **Deux mesures distinctes**, en phase 1, sur un monde réel au **plafond de calcul** fixé pour un serveur ([population](domaines/population.md) §7.6) :
+  - la **taille en octets** de l'instantané : enveloppe compressée, total décompressé (forme canonique), plus grande part et manifeste ;
+  - la **taille en mémoire après décodage** et le **pic de mémoire** du décodage. Elles donnent le **taux d'amplification** (un `Option<Large>` à `None` tient en un octet d'entrée) et dimensionnent la mémoire de l'hôte. Les entrées du fuzzing qui amplifient le plus servent à vérifier ce taux.
+- **Bornes d'octets (M41a à M41d)** : chacune vaut 2 fois sa propre mesure en octets au plafond, arrondie à la puissance de 2 supérieure. Elles croissent donc avec la population. M41e à M41g ne changent que si le découpage en parts ou la compression change.
+- **Pic de mémoire (M41h)** : il doit rester sous 3 fois la taille en mémoire du monde au plafond, sur le plus gros instantané attendu comme sur les pires entrées du fuzzing. S'il dépasse, on resserre d'abord les bornes d'octets, ou on change le décodage (décoder part par part, libérer chaque tampon décompressé dès qu'il est lu), plutôt que de relever M41h. *Pourquoi : un petit fichier ne doit jamais pouvoir réclamer plusieurs gigaoctets à un serveur ou à la machine d'un joueur.*
 - **Mêmes bornes en solo et en ligne.** Les mondes y ont la même taille, et une sauvegarde solo reçue d'un autre joueur doit être décodée avec la même prudence (S24). Un hôte peut toujours passer des bornes plus strictes.
 
-Mesure : `ts-sim` (taille des instantanés au plafond) et fuzzing de `ts_persist`. Valeurs de départ dès la phase 0, calibrage en phase 1.
+Mesure : `ts-sim` (tailles des instantanés et pic de mémoire au plafond) et fuzzing de `ts_persist`. Valeurs de départ dès la phase 0, calibrage en phase 1.
