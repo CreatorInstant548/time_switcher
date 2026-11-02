@@ -78,11 +78,14 @@ fn parse(line: &str) -> Option<Line<'_>> {
         .filter(|(_, v)| v.is_empty() || v.starts_with(' '));
     match pair {
         Some((key, value)) => {
-            let key = key.trim_matches(['"', '\'']); // clé citée : même traitement
+            // Closed grammar (#77, AS-54): a bare name of `[A-Za-z0-9_-]`, with at most one `.`.
+            // A quoted key is not a form of this check (an unclosed quote would hide the lines
+            // that follow).
             let valid = !key.is_empty()
+                && key.matches('.').count() <= 1
                 && key
                     .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "_-".contains(c));
+                    .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c));
             let key = Some(key.to_ascii_lowercase());
             let value = value.trim_matches(' ');
             valid.then_some(Line {
@@ -112,6 +115,105 @@ fn strip_comment(value: &str) -> &str {
         .find(" #")
         .map_or(value, |i| &value[..i])
         .trim_matches(' ')
+}
+
+/// A value of the closed grammar (#77, AS-54): one node on one line, with the text that is the
+/// value itself (comment left out).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Value<'a> {
+    /// Nothing, or only a comment: the children follow, if any.
+    Empty,
+    /// A block scalar header: `|`, `|-`, `>` or `>-`.
+    Block(&'a str),
+    /// A plain scalar, a quoted scalar closed on the line, or a flow collection closed on it.
+    Scalar(&'a str),
+}
+
+/// Byte index of the quote that closes the quoted scalar starting `v` (`''` is an escaped quote
+/// inside single quotes; a double-quoted scalar has no escapes, a backslash being refused).
+fn quoted_end(v: &str) -> Option<usize> {
+    let bytes = v.as_bytes();
+    let quote = *bytes.first()?;
+    let mut i = 1;
+    while i < bytes.len() {
+        if bytes[i] == quote {
+            if quote == b'\'' && bytes.get(i + 1) == Some(&b'\'') {
+                i += 2;
+                continue;
+            }
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Byte index of the bracket that closes the flow collection starting `v`, brackets matched and
+/// quoted scalars skipped; `None` when it does not close on this line.
+fn flow_end(v: &str) -> Option<usize> {
+    let mut open = Vec::new();
+    let mut i = 0;
+    while i < v.len() {
+        let c = v.as_bytes()[i];
+        match c {
+            b'"' | b'\'' => i += quoted_end(&v[i..])?,
+            b'[' => open.push(b']'),
+            b'{' => open.push(b'}'),
+            b']' | b'}' => {
+                if open.pop() != Some(c) {
+                    return None;
+                }
+                if open.is_empty() {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// What may follow a value on its line: nothing, or a comment after a space.
+fn only_comment(rest: &str) -> bool {
+    rest.is_empty() || (rest.starts_with(' ') && rest.trim_start_matches(' ').starts_with('#'))
+}
+
+/// Reads the value of a `key: value` or `- value` line against the closed grammar, or says why
+/// it is outside it. The value is trimmed, as [`parse`] gives it.
+fn read_value(v: &str) -> Result<Value<'_>, &'static str> {
+    let Some(first) = v.chars().next().filter(|_| !v.starts_with('#')) else {
+        return Ok(Value::Empty);
+    };
+    let closed = |end: Option<usize>, what: &'static str| match end {
+        Some(end) if only_comment(&v[end + 1..]) => Ok(Value::Scalar(&v[..=end])),
+        Some(_) => Err("text after a closed quoted scalar or flow collection"),
+        None => Err(what),
+    };
+    match first {
+        '"' | '\'' => closed(quoted_end(v), "quoted scalar not closed on its line"),
+        '[' | '{' => closed(flow_end(v), "flow collection not closed on its line"),
+        '|' | '>' => {
+            let header = v.get(..2).filter(|h| h.ends_with('-')).unwrap_or(&v[..1]);
+            if only_comment(&v[header.len()..]) {
+                Ok(Value::Block(header))
+            } else {
+                Err("block scalar indicator other than |, |-, > and >-")
+            }
+        }
+        '&' | '*' | '!' | '%' | '@' | '`' => Err("YAML indicator that starts no plain scalar"),
+        '-' | '?' | ':' if v.len() == 1 || v[1..].starts_with(' ') => {
+            Err("explicit key, nested sequence or mapping indicator in a value")
+        }
+        _ => {
+            let code = strip_comment(v);
+            if code.contains(": ") || code.ends_with(':') {
+                Err("': ' in a plain scalar (mapping or continuation the check cannot read)")
+            } else {
+                Ok(Value::Scalar(code))
+            }
+        }
+    }
 }
 
 /// The text of a scalar written bare, `"…"` or `'…'` with no quote inside; `None` for anything
@@ -194,7 +296,8 @@ fn place(stack: &mut Vec<Level>, l: &Line) -> bool {
             col: l.dash,
             key: "-".into(),
             open,
-            child: Some(l.col),
+            // A scalar item has no child: a deeper line is a continuation, which is refused.
+            child: l.key.is_some().then_some(l.col),
         });
         ok
     } else {
@@ -415,13 +518,30 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             errors.push(format!("ligne {n} : indentation incohérente"));
         }
         let key = l.key.as_deref().unwrap_or_default();
+        // Closed grammar (#77, AS-54): one node per line, whose value is read on that line.
+        let value = match read_value(l.value) {
+            Ok(value) => value,
+            Err(why) => {
+                errors.push(format!("ligne {n} : {why} (closed grammar, #77)"));
+                continue;
+            }
+        };
+        let v = match value {
+            Value::Empty => "",
+            Value::Block(text) | Value::Scalar(text) => text,
+        };
+        if l.key.is_none() && matches!(value, Value::Block(_)) {
+            errors.push(format!(
+                "ligne {n} : block scalar as a list item: its indentation is not one this check reads (#77)"
+            ));
+        }
         // Events: `on: x`, `on: [x, y]`, `- x` items and `x:` keys directly under `on:`.
         let events: Vec<&str> = if stack.is_empty() && !l.item && l.col == 0 && key == "on" {
             on_keys += 1;
-            if l.value.is_empty() {
+            if v.is_empty() {
                 Vec::new()
             } else {
-                inline_events(l.value)
+                inline_events(v)
             }
         } else if !stack.first().is_some_and(|t| t.key == "on" && t.col == 0) {
             Vec::new()
@@ -429,11 +549,7 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             vec![key]
         } else if l.item && stack.len() == 2 {
             // A scalar item is an event; `- x: y` is not a form of `on:` this check reads.
-            vec![if l.key.is_none() {
-                strip_comment(l.value)
-            } else {
-                ""
-            }]
+            vec![if l.key.is_none() { v } else { "" }]
         } else {
             Vec::new()
         };
@@ -442,7 +558,7 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             errors.extend(event_refusal(event).map(|e| format!("ligne {n} : {e}")));
         }
         if key == "runs-on" {
-            errors.extend(runner_refusal(l.value).map(|e| format!("ligne {n} : {e}")));
+            errors.extend(runner_refusal(v).map(|e| format!("ligne {n} : {e}")));
         }
         if !l.item && stack.first().is_some_and(|t| t.key == "jobs" && t.col == 0) {
             match (stack.len(), jobs.last_mut()) {
@@ -476,7 +592,6 @@ pub fn check_workflow(text: &str) -> Vec<String> {
         if hidden && key != "uses" && key != "run" {
             errors.push(format!("ligne {n} : forme de uses: ou run: non reconnue"));
         }
-        let v = strip_comment(l.value);
         if v.starts_with(['&', '*', '!']) {
             errors.push(format!("ligne {n} : ancre, alias ou balise YAML refusé"));
         }
@@ -1245,7 +1360,7 @@ mod tests {
                 assert_ne!(text, good(), "{on}");
                 let errors = check_workflow(&text);
                 assert!(
-                    errors.iter().any(|e| e.contains("allowed triggers")),
+                    errors.iter().any(|e| e.contains("allowed triggers") || e.contains("forme non reconnue")),
                     "{on}: {errors:?}"
                 );
             }
@@ -1363,7 +1478,9 @@ mod tests {
             let text = with_runs_on(&format!("    {runs_on}\n"));
             let errors = check_workflow(&text);
             assert!(
-                errors.iter().any(|e| e.contains("GitHub-hosted images")),
+                errors.iter().any(|e| e.contains("GitHub-hosted images")
+                    || e.contains("closed grammar")
+                    || e.contains("forme non reconnue")),
                 "{runs_on}: {errors:?}"
             );
         }
@@ -1603,6 +1720,165 @@ mod tests {
                 "U+{:04X}",
                 u32::from(c)
             );
+        }
+    }
+
+    /// A workflow made of `jobs:` with one job `a` on a hosted runner and `steps`, behind the
+    /// header every probe of the fourth review shares (the checkout keeps its guard).
+    fn probe(steps: &str) -> String {
+        format!(
+            "on:\n  pull_request:\npermissions: {{}}\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps:\n{steps}"
+        )
+    }
+
+    const CHECKOUT: &str = "      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4\n        with:\n          persist-credentials: false\n";
+    const TITLE: &str = "${{ github.event.pull_request.title }}";
+
+    /// Fourth review of #101: a quote left open. YAML reads the scalar up to its closing quote,
+    /// the check read the next lines as `env:`, `with:` or `if:` keys, or as comments, and let
+    /// the PR title reach the shell (SEC0-31). One node per line, closed on its line.
+    #[test]
+    fn refuses_what_continues_on_the_next_line() {
+        let probes = [
+            // p4-q-if, p4-q-env, p4-q-with, p4-q-comment
+            format!("{CHECKOUT}      - run: \"echo hi\n        if: {TITLE}\"\n"),
+            format!("{CHECKOUT}      - run:\n          \"env:\n            A: {TITLE}\"\n"),
+            format!("{CHECKOUT}      - run:\n          'with:\n            A: {TITLE}'\n"),
+            format!("{CHECKOUT}      - run: \"echo hi\n          # {TITLE}\"\n"),
+            // The guard hidden in a quoted `ref:` (p4-q-persist).
+            "      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4\n        with:\n          ref:\n            \"a:\n            persist-credentials: false\n            b: c\"\n".to_owned(),
+            // p5-flow: flow collections that close on a later line.
+            "      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4\n        with: {\n          ref: main,\n          x: y }\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4\n        with:\n          ref: [\n          persist-credentials: false ]\n".to_owned(),
+            // Plain and single-quoted scalars on several lines, a value after the closing quote.
+            format!("{CHECKOUT}      - run: echo hi\n          env:\n            A: {TITLE}\n"),
+            format!("{CHECKOUT}      - run: 'echo hi\n          if: {TITLE}'\n"),
+            format!("{CHECKOUT}      - run: \"echo\" hi\n"),
+            format!("{CHECKOUT}      - run: [a, b\n"),
+        ];
+        for steps in probes {
+            let errors = check_workflow(&probe(&steps));
+            assert!(!errors.is_empty(), "accepted:\n{steps}");
+        }
+        // p4-q-runner: the runner hidden behind an open quote.
+        let runner = "on:\n  pull_request:\npermissions: {}\njobs:\n  a:\n    runs-on:\n      \"x:\n      runs-on: ubuntu-24.04\"\n    steps:\n      - run: echo hi\n";
+        assert!(!check_workflow(runner).is_empty());
+        // The same nodes, written on one line, are inside the grammar.
+        let one_line =
+            format!("{CHECKOUT}      - run: \"echo hi\"\n        env:\n          A: {TITLE}\n");
+        assert_eq!(check_workflow(&probe(&one_line)), Vec::<String>::new());
+    }
+
+    /// AS-54: the closed grammar, form by form.
+    #[test]
+    fn reads_the_closed_grammar() {
+        use Value::{Block, Empty, Scalar};
+        for (value, read) in [
+            ("", Empty),
+            ("# only a comment", Empty),
+            ("plain text", Scalar("plain text")),
+            ("plain text # comment", Scalar("plain text")),
+            ("a#b", Scalar("a#b")),
+            (
+                "${{ github.event_name == 'push' }}",
+                Scalar("${{ github.event_name == 'push' }}"),
+            ),
+            ("\"double\"", Scalar("\"double\"")),
+            ("\"double\" # comment", Scalar("\"double\"")),
+            ("\"a # not a comment\"", Scalar("\"a # not a comment\"")),
+            ("'single'", Scalar("'single'")),
+            ("'it''s'", Scalar("'it''s'")),
+            ("'it''s' # c", Scalar("'it''s'")),
+            ("''", Scalar("''")),
+            ("[]", Scalar("[]")),
+            ("{}", Scalar("{}")),
+            ("[a, b]", Scalar("[a, b]")),
+            ("[a, \"b]\"] # c", Scalar("[a, \"b]\"]")),
+            ("{a: b, c: [d]}", Scalar("{a: b, c: [d]}")),
+            ("|", Block("|")),
+            ("|-", Block("|-")),
+            (">", Block(">")),
+            (">- # folded", Block(">-")),
+            ("-5", Scalar("-5")),
+            ("-x", Scalar("-x")),
+        ] {
+            assert_eq!(read_value(value), Ok(read), "{value}");
+        }
+        for value in [
+            "\"open",
+            "'open",
+            "\"a\" b",
+            "'a'b",
+            "'it's'",
+            "\"a\"#c",
+            "[a, b",
+            "{a: b",
+            "[a, [b]",
+            "[a}",
+            "[a] b",
+            "{a: b}c",
+            "|2",
+            "|+",
+            ">+",
+            "|--",
+            "|x",
+            "> text",
+            "&anchor x",
+            "*alias",
+            "!!str x",
+            "%directive",
+            "@x",
+            "`x",
+            "- x",
+            "? x",
+            ": x",
+            "-",
+            "a: b",
+            "a:",
+        ] {
+            assert!(read_value(value).is_err(), "accepted: {value}");
+        }
+        // Lines of each form, in a workflow: a bare key with one dot, a block, a list item.
+        let ok = probe(&format!(
+            "{CHECKOUT}      - name: 'a'\n        run: |\n          echo hi: there\n          # not a comment of YAML\n      - run: >-\n          echo\n      - name: x # c\n\n      # a comment\n"
+        ));
+        assert_eq!(check_workflow(&ok), Vec::<String>::new());
+        let dotted = good().replacen(
+            "    permissions:",
+            "    cargo.version: x\n    permissions:",
+            1,
+        );
+        assert_eq!(check_workflow(&dotted), Vec::<String>::new());
+        // Lines outside it: quoted or odd keys, two dots, explicit keys, documents, directives,
+        // a block scalar as a list item, a deeper line after a scalar.
+        for (from, to) in [
+            ("    permissions:", "    \"permissions\":"),
+            ("    permissions:", "    'permissions':"),
+            ("    permissions:", "    a.b.c: x\n    permissions:"),
+            ("    permissions:", "    ? permissions\n    permissions:"),
+            ("jobs:", "---\njobs:"),
+            ("jobs:", "jobs:\n..."),
+            ("on:", "%YAML 1.2\non:"),
+            ("on:", "---\non:"),
+            (
+                "          echo \"$TITLE\"",
+                "          echo \"$TITLE\"\n      - |\n        echo hi",
+            ),
+            (
+                "    permissions:",
+                "    steps2: x\n      deeper: y\n    permissions:",
+            ),
+            (
+                "    permissions:",
+                "    steps2: x\n      - deeper\n    permissions:",
+            ),
+            (
+                "    permissions:",
+                "    steps2:\n      - scalar\n        deeper: y\n    permissions:",
+            ),
+        ] {
+            let text = good().replacen(from, to, 1);
+            assert_ne!(text, good(), "{to}");
+            assert!(!check_workflow(&text).is_empty(), "accepted: {to}");
         }
     }
 
