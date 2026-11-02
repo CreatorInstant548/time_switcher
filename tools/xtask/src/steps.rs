@@ -268,6 +268,10 @@ const STRICT_CRATE_PREFIX: &str = "bevy_";
 fn strict_clippy_config(text: &str, closure: &BTreeSet<String>) -> Result<(String, usize), String> {
     let (mut out, mut strict) = (String::new(), 0);
     for line in text.lines() {
+        // A unicode escape can spell any key (`"allow\\u002dinvalid" = true`): none is read.
+        if !line.trim_start().starts_with('#') && (line.contains("\\u") || line.contains("\\U")) {
+            return Err(format!("clippy.toml: unicode escape refused: {}", line.trim()));
+        }
         // Only a line with the flag is rewritten, and it must be in the one layout; a line
         // without it (an entry already strict, possibly spread over lines) is left as it is.
         let line = if line.trim_start().starts_with('#') || !line.contains("allow-invalid") {
@@ -1136,6 +1140,9 @@ mod tests {
             "    allow-invalid = true,",
             "[[disallowed-types]]\npath = \"bevy_ecs::X\"\nallow-invalid = true",
             "{ path = \"bevy_ecs::X\", reason = \"r \\\" q\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", \"allow\\u002dinvalid\" = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", \"\\U00000061llow-invalid\" = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"caf\\u00e9\" },",
         ] {
             assert!(super::strict_clippy_config(odd, &closure).is_err(), "{odd}");
         }
