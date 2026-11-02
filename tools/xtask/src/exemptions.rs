@@ -6,13 +6,31 @@
 //! mais marqués. Seuls les motifs hors chaîne comptent. Les règles portent ensuite sur des
 //! identifiants entiers, ce qui ferme les formes par commentaire, par macro et par accolades.
 
-/// Identifiants refusés partout : les lints d'interdiction de clippy, anciens noms compris
-/// (`disallowed_method`, `disallowed_type`, `blacklisted_name`), et l'inclusion de code.
-fn forbidden_ident(token: &str) -> bool {
-    token.contains("disallowed_")
-        || token == "blacklisted_name"
-        || matches!(token, "include" | "include_str" | "include_bytes")
-}
+use std::collections::BTreeMap;
+
+/// Names of the clippy lints that apply the `clippy.toml` bans, old names included
+/// (`disallowed_method`, `disallowed_type`, `blacklisted_name`): refused wherever they appear.
+/// Any other `disallowed_*` identifier is refused only when written as a clippy lint path
+/// (`clippy::disallowed_…`), so that `fn disallowed_moves()` stays legitimate (m14).
+const DISALLOWED_LINTS: [&str; 9] = [
+    "disallowed_methods",
+    "disallowed_method",
+    "disallowed_types",
+    "disallowed_type",
+    "disallowed_macros",
+    "disallowed_names",
+    "disallowed_fields",
+    "disallowed_script_idents",
+    "blacklisted_name",
+];
+/// Words after which `!(` is a negation, not a macro call.
+const NOT_A_MACRO: [&str; 21] = [
+    "if", "while", "match", "return", "in", "else", "let", "break", "continue", "as", "mut", "ref",
+    "move", "loop", "for", "unsafe", "async", "await", "yield", "where", "impl",
+];
+/// Code inclusion macros, refused when called, named in a path, imported by `use` or handed to
+/// another macro as an argument (which could call them), but not as a plain name (m14).
+const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes"];
 
 /// Groupes ou lints dont un `allow` ou un `expect` couvrirait les interdictions.
 const FORBIDDEN_GROUPS: [&str; 3] = ["clippy::all", "clippy::style", "warnings"];
@@ -32,6 +50,11 @@ pub(crate) struct Src {
     pub(crate) line: Vec<usize>,
     gap: Vec<bool>,
     pub(crate) string: Vec<bool>,
+    /// The character belongs to a raw identifier (`r#if`): its `r#` was removed, but it is not
+    /// the keyword.
+    raw: Vec<bool>,
+    /// The next identifier is raw (its `r#` has just been removed).
+    pending_raw: bool,
 }
 
 impl Src {
@@ -40,6 +63,10 @@ impl Src {
         self.line.push(line);
         self.gap.push(gap);
         self.string.push(string);
+        self.raw.push(self.pending_raw && is_ident(c));
+        if !is_ident(c) {
+            self.pending_raw = false;
+        }
     }
 
     /// Identifiants hors chaîne : (début, fin exclue). Un blanc coupe un identifiant.
@@ -103,6 +130,137 @@ impl Src {
     fn slice(&self, start: usize, end: usize) -> String {
         self.text[start..end].iter().collect()
     }
+
+    /// The text is `s` just before `at`, outside any literal.
+    fn follows(&self, at: usize, s: &str) -> bool {
+        let n = s.chars().count();
+        at >= n && self.text[at - n..at].iter().copied().eq(s.chars()) && !self.string[at - 1]
+    }
+
+    /// The delimiter at `k` opens a region of tokens that rustc hands to a macro, which this
+    /// reader cannot follow: the arguments of a call `name!(…)` (blanks before the `!` are
+    /// gone, so `k !(x)` is read like `k!(x)`), or the body of `macro_rules! name { … }`.
+    /// A `!` after a keyword (`if !(x)`) is a negation, not a call. `ends` maps the end of
+    /// each token to the token.
+    fn opens_macro(&self, k: usize, ends: &BTreeMap<usize, (usize, usize)>) -> Option<bool> {
+        if k >= 1 && self.text[k - 1] == '!' && !self.string[k - 1] {
+            // A raw identifier (`r#if!(..)`) is a macro name, not the keyword.
+            let call = ends
+                .get(&(k - 1))
+                .is_some_and(|&t| self.raw[t.0] || !NOT_A_MACRO.contains(&self.word(t).as_str()));
+            return call.then_some(false);
+        }
+        let &(name, _) = ends.get(&k)?;
+        let rules = name >= 1
+            && self.text[name - 1] == '!'
+            && ends
+                .get(&(name - 1))
+                .is_some_and(|&t| self.word(t) == "macro_rules");
+        rules.then_some(true)
+    }
+
+    /// For each character: inside a region handed to a macro (see [`Src::opens_macro`]), and
+    /// inside the body of a `macro_rules!`. Such a region is read strictly: a form that is only
+    /// allowed outside it is refused inside.
+    fn macro_regions(&self) -> (Vec<bool>, Vec<bool>) {
+        let ends: BTreeMap<usize, (usize, usize)> =
+            self.tokens().into_iter().map(|t| (t.1, t)).collect();
+        // One entry per open delimiter: 0 an ordinary one, 1 the arguments of a call, 2 the body
+        // of a `macro_rules!`.
+        let (mut stack, mut calls, mut bodies) = (Vec::new(), 0_usize, 0_usize);
+        let mut any = vec![false; self.text.len()];
+        let mut rules = vec![false; self.text.len()];
+        for k in 0..self.text.len() {
+            let close = !self.string[k] && matches!(self.text[k], ')' | ']' | '}');
+            if !self.string[k] && matches!(self.text[k], '(' | '[' | '{') {
+                let kind = match self.opens_macro(k, &ends) {
+                    Some(true) => 2,
+                    Some(false) => 1,
+                    None => 0,
+                };
+                stack.push(kind);
+                calls += usize::from(kind == 1);
+                bodies += usize::from(kind == 2);
+            }
+            (any[k], rules[k]) = (calls + bodies > 0, bodies > 0);
+            if close {
+                match stack.pop() {
+                    Some(1) => calls -= 1,
+                    Some(2) => bodies -= 1,
+                    _ => {}
+                }
+            }
+        }
+        (any, rules)
+    }
+
+    /// Lines of the attributes assembled from a metavariable in a `macro_rules!` body: `#[` or
+    /// `#![` then `$name` followed by anything but `]` (`#[$a(not($b))]`, `#[$k = $v]`,
+    /// `#[$l($t::$g)]`, `#[$($t)*]`). `$(#[$m])*` forwards an attribute whole and stays allowed,
+    /// and so does the matcher `#[$m:meta]`.
+    fn metavariable_attributes(&self, rules: &[bool]) -> Vec<usize> {
+        let t = &self.text;
+        let mut lines = Vec::new();
+        for k in (0..t.len()).filter(|&k| t[k] == '#' && !self.string[k] && rules[k]) {
+            let mut j = k + 1;
+            if t.get(j) == Some(&'!') {
+                j += 1;
+            }
+            if t.get(j) != Some(&'[') || t.get(j + 1) != Some(&'$') {
+                continue;
+            }
+            j += 2;
+            let name = t[j..].iter().take_while(|&&c| is_ident(c)).count();
+            j += name;
+            let whole = name > 0 && t.get(j) == Some(&']');
+            let matcher = name > 0 && t.get(j) == Some(&':') && {
+                let frag = t[j + 1..].iter().take_while(|&&c| is_ident(c)).count();
+                frag > 0 && t.get(j + 1 + frag) == Some(&']')
+            };
+            if !(whole || matcher) {
+                lines.push(self.line[k]);
+            }
+        }
+        lines
+    }
+
+    /// For each character: inside a `use` declaration, up to its closing `;`.
+    fn in_use(&self) -> Vec<bool> {
+        let mut out = vec![false; self.text.len()];
+        let mut end = 0;
+        for tok in self.tokens() {
+            let generics = self.text.get(tok.1) == Some(&'<'); // `use<'a>`, precise capturing
+            if tok.0 < end || self.word(tok) != "use" || generics {
+                continue;
+            }
+            let (mut depth, mut k) = (0_i32, tok.1);
+            while k < self.text.len() && !(self.text[k] == ';' && depth <= 0 && !self.string[k]) {
+                if !self.string[k] {
+                    depth += i32::from(self.text[k] == '{') - i32::from(self.text[k] == '}');
+                }
+                k += 1;
+            }
+            let stop = k.min(out.len());
+            out[tok.0..stop].fill(true);
+            end = k;
+        }
+        out
+    }
+}
+
+/// The lines of code of a Rust source as rustc reads it: comments removed (block comments and
+/// doc comments included), blanks removed, string and character literals left out. One entry per
+/// source line that holds code. An attribute inside a comment or a literal is not in it (m2).
+pub fn code_lines(source: &str) -> Vec<String> {
+    let src = normalize(source);
+    let mut lines: Vec<(usize, String)> = Vec::new();
+    for k in (0..src.text.len()).filter(|&k| !src.string[k]) {
+        match lines.last_mut() {
+            Some((line, text)) if *line == src.line[k] => text.push(src.text[k]),
+            _ => lines.push((src.line[k], src.text[k].to_string())),
+        }
+    }
+    lines.into_iter().map(|(_, text)| text).collect()
 }
 
 /// Retire commentaires et blancs, retire `r#` devant un identifiant, marque les littéraux.
@@ -147,6 +305,7 @@ pub(crate) fn normalize(source: &str) -> Src {
             && at(i + 2).is_some_and(|d| d.is_alphabetic() || d == '_')
         {
             i += 2; // r#ident : l'identifiant seul compte
+            src.pending_raw = true;
         } else if c == 'r'
             && (!prev_ident || (matches!(s[i - 1], 'b' | 'c') && (i < 2 || !is_ident(s[i - 2]))))
             && at(i + 1 + s[i + 1..].iter().take_while(|&&h| h == '#').count()) == Some('"')
@@ -206,14 +365,15 @@ pub(crate) fn normalize(source: &str) -> Src {
 }
 
 /// Numéros de ligne des formes refusées dans une crate de cœur :
-/// - tout identifiant `disallowed_*` (lints d'interdiction, anciens noms compris), quel que soit
-///   le contexte : attribut, argument de macro, accolades ;
-/// - l'identifiant `include`, `include_str` ou `include_bytes`, partout, `use` compris ;
-/// - `path = …` dans un attribut (`#[path]`, `cfg_attr(…, path = …)`) ;
+/// - le nom d'un lint d'interdiction (`DISALLOWED_LINTS`, anciens noms compris), quel que soit le
+///   contexte, et tout `clippy::disallowed_*` ;
+/// - `include`, `include_str` ou `include_bytes` appelé (`!`), dans un chemin, dans un `use` ou
+///   dans les arguments d'une macro ;
+/// - `path = …` dans un attribut (`#[path]`, `cfg_attr(…, path = …)`, argument de macro) ;
 /// - `allow(…)` ou `expect(…)` de `clippy::all`, `clippy::style` ou `warnings`, et tout `$` dans
 ///   les arguments d'un `allow`, `expect`, `warn` ou `deny` ;
-/// - un prédicat de `cfg(…)`, `cfg!(…)` ou `cfg_attr(…)` hors de `test`, `feature = "…"`, `all`,
-///   `any` et `not`.
+/// - un prédicat de `cfg(…)` (sauf après un identifiant, `.` ou `::`, comme `fn cfg(level)`),
+///   `cfg!(…)` ou `cfg_attr(…)` hors de `test`, `feature = "…"`, `all`, `any` et `not`.
 pub fn clippy_exemptions(source: &str) -> Vec<usize> {
     let src = normalize(source);
     let mut found = Vec::new();
@@ -225,13 +385,22 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
             .eq(w.chars())
             && !src.string.get(end).copied().unwrap_or(false)
     };
+    let ((in_macro, rules), in_use) = (src.macro_regions(), src.in_use());
+    found.extend(src.metavariable_attributes(&rules));
     for tok in src.tokens() {
         let (start, end) = tok;
         let word = src.word(tok);
         let prev = start.checked_sub(1).map(|p| src.text[p]);
-        let path = word == "path" && next(end, "=") && matches!(prev, Some('[' | ',' | '('));
+        // Inside a region handed to a macro, nothing is exempt: tokens there become whatever the
+        // macro makes of them (`m!(x cfg(not(clippy)))` into `#[cfg(not(clippy))]`).
+        let strict = in_macro[start];
+        let opens = matches!(prev, Some('[' | ',' | '(')) || strict;
+        // Outside such a region, `cfg` after an identifier (`fn cfg(…)`), a `.` or a `::` names
+        // something else.
+        let named = !strict && prev.is_some_and(|c| is_ident(c) || c == '.' || c == ':');
+        let path = word == "path" && next(end, "=") && opens;
         let lint = matches!(word.as_str(), "allow" | "expect" | "warn" | "deny")
-            && prev != Some('.')
+            && (prev != Some('.') || strict)
             && next(end, "(")
             && {
                 let close = src.close(end + 1);
@@ -241,7 +410,7 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
                 args.contains('$') || group
             };
         let cfg = match word.as_str() {
-            "cfg" if next(end, "(") => Some((end + 1, src.close(end + 1))),
+            "cfg" if next(end, "(") && !named => Some((end + 1, src.close(end + 1))),
             "cfg" if next(end, "!(") => Some((end + 2, src.close(end + 2))),
             "cfg_attr" if next(end, "(") => {
                 let close = src.close(end + 1);
@@ -255,7 +424,11 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
                 .filter(|&(s, _)| s >= open && s < close)
                 .any(|t| !CFG_IDENTS.contains(&src.word(t).as_str()))
         });
-        if forbidden_ident(&word) || path || lint || cfg {
+        let disallowed = DISALLOWED_LINTS.contains(&word.as_str())
+            || (word.starts_with("disallowed_") && src.follows(start, "clippy::"));
+        let include = INCLUDES.contains(&word.as_str())
+            && (next(end, "!") || prev == Some(':') || in_use[start] || strict);
+        if disallowed || include || path || lint || cfg {
             found.push(src.line[start]);
         }
     }
@@ -371,5 +544,160 @@ mod tests {
         for form in ok {
             assert!(clippy_exemptions(form).is_empty(), "{form}");
         }
+    }
+
+    /// m12: a macro that puts an attribute received as an argument, called with braces.
+    #[test]
+    fn multi_step_macro_forms() {
+        let m = "macro_rules! m { ($a:meta) => { #[$a] pub mod c; } }\n";
+        assert!(flagged(&format!("{m}m!{{path = \"../clock.inc\"}}")));
+        assert!(flagged(&format!("{m}m!{{ path = \"x.rs\" }}")));
+        assert!(flagged(&format!("{m}m!(path = \"x.rs\")")));
+        assert!(flagged(&format!("{m}m!{{cfg(clippy)}}")));
+        // A plain assignment to a variable named `path`, at the start of a block, is not one.
+        assert!(!flagged(
+            "fn f() { let mut path = 1; if true { path = 2; } let _ = path; }"
+        ));
+    }
+
+    /// m14: names that merely look like a ban are no longer refused.
+    #[test]
+    fn no_false_refusals() {
+        for ok in [
+            "fn disallowed_moves() {}",
+            "fn f(include: bool) -> bool { include }",
+            "fn f() { let include = true; if include { g(include); } }",
+            "struct S { include: Vec<u8> }\nfn f(include: Vec<u8>) -> S { S { include } }",
+            "fn f(x: &Set) -> bool { x.include(1) }",
+            "fn cfg(level: u8) -> u8 { level }\nfn g(x: &T) -> u8 { x.cfg(5) }",
+            "fn f() { let path = 1; let _ = path; }",
+            "fn f(include: bool) { if !(include) { g(); } }",
+            "fn f() -> impl Sized + use<'a> { let include = 1; include }",
+            "fn includes() {}\nfn include_all() {}",
+        ] {
+            assert!(!flagged(ok), "{ok}");
+        }
+        // The exact lint names, and any `clippy::disallowed_*`, stay refused.
+        for bad in [
+            "fn disallowed_methods() {}",
+            "#[allow(clippy::disallowed_whatever)] fn a() {}",
+            "#[allow(clippy::r#disallowed_whatever)] fn a() {}",
+            "use std::{vec, include};",
+            "use std::{include, vec};",
+            "pub use core::include_str;",
+            "m!(include)",
+            "m!{ include_bytes }",
+            "let _ = include!(\"x.rs\");",
+            "let _ = std::include_str!(\"x\");",
+            "fn f() { g(cfg(x)); }",
+            "m!(x; cfg(clippy))",
+            "m!(a | cfg(clippy))",
+            "m!({cfg(clippy)})",
+            "fn f() { let x = cfg(5); }",
+            "m!(a = cfg(clippy))",
+        ] {
+            assert!(flagged(bad), "{bad}");
+        }
+    }
+
+    /// m2: only real code lines count; comments and literals do not.
+    #[test]
+    fn code_lines_skip_comments_and_literals() {
+        let src = "/* a\n#![forbid(unsafe_code)]\n*/\n/// #![forbid(unsafe_code)]\n\
+                   //! #![forbid(unsafe_code)]\nconst S: &str = \"#![forbid(unsafe_code)]\";\n\
+                   #![forbid( unsafe_code )] /* x */\nfn f() {}\n";
+        let lines = code_lines(src);
+        let hits = lines
+            .iter()
+            .filter(|l| *l == "#![forbid(unsafe_code)]")
+            .count();
+        assert_eq!(hits, 1, "{lines:?}");
+        assert!(lines.contains(&"constS:&str=;".to_owned()), "{lines:?}");
+        assert!(code_lines("/* /* #![forbid(unsafe_code)] */ */").is_empty());
+    }
+
+    /// Review of PR #111: inside a macro call or a `macro_rules!` body, tokens are read strictly.
+    #[test]
+    fn macro_regions_are_read_strictly() {
+        let def = "macro_rules! m { (x $a:meta) => { #[$a] fn f() -> u8 { 1 } } }\n";
+        let item = "macro_rules! p { (x $a:meta) => { #[$a] pub mod c; } }\n";
+        for bad in [
+            format!("{def}m!(x cfg(not(clippy)));"),
+            format!("{def}m!(x . cfg(not(clippy)));"),
+            format!("{def}m!(fn cfg(not(clippy)));"),
+            format!("{def}m ! (x cfg(not(clippy)));"),
+            format!("{item}p!(x path = \"../clock.inc\");"),
+            format!("{item}p![x path = \"../clock.inc\"];"),
+            "macro_rules! n { ($b:tt) => { const S: &str = include_str $b (\"../x.inc\"); } }\nn!(!);"
+                .to_owned(),
+            "macro_rules! k { ($i:ident) => { const T: &str = $i!(\"../x.inc\"); } }\nk !(include_str);"
+                .to_owned(),
+            "macro_rules! q ( ($b:tt) => ( include_str $b (\"x\") ); );".to_owned(),
+            format!("{def}m!(x . allow(clippy::all));"),
+        ] {
+            assert!(flagged(&bad), "{bad}");
+        }
+        // Outside a macro, and after a keyword, the same names stay legitimate.
+        for ok in [
+            "fn cfg(level: u8) -> u8 { level }",
+            "fn f(include: bool) { if !(include) { g(); } }",
+            "fn f(c: bool) -> bool { while !(c) { } return !(c); }",
+            "fn f(path: u8) -> u8 { let mut path = path; path = 2; path }",
+            "macro_rules! plain { ($x:expr) => { $x + 1 } }\nfn g() -> u8 { plain!(2) }",
+            "fn disallowed_moves() {}",
+        ] {
+            assert!(!flagged(ok), "{ok}");
+        }
+    }
+
+    /// Review of PR #111, round two: a raw identifier is a macro name, not the keyword.
+    #[test]
+    fn raw_keywords_are_macro_names() {
+        for bad in [
+            "r#if!(include_str)",
+            "r#if!(x cfg(not(clippy)))",
+            "r#as![x path = \"../c.inc\"]",
+            "r#match!{include_bytes}",
+            "r#while !(include_str)",
+            "r#in!(x . allow(clippy::all))",
+        ] {
+            assert!(flagged(bad), "{bad}");
+        }
+        // The keyword itself is still a negation.
+        assert!(!flagged("fn f(include: bool) { if !(include) { g(); } }"));
+        assert!(flagged("#[allow(clippy::disallowed_fields)] fn a() {}"));
+    }
+
+    /// AS-56: in a `macro_rules!` body an attribute is forwarded whole or not assembled.
+    #[test]
+    fn attributes_assembled_from_metavariables_are_refused() {
+        let body =
+            |inner: &str| format!("macro_rules! m {{ ($a:meta, $b:meta) => {{ {inner} }} }}");
+        for bad in [
+            "#[$a(not($b))] fn f() {}",
+            "#[$k = $v] mod c;",
+            "#[$l($t::$g)] fn f() {}",
+            "#![$a(x)]",
+            "#[$($t)*] fn f() {}",
+            "#[$a:meta = x] fn f() {}",
+            "#[ $a ( x ) ] fn f() {}",
+        ] {
+            assert!(flagged(&body(bad)), "{bad}");
+        }
+        // Forwarded whole, matchers, plain attributes and the same text outside a macro body.
+        for ok in [
+            "$(#[$m])* fn f() {}",
+            "#[$a] fn f() {}",
+            "#[inline] fn f() {}",
+            "#[derive(Debug)] struct S;",
+        ] {
+            assert!(!flagged(&body(ok)), "{ok}");
+        }
+        assert!(!flagged(
+            "macro_rules! p { ($(#[$m:meta])* $v:vis fn $n:ident) => { $(#[$m])* $v fn $n() {} } }"
+        ));
+        assert!(!flagged(
+            "fn f() { let a = 1; #[allow(dead_code)] let b = 2; }"
+        ));
     }
 }

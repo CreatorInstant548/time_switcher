@@ -31,6 +31,9 @@ crates/ts_kernel/src/rng/
 crates/ts_kernel/src/canonical.rs
 # Instantané : vérifications de restore, from_canonical et clé de StateLayout (AS-36).
 crates/ts_kernel/src/sim/snapshot.rs
+# Définitions de macro_rules! de la liste fermée d'xtask (AS-56) : un changement de fichier qui
+# en porte une demande un avis archi-sécu (state_hash_int).
+crates/ts_kernel/src/state.rs
 
 # ts_world_model : le scellé de `ClientShippable` (N3, #37). Toute nouvelle impl de `Sealed`
 # (par exemple pour `ServerPart`) demande un avis archi-sécu.
