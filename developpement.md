@@ -467,3 +467,15 @@ erun\datanalytics\` ; l'utilisateur en est informé.
   - application d'A15 au code ;
   - #36 et #91, première partie ;
   - reste du lot tools, consigné dans `reste-lot-tools-2.md` (scratchpad).
+
+### 02/11 (suite) : A15 appliqué, noyau en relecture
+
+- **A15** : appliqué en trois PR.
+  - #127 (zone CI des données) est fusionnée en `d1b2ad3`.
+  - #128 (`ts_data`, M39/M40) et #129 (`ts_persist`, M41) ont `ci-ok` et `archsec-ok`. J'attends le relecteur neuf (Opus).
+  - La remontée #125 (M41h et l'état décodé par le noyau) est signalée à la conception.
+  - La mesure de M39 (`ts-data check`, avec alerte CI à 50 %) reste à confier en phase 0.
+- **Noyau** :
+  - #122 a une tête de fusion `48b5522`, vérifiée par un relecteur Sonnet.
+  - #121 a ses corrections AS-57 (`b08d873`), et #132 règle #123 (`5c9d27f`). Un relecteur Opus est sur les deux. `archsec-ok` est demandé.
+- **Nouvelles issues** : #130 (test `disk` instable) et #133 (`EventQueue` expose tout le `Scheduler`).
