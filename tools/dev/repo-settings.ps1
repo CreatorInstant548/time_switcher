@@ -2,7 +2,7 @@
 # Mode d'emploi : docs/dev/outillage.md §6. Deux formes exclusives, sans autre argument :
 #   -Check : lecture seule (GET) ; tout écart avec le fichier d'origin/main est affiché (code 1) ;
 #   -Apply : crée ou remplace les rulesets, règle le dépôt et les Actions selon ce fichier, puis -Check.
-# (-Check -SourceCommit <sha>, d'AS-38, est retiré avec l'exception de réparation de merge, AS-50, #85.)
+# (-Check -SourceCommit <sha>, from AS-38, is removed with the repair exception of merge: AS-50, #85.)
 # Les valeurs sont lues par git show origin/main, jamais sur le disque : une branche ne peut
 # pas faire appliquer les siennes. Lancé depuis la racine de la copie principale, propre, sur main, à jour
 # d'origin/main, et le script lancé doit être celui de cette copie (S4). Les invariants sont codés ici
@@ -319,8 +319,8 @@ function Invoke-Write([string]$Method, [string]$Path, $Body) {
   Write-Host "  $Method repos/$Slug$Path : fait"
 }
 
-# Fichier de valeurs de la révision $Rev (origin/main), lu par git show, jamais sur le disque ; $null si le JSON est
-# illisible. Un git show qui échoue arrête le script (Stop-With, code 2) : vérifier le chemin avant.
+# Settings file of revision $Rev (origin/main), read by git show, never from the disk; $null if the JSON is
+# unreadable. A failed git show stops the script (Stop-With, code 2): check the path first.
 function Read-Config([string]$Rev) {
   try { $c = ConvertFrom-Json (@(Invoke-Git show "${Rev}:$File") -join "`n") -AsHashtable -Depth 50 -NoEnumerate } catch { return $null }
   return , $c   # une liste JSON reste une liste, refusée par Get-Invalid
@@ -349,7 +349,7 @@ function Get-CheckResult($C, [string]$Mode, [string]$From, [string]$RepoName) {
 if ($MyInvocation.InvocationName -eq '.') { return }   # chargé par tools/dev/test-repo-settings.ps1
 
 # --- Arguments et préalables ---
-if (-not ($args.Count -eq 1 -and $args[0] -cin '-Check', '-Apply')) { Stop-With 2 'usage : pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check|-Apply' }
+if (-not ($args.Count -eq 1 -and $args[0] -cin '-Check', '-Apply')) { Stop-With 2 'usage: pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check|-Apply' }
 $Apply = $args[0] -ceq '-Apply'
 $From = "d'origin/main"
 # S4 d'abord, puis le fichier d'origin/main, puis le distant : chaque refus a son message (testés par
@@ -365,8 +365,8 @@ Invoke-Git fetch --quiet origin | Out-Null
 if ("$(Invoke-Git rev-parse HEAD)".Trim() -cne "$(Invoke-Git rev-parse origin/main)".Trim()) { Stop-With 2 'la copie principale n''est pas à jour d''origin/main : git pull --ff-only' }
 & git cat-file -e "origin/main:$File" 2>$null
 if ($LASTEXITCODE) { Stop-With 2 "$File absent d'origin/main : réglages pas encore fusionnés, rien à comparer ni à appliquer" }
-# S2 avant tout appel à GitHub, avec les invariants de ce script, celui d'origin/main (S4) : un fichier
-# refusé est déjà un écart, et GitHub n'est pas comparé à des valeurs refusées (AS-41).
+# S2 before any GitHub call, with the invariants of this script, the one of origin/main (S4): a refused
+# file is already a drift, and GitHub is never compared with refused values (AS-41).
 $cfg = Read-Config 'origin/main'
 $invalid = if ($null -eq $cfg) { [Collections.Generic.List[string]]@("$File : JSON illisible") } else { Get-Invalid $cfg }
 foreach ($x in $invalid) { Write-Host "  REFUS du fichier : $x" }

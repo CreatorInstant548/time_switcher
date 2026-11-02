@@ -1,7 +1,7 @@
-# tools/dev/test-repo-settings.ps1 : tests de repo-settings.ps1, sans appel à GitHub.
-# Invariants du fichier (S2), comparaison des réponses, motifs de ref (S3), arguments et préalables,
-# lecture du fichier dans origin/main ; bilan final de -Check et script entier sur une API simulée, par
-# un faux gh qui note aussi chaque écriture de -Apply, avec son corps (AS-43, #85).
+# tools/dev/test-repo-settings.ps1: tests of repo-settings.ps1, without any GitHub call.
+# File invariants (S2), comparison of the answers, ref patterns (S3), arguments and prerequisites,
+# file read from origin/main; final -Check verdict and whole script on a simulated API, through a fake
+# gh that also records every write of -Apply with its body (AS-43, #85).
 # Lit tools/ci/repo-settings.json de la copie de travail et les workflows d'origin/main. Sortie 1 si un cas échoue.
 $dev = $PSScriptRoot
 . (Join-Path $dev 'repo-settings.ps1')
@@ -181,9 +181,10 @@ function Get-Expiry([int]$Days) { return [DateTimeOffset]::UtcNow.AddDays($Days)
 function Copy-Json($V) { return ConvertFrom-Json (ConvertTo-Json -InputObject $V -Depth 30) -AsHashtable -Depth 50 -NoEnumerate }
 $cfg = New-Cfg
 function New-Fake {
+  # Same rulesets in both listings: -Check reads includes_parents=true, -Apply includes_parents=false.
+  $rulesets = @(@{ id = 9; name = $cfg.ruleset_main['name'] }, @{ id = 10; name = $cfg.ruleset_pilotage['name'] })
   $f = @{ '' = (Copy-Json $cfg.repo) + @{ default_branch = 'main' }; '/branches?protected=true&per_page=100' = @()
-    '/rulesets?includes_parents=true&per_page=100' = @(@{ id = 9; name = $cfg.ruleset_main['name'] }, @{ id = 10; name = $cfg.ruleset_pilotage['name'] })
-    '/rulesets?includes_parents=false&per_page=100' = @(@{ id = 9; name = $cfg.ruleset_main['name'] }, @{ id = 10; name = $cfg.ruleset_pilotage['name'] })
+    '/rulesets?includes_parents=true&per_page=100' = $rulesets; '/rulesets?includes_parents=false&per_page=100' = (Copy-Json $rulesets)
     '/rulesets/9' = (Copy-Json $cfg.ruleset_main) + @{ id = 9; current_user_can_bypass = 'never' }
     '/rulesets/10' = (Copy-Json $cfg.ruleset_pilotage) + @{ id = 10; current_user_can_bypass = 'never' }
     '/rules/branches/main?per_page=100' = @($EffectiveMain | ForEach-Object { @{ type = $_; ruleset_source_type = 'Repository'; ruleset_id = 9 } }) }
@@ -259,7 +260,7 @@ function Run-Settings([string]$Dir, [string]$Script, [string[]]$A) {
 function Expect([string]$Name, $R, [string]$Pattern) { Check "$Name (code $($R.Code) : $($R.Out.Trim()))" ($R.Code -eq 2 -and $R.Out -match $Pattern) }
 
 foreach ($a in @(@(), @('-Check', '-Apply'), @('-check'), @('-Apply', 'x'), @('-Check:$true'), @('Check'), @('-Apply:$false'))) {
-  Expect "arguments refusés : $($a -join ' ')" (Run-Settings $M $S $a) 'usage :'
+  Expect "arguments refusés : $($a -join ' ')" (Run-Settings $M $S $a) 'usage:'
 }
 # Cas positif : -Check et -Apply passent les arguments et tous les préalables, jusqu'au dernier (distant).
 foreach ($mode in '-Check', '-Apply') { Expect "$mode atteint le dernier préalable" (Run-Settings $M $S @($mode)) 'distant origin hors de github\.com' }
@@ -279,21 +280,21 @@ Expect 'copie principale en avance d''origin/main' (Run-Settings $M $S @('-Check
 G -C $M push -q origin main; G -C $M reset -q --hard HEAD~1
 Expect 'copie principale en retard d''origin/main' (Run-Settings $M $S @('-Apply')) 'n''est pas à jour d''origin/main'
 G -C $M pull -q --ff-only
-# #85 : la forme -Check -SourceCommit <sha> (AS-38) est retirée ; elle n'est plus qu'un argument refusé.
+# #85: the -Check -SourceCommit <sha> form (AS-38) is removed; it is now a refused argument.
 $head = "$(& git -C $M rev-parse HEAD)".Trim()
 foreach ($a in @(@('-Check', '-SourceCommit', $head), @('-Check', '-SourceCommit'), @('-Apply', '-SourceCommit', $head))) {
-  Expect "arguments refusés : $($a -join ' ')" (Run-Settings $M $S $a) 'usage :'
+  Expect "refused arguments: $($a -join ' ')" (Run-Settings $M $S $a) 'usage:'
 }
-# Le fichier est lu dans origin/main, jamais sur le disque.
+# The file is read from origin/main, never from the disk.
 Set-Content (Join-Path $M 'tools/ci/repo-settings.json') '{"disque": 1}'
 Push-Location $M
 try { $o = Read-Config 'origin/main' } finally { Pop-Location }
-Check 'Read-Config d''origin/main, pas le disque' ($o -is [Collections.IDictionary] -and $o.Contains('ruleset_main') -and -not $o.Contains('disque'))
+Check 'Read-Config reads origin/main, not the disk' ($o -is [Collections.IDictionary] -and $o.Contains('ruleset_main') -and -not $o.Contains('disque'))
 G -C $M checkout -q -- tools/ci/repo-settings.json
 # Script entier sur une API simulée (AS-43, Z2) : origin se lit github.com/o/r mais git le redirige vers
 # le dépôt nu local (insteadOf) ; un faux gh, premier dans PATH, sert New-Fake et note chaque appel.
-# #85 : une écriture (-X, corps lu sur l'entrée) est notée avec sa méthode, son chemin et son corps dans
-# TS_FAKE_GH_WRITES, puis acceptée, ou refusée en 422 si « <méthode> <chemin> » vaut __refuse.
+# #85: a write (-X, body read on the input) is recorded with its method, path and body in
+# TS_FAKE_GH_WRITES, then accepted, or refused with a 422 when "<method> <path>" equals __refuse.
 $bin = Join-Path $tmp 'bin'; New-Item -ItemType Directory -Force $bin | Out-Null
 Set-Content (Join-Path $bin 'gh.ps1') @'
 Add-Content -LiteralPath $env:TS_FAKE_GH_LOG "$($args[-1])"
@@ -389,7 +390,10 @@ try {
   function Get-Writes($R) {
     return @($R.Writes | ForEach-Object { $m, $p, $b = $_ -split "`t", 3; "$m $p $(J (ConvertFrom-Json $b -AsHashtable -Depth 50 -NoEnumerate))" })
   }
-  $plain = [ordered]@{}; foreach ($k in $cfg.repo.Keys) { if ($k -cne 'security_and_analysis') { $plain[$k] = $cfg.repo[$k] } }
+  # Literal split of the repository settings: every key but security_and_analysis in the first PATCH,
+  # only secret scanning and push protection in the second one (Dependabot has its own endpoints).
+  $plain = [ordered]@{}
+  foreach ($k in 'allow_auto_merge', 'allow_merge_commit', 'allow_rebase_merge', 'allow_squash_merge', 'delete_branch_on_merge', 'squash_merge_commit_title', 'visibility') { $plain[$k] = $cfg.repo[$k] }
   $sa = $cfg.repo['security_and_analysis']
   $scanning = @{ security_and_analysis = @{ secret_scanning = $sa['secret_scanning']; secret_scanning_push_protection = $sa['secret_scanning_push_protection'] } }
   $expected = [Collections.Generic.List[string]]::new()
@@ -403,7 +407,8 @@ try {
   $got = Get-Writes $r
   Check "whole script, -Apply: $($expected.Count) writes in order with the file's bodies, then a conforming -Check (code $($r.Code), $($got.Count) write(s): $($got -join ' | ') : $($r.Out.Trim()))" ($r.Code -eq 0 -and
     ($got -join "`n") -ceq ($expected -join "`n") -and $r.DriftLines.Count -eq 0 -and $r.Out -cmatch 'repo-settings -Apply puis -Check : conforme à ')
-  # No ruleset of that name yet: both are created (POST), the other writes are unchanged.
+  # No ruleset of that name yet: both are created (POST), the other writes are unchanged. The fake API
+  # does not change after a write, so this case checks the writes only.
   $r = Run-Faked { param($f) $f['/rulesets?includes_parents=false&per_page=100'] = @() } @('-Apply')
   $got = Get-Writes $r
   $tail = $expected.Count - 1
@@ -426,7 +431,7 @@ try {
   foreach ($mode in '-Check', '-Apply') {
     $r = Run-Faked { param($f) } @($mode)
     Check "whole script, $mode, file weakened on origin/main: code 1, refused by S2 before any GitHub call (code $($r.Code), $($r.Calls.Count) call(s) : $($r.Out.Trim()))" ($r.Code -eq 1 -and
-      $r.Calls.Count -eq 0 -and $r.Writes.Count -eq 0 -and $r.Out -match 'repo\.allow_auto_merge doit valoir false')
+      $r.Calls.Count -eq 0 -and $r.Writes.Count -eq 0 -and $r.DriftLines.Count -eq 0 -and $r.Out -match 'repo\.allow_auto_merge doit valoir false')
   }
   G -C $M checkout -q HEAD~1 -- tools/ci/repo-settings.json; G -C $M commit -q -am 'docs(essai): fichier rétabli'; G -C $M push -q origin main
 } finally {
