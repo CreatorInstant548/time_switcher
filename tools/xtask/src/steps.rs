@@ -270,7 +270,10 @@ fn strict_clippy_config(text: &str, closure: &BTreeSet<String>) -> Result<(Strin
     for line in text.lines() {
         // A unicode escape can spell any key (`"allow\\u002dinvalid" = true`): none is read.
         if !line.trim_start().starts_with('#') && (line.contains("\\u") || line.contains("\\U")) {
-            return Err(format!("clippy.toml: unicode escape refused: {}", line.trim()));
+            return Err(format!(
+                "clippy.toml: unicode escape refused: {}",
+                line.trim()
+            ));
         }
         // Only a line with the flag is rewritten, and it must be in the one layout; a line
         // without it (an entry already strict, possibly spread over lines) is left as it is.
