@@ -9,14 +9,33 @@
 //! - W5: an `archsec-ok` is not carried over when `sensitive-paths.txt` at the base of `A` did not
 //!   make the change sensitive.
 //!
+//! When W2 (same blob) or the file half of W3 fails, typically because `main` also changed a file
+//! of the PR, AS-55 still carries the approval over if, on the local objects:
+//! - X1: the first-parent chain from `H` down to `A` holds only merges of two parents, whose second
+//!   parent is an ancestor of the reference `main`;
+//! - X2: the tree of each of those merges is `git merge-tree --write-tree <p1> <p2>` (git 2.38 or
+//!   later); a conflict, even resolved, fails. The replay reads the attributes of the current
+//!   `main` (`.gitattributes` of the work tree); none sets `merge=` today. If one ever does, pin
+//!   the source of the attributes (for instance `--attr-source`), or a driver could change what
+//!   « clean merge » means between two runs (m2 of the #116 review);
+//! - X3: the PR's diff at `H` (against its base) and at `A` (against its base) have the same lines
+//!   byte for byte, file headers included; only `index`, `@@` and context lines may differ. A
+//!   binary delta is relative to its preimage, which X3 does not see (the `index` line is
+//!   dropped): that the head's binary files are A's plus `main`'s comes from X2, a binary file
+//!   changed on both sides being a conflict (m3 of the #116 review);
+//! - X4: when the head is not among the local objects (`verify-main`, CI included), it is fetched
+//!   anonymously (`pull/<n>/head`, once, no tags, no submodules), and only if the API shows a PR
+//!   from this repository (`head.repo.full_name`): a fork, or the field missing, refuses the carry
+//!   over without any fetch.
+//!
 //! `merge` and `verify-main` call this same code (W6); `verify-main` then does J4 on `A`. `ci-ok`
 //! stays required on `H` itself, by the callers (W7). Every PR fact is read on GitHub on each run,
 //! and nothing is cached (V5, AS-39). The head must be based on the
 //! reference `main`, and what lands on `main` must have the head's tree. `merge` reads the trees
 //! of `A` and `H` from the objects fetched locally; `verify-main` reads them through the API,
 //! because in CI it has no PR objects (no `git fetch`). The bases are `main` commits, read from
-//! the local history.
-//! spec: carnet architecture-securite.md §10 ; §9.8 J4
+//! the local history. AS-55 reads the commits between `A` and `H` locally (X4 for the fetch).
+//! spec: carnet architecture-securite.md §10 (AS-40, AS-55) ; §9.8 J4
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,6 +50,38 @@ type Tree = BTreeMap<String, (String, String)>;
 /// Earlier approved SHAs of the PR looked at, most recent first: bounds the GitHub reads.
 const MAX_CANDIDATES: usize = 5;
 
+/// AS-55: merges of `main` replayed between `A` and the head, at most (X1, X2).
+const MAX_MERGES: usize = 20;
+
+/// X3: `git diff` options that make its output independent of the user's configuration: no
+/// external driver or text conversion, no renames (as W2), full binary patches, fixed prefixes,
+/// short submodule lines, blank context lines kept as such.
+const DIFF: [&str; 14] = [
+    "-c",
+    "diff.suppressBlankEmpty=false",
+    "diff",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-color",
+    "--no-renames",
+    "--binary",
+    "--submodule=short",
+    "--ignore-submodules=none",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--no-relative",
+    "--end-of-options",
+];
+
+/// How an approval on an earlier SHA is carried over.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Rule {
+    /// W1 to W5 hold.
+    As40,
+    /// W2 or W3 failed, X1 to X3 hold.
+    As55,
+}
+
 /// Paths whose entry differs between two trees.
 fn changed(a: &Tree, b: &Tree) -> BTreeSet<String> {
     a.keys()
@@ -38,6 +89,45 @@ fn changed(a: &Tree, b: &Tree) -> BTreeSet<String> {
         .filter(|p| a.get(*p) != b.get(*p))
         .cloned()
         .collect()
+}
+
+/// X3: the lines of the diff from `base` to `commit` that must stay byte for byte: every line but
+/// `index` and `@@` lines and context lines. File headers (`diff --git`, modes, `---`, `+++`),
+/// `+` and `-` lines, `\ No newline` and binary patches stay. A binary patch may be a delta from a
+/// preimage named only by the dropped `index` line: X2, not X3, guarantees binary contents (m3).
+/// Not `git patch-id`, which ignores white space (AS-55).
+fn pr_diff(repo: &Repo, base: &str, commit: &str) -> Result<Vec<Vec<u8>>, String> {
+    let mut args = DIFF.to_vec();
+    args.extend([base, commit]);
+    let out = repo.out(&repo.main, "git", &args)?;
+    let kept =
+        |l: &&[u8]| !(l.starts_with(b"index ") || l.starts_with(b"@@") || l.starts_with(b" "));
+    Ok(out
+        .split(|b| *b == b'\n')
+        .filter(kept)
+        .map(<[u8]>::to_vec)
+        .collect())
+}
+
+/// X3: `None` when both lists of diff lines are equal, else the file header where they first
+/// differ (empty before the first header).
+fn first_difference(a: &[Vec<u8>], h: &[Vec<u8>]) -> Option<String> {
+    let header = |l: &Vec<u8>| l.starts_with(b"diff --git ");
+    let mut file = None;
+    for i in 0..a.len().max(h.len()) {
+        let (x, y) = (a.get(i), h.get(i));
+        if x != y {
+            let at = [x, y].into_iter().flatten().find(|l| header(l)).or(file);
+            return Some(
+                at.map(|l| String::from_utf8_lossy(l).into_owned())
+                    .unwrap_or_default(),
+            );
+        }
+        if let Some(l) = x.filter(|l| header(l)) {
+            file = Some(l);
+        }
+    }
+    None
 }
 
 /// The PR as its caller checks it.
@@ -69,8 +159,11 @@ pub struct Carry<'a> {
     pr: Pr<'a>,
     commits: Option<Vec<String>>,
     head: Option<HeadSide>,
-    /// W1 to W4 per candidate, which do not depend on the tag: `Ok(base of A)` or the failure.
-    seen: BTreeMap<String, Result<String, String>>,
+    /// W1 to W4 (or X1 to X3) per candidate, which do not depend on the tag: `Ok((base of A,
+    /// rule))` or the failure.
+    seen: BTreeMap<String, Result<(String, Rule), String>>,
+    /// X4, decided once: `None` not yet tried; `Some(None)` fetched; `Some(Some(why))` refused.
+    fetch: Option<Option<String>>,
 }
 
 impl<'a> Carry<'a> {
@@ -81,6 +174,23 @@ impl<'a> Carry<'a> {
             commits: None,
             head: None,
             seen: BTreeMap::new(),
+            fetch: None,
+        }
+    }
+
+    /// True when the approval on `from`, returned by [`Self::resolve`], was carried over by AS-55.
+    pub fn by_as55(&self, from: &str) -> bool {
+        matches!(self.seen.get(from), Some(Ok((_, Rule::As55))))
+    }
+
+    /// What `merge` prints after `carried over`, for an approval that [`Self::resolve`] carried
+    /// over from `from` to the head.
+    pub fn describe(&self, from: &str) -> String {
+        let h = self.pr.head;
+        if self.by_as55(from) {
+            format!("carried over from {from} to {h} (AS-55: clean merges of main, identical diff)")
+        } else {
+            format!("carried over from {from} to the head {h} (AS-40, W1 to W5 hold)")
         }
     }
 
@@ -132,7 +242,7 @@ impl<'a> Carry<'a> {
                 }
             };
             let r = match pure {
-                Ok(base) if tag == "archsec-ok" => match self.sensitive_under(&base) {
+                Ok((base, _)) if tag == "archsec-ok" => match self.sensitive_under(&base) {
                     Ok(true) => Ok(()),
                     Ok(false) => Err(format!(
                         "W5: {} at {base} did not make the PR sensitive: a fresh archsec-ok is \
@@ -155,9 +265,10 @@ impl<'a> Carry<'a> {
         )))
     }
 
-    /// W1 (ancestry) to W4 for a SHA `a` listed among the PR's commits: `Ok(Ok(base of a))`, or
-    /// `Ok(Err(condition))` on the first one that fails.
-    fn pure_update(&mut self, a: &str) -> Result<Result<String, String>, String> {
+    /// W1 (ancestry) to W4 for a SHA `a` listed among the PR's commits, or X1 to X3 when W2 or
+    /// the file half of W3 fails (AS-55): `Ok(Ok((base of a, rule)))`, or `Ok(Err(condition))` on
+    /// the first one that fails.
+    fn pure_update(&mut self, a: &str) -> Result<Result<(String, Rule), String>, String> {
         let fail = |w: String| Ok(Err(w));
         if self.merge_base(a, self.pr.head)? != a {
             return fail("W1: not an ancestor of the head".to_owned());
@@ -216,21 +327,177 @@ impl<'a> Carry<'a> {
                 "W2: {p} is changed at {a} but no longer at the head (file removed from the PR)"
             ));
         }
-        if let Some(p) = files.iter().find(|f| tree.get(*f) != h.tree.get(*f)) {
-            return fail(format!(
+        // W2 (same blob and mode) and the file half of W3: AS-55 may lift them.
+        let lifted = if let Some(p) = files.iter().find(|f| tree.get(*f) != h.tree.get(*f)) {
+            Some(format!(
                 "W2: {p} has another blob or mode at the head than at {a} (conflict resolution?)"
-            ));
+            ))
+        } else {
+            files
+                .iter()
+                .find(|f| base_tree.get(*f) != h.base_tree.get(*f))
+                .map(|p| {
+                    format!(
+                        "W3: {p} changed on main between {base} and the head's base {}",
+                        h.base
+                    )
+                })
+        };
+        let Some(w) = lifted else {
+            return Ok(Ok((base, Rule::As40)));
+        };
+        match self.clean_merges(a, &base) {
+            Ok(Ok(())) => Ok(Ok((base, Rule::As55))),
+            Ok(Err(x)) => fail(format!("{w}; AS-55: {x}")),
+            Err(e) => Err(format!("{w}; AS-55: {e}")),
         }
-        if let Some(p) = files
-            .iter()
-            .find(|f| base_tree.get(*f) != h.base_tree.get(*f))
-        {
+    }
+
+    /// AS-55, X4 then X1 to X3, on the local objects: `Ok(Err(condition))` on the first one that
+    /// fails.
+    fn clean_merges(&mut self, a: &str, base_a: &str) -> Result<Result<(), String>, String> {
+        let fail = |x: String| Ok(Err(x));
+        if let Err(x4) = self.pr_objects()? {
+            return fail(x4);
+        }
+        let (head, main) = (self.pr.head, self.pr.main);
+        // X1: walk the first parents from the head down to `a`; one more line than the bound
+        // tells a longer chain from one that ends on `a`.
+        let max = format!("--max-count={}", MAX_MERGES + 1);
+        let chain = self.repo.git(&[
+            "rev-list",
+            "--first-parent",
+            "--parents",
+            &max,
+            "--end-of-options",
+            head,
+        ])?;
+        let mut merges = Vec::new();
+        let mut next = head;
+        let mut reached = false;
+        for line in chain.lines() {
+            let ids: Vec<&str> = line.split(' ').collect();
+            if ids.first() != Some(&next) || !ids.iter().all(|s| is_sha(s)) {
+                return Err(format!("unreadable first-parent chain of {head}"));
+            }
+            if next == a {
+                reached = true;
+                break;
+            }
+            let [c, p1, p2] = ids[..] else {
+                return fail(format!(
+                    "X1: {next} is not a merge of two parents (ordinary commit between {a} and \
+                     the head)"
+                ));
+            };
+            merges.push((c, p1, p2));
+            next = p1;
+        }
+        if !reached || merges.is_empty() {
             return fail(format!(
-                "W3: {p} changed on main between {base} and the head's base {}",
-                h.base
+                "X1: {a} is not on the head's first-parent chain within {MAX_MERGES} merges"
             ));
         }
-        Ok(Ok(base))
+        for (c, p1, p2) in merges {
+            let ancestor = ["merge-base", "--is-ancestor", p2, main];
+            if !self.repo.ok(&self.repo.main, "git", &ancestor)? {
+                return fail(format!(
+                    "X1: the second parent {p2} of {c} is not an ancestor of main {main}"
+                ));
+            }
+            // X2: replay the merge; exit 1 is a conflict, anything else but 0 a failed read.
+            let args = ["merge-tree", "--write-tree", "--end-of-options", p1, p2];
+            let (code, out, err) = self.repo.runner.run(&self.repo.main, "git", &args)?;
+            let replayed = match code {
+                Some(0) => String::from_utf8_lossy(&out)
+                    .lines()
+                    .next()
+                    .filter(|t| is_sha(t))
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("unreadable git merge-tree output for {c}"))?,
+                Some(1) => {
+                    return fail(format!(
+                        "X2: merging {p2} into {p1} conflicts: {c} was resolved by hand"
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "git merge-tree --write-tree failed for {c} (git 2.38 or later is \
+                         needed): {}",
+                        err.trim()
+                    ));
+                }
+            };
+            if self.repo.git(&["rev-parse", &format!("{c}^{{tree}}")])? != replayed {
+                return fail(format!(
+                    "X2: the tree of {c} is not the clean merge of its parents (edited merge)"
+                ));
+            }
+        }
+        // X3: the PR's lines, byte for byte, at `a` and at the head.
+        let at_a = pr_diff(self.repo, base_a, a)?;
+        let at_h = pr_diff(self.repo, main, head)?;
+        if let Some(at) = first_difference(&at_a, &at_h) {
+            return fail(format!(
+                "X3: the PR's diff at the head differs from its diff at {a}, byte for byte, in « \
+                 {at} »"
+            ));
+        }
+        Ok(Ok(()))
+    }
+
+    /// AS-55 reads the commits between `A` and the head locally. `merge` has fetched them;
+    /// `verify-main` fetches the PR's head ref, once, when the head is not already local, and
+    /// only for a PR of this repository (X4): `Ok(Err(why))` refuses without fetching.
+    fn pr_objects(&mut self) -> Result<Result<(), String>, String> {
+        let spec = format!("{}^{{commit}}", self.pr.head);
+        let local = |c: &Self| c.repo.ok(&c.repo.main, "git", &["cat-file", "-e", &spec]);
+        if local(&*self)? {
+            return Ok(Ok(()));
+        }
+        let absent = format!("head {} absent from the local objects", self.pr.head);
+        match &self.fetch {
+            _ if self.pr.local_objects => return Err(absent),
+            Some(Some(why)) => return Ok(Err(why.clone())),
+            Some(None) => return Err(absent),
+            None => {}
+        }
+        if let Some(why) = self.foreign()? {
+            self.fetch = Some(Some(why.clone()));
+            return Ok(Err(why));
+        }
+        self.fetch = Some(None);
+        let r = format!("pull/{}/head", self.pr.number);
+        self.repo.git(&[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "origin",
+            &r,
+        ])?;
+        if local(&*self)? {
+            Ok(Ok(()))
+        } else {
+            Err(absent)
+        }
+    }
+
+    /// X4: `None` when the API shows the PR's head in this repository, else why it is refused
+    /// (a fork, or the field missing, for instance once the fork is deleted).
+    fn foreign(&self) -> Result<Option<String>, String> {
+        let (s, n) = (&self.repo.slug, self.pr.number);
+        let pr = self.repo.api(&format!("repos/{s}/pulls/{n}"))?;
+        Ok(match pr["head"]["repo"]["full_name"].as_str() {
+            Some(name) if name == s.as_str() => None,
+            Some(name) => Some(format!(
+                "X4: PR #{n} comes from the fork {name}: its objects are never fetched"
+            )),
+            None => Some(format!(
+                "X4: the head repository of PR #{n} is unreadable on GitHub (deleted fork?): \
+                 nothing fetched"
+            )),
+        })
     }
 
     /// W5: the caller's change is sensitive under the list of `base`. A missing or unreadable
@@ -364,7 +631,8 @@ pub mod lab {
     /// Answer that the fake `gh` turns into a failed read (HTTP 404).
     pub const FAIL: &str = "!fail";
 
-    fn git_in(dir: &Path, args: &[&str]) -> Output {
+    /// `git` in `dir` with the lab's settings, outside any caller's repository.
+    fn command(dir: &Path, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.args(CONFIG).args(args).current_dir(dir);
         for v in [
@@ -377,12 +645,29 @@ pub mod lab {
         ] {
             cmd.env_remove(v);
         }
-        let out = cmd.output().expect("git");
+        cmd
+    }
+
+    pub fn git_in(dir: &Path, args: &[&str]) -> Output {
+        let out = command(dir, args).output().expect("git");
         (
             out.status.code(),
             out.stdout,
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
+    }
+
+    /// `git` in `dir` with `input` on its standard input; its standard output.
+    pub fn git_input(dir: &Path, args: &[&str], input: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = command(dir, args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("git");
+        child.stdin.take().expect("stdin").write_all(input).unwrap();
+        child.wait_with_output().expect("git").stdout
     }
 
     pub struct Lab {
@@ -448,9 +733,9 @@ pub mod lab {
         }
     }
 
-    /// `git` runs for real in the lab. A `gh` call takes the answer of the longest matching
-    /// prefix ([`FAIL`]: a failed read); without one, `gh api` trees and compare are computed
-    /// from the lab, as GitHub would. Every call is noted.
+    /// A call takes the answer of the longest matching prefix ([`FAIL`]: a failed read); without
+    /// one, `git` runs for real in the lab, and `gh api` trees and compare are computed from the
+    /// lab, as GitHub would. Every call is noted.
     pub struct Hub {
         answers: Vec<(String, String)>,
         calls: Rc<RefCell<Vec<String>>>,
@@ -460,9 +745,6 @@ pub mod lab {
         fn run(&self, dir: &Path, prog: &str, args: &[&str]) -> Result<Output, String> {
             let line = format!("{prog} {}", args.join(" "));
             self.calls.borrow_mut().push(line.clone());
-            if prog == "git" {
-                return Ok(git_in(dir, args));
-            }
             let best = self
                 .answers
                 .iter()
@@ -473,6 +755,7 @@ pub mod lab {
                     return Ok((Some(1), Vec::new(), "gh: Not Found (HTTP 404)".to_owned()));
                 }
                 Some((_, out)) => return Ok((Some(0), out.clone().into_bytes(), String::new())),
+                None if prog == "git" => return Ok(git_in(dir, args)),
                 None => {}
             }
             let text = |a: &[&str]| String::from_utf8(git_in(dir, a).1).unwrap();
@@ -1006,6 +1289,361 @@ mod tests {
             "{e}"
         );
         assert!(!e.contains("on GitHub"), "{e}");
+    }
+
+    /// Eight lines, so that two changes three lines apart merge cleanly.
+    const LINES: &str = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n";
+
+    /// [`LINES`] with line `n` (1-based) replaced by `with`.
+    fn edit(n: usize, with: &str) -> String {
+        LINES
+            .lines()
+            .enumerate()
+            .map(|(i, l)| format!("{}\n", if i + 1 == n { with } else { l }))
+            .collect()
+    }
+
+    /// AS-55 lab: `c0` on main; `a` on the PR changes line 2 of [`PR_FILE`]; `m1` on main changes
+    /// its line 5 (inside the diff's context); `h` merges `m1` into the PR without conflict.
+    fn overlap(name: &str) -> Case {
+        let lab = Lab::new(name);
+        let c0 = lab.commit(&[
+            ("tools/ci/sensitive-paths.txt", Some("tools/xtask/\n")),
+            (PR_FILE, Some(LINES)),
+            ("other.md", Some("o0\n")),
+        ]);
+        lab.git(&["checkout", "-q", "-b", "pr"]);
+        let a = lab.commit(&[(PR_FILE, Some(&edit(2, "L2")))]);
+        lab.git(&["checkout", "-q", "main"]);
+        let m1 = lab.commit(&[(PR_FILE, Some(&edit(5, "L5")))]);
+        lab.git(&["checkout", "-q", "pr"]);
+        lab.git(&["merge", "-q", "--no-edit", &m1]);
+        let h = lab.git(&["rev-parse", "HEAD"]);
+        Case { lab, c0, a, m1, h }
+    }
+
+    /// `resolve` of `review-ok` approved on `c.a`, for `head` against `main` = `c.m1`, the PR's
+    /// commits being `list`, with the PR's objects local (`merge`).
+    fn resolve55(c: &Case, head: &str, list: &[&str]) -> Result<String, String> {
+        let bodies = [format!("review-ok: {}", c.a)];
+        let (r, _) = resolve_in(
+            &c.lab,
+            commits(list),
+            head,
+            &c.m1,
+            head,
+            true,
+            "review-ok",
+            &bodies,
+        );
+        r.unwrap()
+    }
+
+    /// AS-55: `main` changed the PR's file, the merge is clean and the PR's lines are the same
+    /// (context aside): both approvals are carried over, with the AS-55 message. Without the PR's
+    /// objects flag (`verify-main`), the local objects are used and nothing is fetched.
+    #[test]
+    fn as55_clean_merge_identical_diff_carries_over() {
+        let c = overlap("as55-ok");
+        for (tag, local) in [
+            ("review-ok", true),
+            ("archsec-ok", true),
+            ("archsec-ok", false),
+        ] {
+            let bodies = [format!("{tag}: {}", c.a)];
+            let (repo, calls) = c.lab.repo(commits(&[&c.a, &c.h]));
+            let files = [PR_FILE.to_owned()];
+            let pr = Pr {
+                number: 7,
+                head: &c.h,
+                main: &c.m1,
+                diff: (&c.m1, &c.h, &files),
+                local_objects: local,
+            };
+            let mut carry = Carry::new(&repo, pr);
+            assert_eq!(carry.resolve(tag, &bodies, &|_| true), Ok(Ok(c.a.clone())));
+            assert!(carry.by_as55(&c.a));
+            assert_eq!(
+                carry.describe(&c.a),
+                format!(
+                    "carried over from {} to {} (AS-55: clean merges of main, identical diff)",
+                    c.a, c.h
+                )
+            );
+            assert!(
+                !calls.borrow().iter().any(|l| l.contains("fetch")),
+                "{:?}",
+                calls.borrow()
+            );
+        }
+    }
+
+    /// X2: a conflict on the PR's line, resolved by hand, even back to the PR's version.
+    #[test]
+    fn as55_conflict_resolved_by_hand() {
+        let c = overlap("as55-conflict");
+        c.lab.git(&["checkout", "-q", "main"]);
+        let m2 = c.lab.commit(&[(PR_FILE, Some(&edit(2, "M2")))]);
+        c.lab.git(&["checkout", "-q", "-b", "resolved", &c.a]);
+        let (code, _, _) = super::lab::git_in(&c.lab.dir, &["merge", "-q", "--no-edit", &m2]);
+        assert_ne!(code, Some(0), "the merge must conflict");
+        let h = c.lab.commit(&[(PR_FILE, Some(&edit(2, "L2")))]);
+        let bodies = [format!("review-ok: {}", c.a)];
+        let (r, _) = resolve_in(
+            &c.lab,
+            commits(&[&c.a, &h]),
+            &h,
+            &m2,
+            &h,
+            true,
+            "review-ok",
+            &bodies,
+        );
+        let e = r.unwrap().unwrap_err();
+        assert!(
+            e.contains("W3: ") && e.contains("AS-55: X2: merging"),
+            "{e}"
+        );
+    }
+
+    /// X2: an « evil » merge, clean but with a line added to the PR's file in the merge commit;
+    /// a change of white space only in the merge commit is caught the same way.
+    #[test]
+    fn as55_evil_merge() {
+        let c = overlap("as55-evil");
+        for (name, text) in [
+            (
+                "evil",
+                format!("{}evil\n", edit(5, "L5").replace("l2", "L2")),
+            ),
+            ("blank", edit(5, "L5").replace("l2", "L2 ")),
+        ] {
+            c.lab.git(&["checkout", "-q", "-b", name, &c.a]);
+            c.lab.git(&["merge", "-q", "--no-commit", &c.m1]);
+            let h = c.lab.commit(&[(PR_FILE, Some(&text))]);
+            let e = resolve55(&c, &h, &[&c.a, &h]).unwrap_err();
+            assert!(
+                e.contains("W2: ") && e.contains("X2: the tree of") && e.contains("edited merge"),
+                "{name}: {e}"
+            );
+        }
+    }
+
+    /// X3 is byte for byte: a change of white space only in the PR's lines differs, where the
+    /// context, the `@@` and `index` lines may differ. `git patch-id` would see no change.
+    #[test]
+    fn as55_x3_white_space_counts() {
+        let c = overlap("as55-blank");
+        c.lab.git(&["checkout", "-q", "-b", "blank", &c.c0]);
+        let blank = c.lab.commit(&[(PR_FILE, Some(&edit(2, "L2 ")))]);
+        let (repo, _) = c.lab.repo(Vec::new());
+        let at_a = pr_diff(&repo, &c.c0, &c.a).unwrap();
+        assert_eq!(
+            first_difference(&at_a, &pr_diff(&repo, &c.m1, &c.h).unwrap()),
+            None
+        );
+        let at = first_difference(&pr_diff(&repo, &c.c0, &blank).unwrap(), &at_a);
+        let header = format!("diff --git a/{PR_FILE} b/{PR_FILE}");
+        assert_eq!(at.as_deref(), Some(header.as_str()));
+        let patch_id = |x: &str| {
+            let (_, diff, _) = super::lab::git_in(&c.lab.dir, &["diff", &c.c0, x]);
+            let out = super::lab::git_input(&c.lab.dir, &["patch-id", "--stable"], &diff);
+            let out = String::from_utf8(out).unwrap();
+            out.split(' ').next().unwrap_or_default().to_owned()
+        };
+        assert!(!patch_id(&blank).is_empty());
+        assert_eq!(
+            patch_id(&blank),
+            patch_id(&c.a),
+            "patch-id ignores white space"
+        );
+    }
+
+    /// X3: the PR made a file executable; `main` did the same, then the merge is clean but the
+    /// PR's diff loses its mode lines.
+    #[test]
+    fn as55_mode_change() {
+        let c = overlap("as55-mode");
+        c.lab.git(&["checkout", "-q", "-b", "modes", &c.c0]);
+        crate::sys::write(&c.lab.dir.join(PR_FILE), edit(2, "L2").as_bytes()).unwrap();
+        c.lab.git(&["add", PR_FILE]);
+        c.lab.git(&["update-index", "--chmod=+x", PR_FILE]);
+        c.lab.git(&["commit", "-q", "-m", "x"]);
+        let a = c.lab.git(&["rev-parse", "HEAD"]);
+        // The executable bit lives in the index only: the work tree's is ignored.
+        let no_mode = ["-c", "core.fileMode=false"];
+        c.lab
+            .git(&[&no_mode[..], &["checkout", "-q", "main"]].concat());
+        c.lab.git(&["update-index", "--chmod=+x", PR_FILE]);
+        c.lab.git(&["commit", "-q", "-m", "x"]);
+        let m2 = c.lab.git(&["rev-parse", "HEAD"]);
+        c.lab
+            .git(&[&no_mode[..], &["checkout", "-q", "modes"]].concat());
+        c.lab
+            .git(&[&no_mode[..], &["merge", "-q", "--no-edit", &m2]].concat());
+        let h = c.lab.git(&["rev-parse", "HEAD"]);
+        let bodies = [format!("review-ok: {a}")];
+        let (r, _) = resolve_in(
+            &c.lab,
+            commits(&[&a, &h]),
+            &h,
+            &m2,
+            &h,
+            true,
+            "review-ok",
+            &bodies,
+        );
+        let e = r.unwrap().unwrap_err();
+        assert!(e.contains("W2: ") && e.contains("AS-55: X3: "), "{e}");
+    }
+
+    /// X1: an ordinary commit slipped between `A` and the merge, or after it; a merge whose second
+    /// parent is not on `main`.
+    #[test]
+    fn as55_ordinary_commit_or_foreign_merge() {
+        let c = overlap("as55-x1");
+        c.lab.git(&["checkout", "-q", "-b", "slipped", &c.a]);
+        let o = c.lab.commit(&[]);
+        c.lab.git(&["merge", "-q", "--no-edit", &c.m1]);
+        let h = c.lab.git(&["rev-parse", "HEAD"]);
+        let e = resolve55(&c, &h, &[&c.a, &o, &h]).unwrap_err();
+        assert!(e.contains(&format!("X1: {o} is not a merge")), "{e}");
+        c.lab.git(&["checkout", "-q", "pr"]);
+        let after = c.lab.commit(&[]);
+        let e = resolve55(&c, &after, &[&c.a, &c.h, &after]).unwrap_err();
+        assert!(e.contains(&format!("X1: {after} is not a merge")), "{e}");
+        // `side` has the tree of `m1`, but is not a `main` commit.
+        let tree = format!("{}^{{tree}}", c.m1);
+        let side = c
+            .lab
+            .git(&["commit-tree", &tree, "-p", &c.c0, "-m", "side"]);
+        c.lab.git(&["checkout", "-q", "-b", "foreign", &c.h]);
+        c.lab.git(&["merge", "-q", "--no-edit", &side]);
+        let h = c.lab.git(&["rev-parse", "HEAD"]);
+        let e = resolve55(&c, &h, &[&c.a, &c.h, &h]).unwrap_err();
+        assert!(e.contains(&format!("X1: the second parent {side}")), "{e}");
+    }
+
+    /// Two approved SHAs before a merge of `main`, and a head absent from the local objects (as in
+    /// CI, `verify-main`): the answers of `gh` for the PR, and those that make the head absent.
+    fn absent_head(
+        c: &Case,
+        head_repo: serde_json::Value,
+    ) -> (String, String, Vec<(String, String)>) {
+        c.lab.git(&["checkout", "-q", "-B", "two", &c.a]);
+        let a2 = c.lab.commit(&[]);
+        c.lab.git(&["merge", "-q", "--no-edit", &c.m1]);
+        let h2 = c.lab.git(&["rev-parse", "HEAD"]);
+        let mut answers = commits(&[&c.a, &a2, &h2]);
+        answers.push((
+            format!("git cat-file -e {h2}^{{commit}}"),
+            super::lab::FAIL.to_owned(),
+        ));
+        answers.push((
+            "gh api repos/o/r/pulls/7".to_owned(),
+            json!({"number": 7, "head": {"sha": h2, "repo": head_repo}}).to_string(),
+        ));
+        (a2, h2, answers)
+    }
+
+    /// X4: a PR from a fork, or whose head repository is missing, is refused without any fetch;
+    /// the API is read once for both candidates.
+    #[test]
+    fn as55_never_fetches_a_fork() {
+        let c = overlap("as55-fork");
+        for (repo, why) in [
+            (
+                json!({"full_name": "x/r"}),
+                "X4: PR #7 comes from the fork x/r",
+            ),
+            (
+                json!(null),
+                "X4: the head repository of PR #7 is unreadable",
+            ),
+            (json!({}), "X4: the head repository of PR #7 is unreadable"),
+        ] {
+            let (a2, h2, answers) = absent_head(&c, repo);
+            let bodies = [format!("review-ok: {a2}"), format!("review-ok: {}", c.a)];
+            let (r, calls) = resolve_in(
+                &c.lab,
+                answers,
+                &h2,
+                &c.m1,
+                &h2,
+                false,
+                "review-ok",
+                &bodies,
+            );
+            let e = r.unwrap().unwrap_err();
+            assert_eq!(e.matches(why).count(), 2, "{e}");
+            assert!(!calls.iter().any(|l| l.contains("fetch")), "{calls:#?}");
+            let reads = calls.iter().filter(|l| *l == "gh api repos/o/r/pulls/7");
+            assert_eq!(reads.count(), 1, "{calls:#?}");
+        }
+    }
+
+    /// `verify-main` without the head among the local objects: `pull/<n>/head` of a PR of this
+    /// repository is fetched once, whatever the number of candidates, and a failed fetch refuses
+    /// them. `merge`, whose objects were fetched, never fetches again.
+    #[test]
+    fn as55_fetches_the_head_once() {
+        let c = overlap("as55-fetch");
+        for local in [false, true] {
+            let (a2, h2, answers) = absent_head(&c, json!({"full_name": "o/r"}));
+            let bodies = [format!("review-ok: {a2}"), format!("review-ok: {}", c.a)];
+            let (r, calls) = resolve_in(
+                &c.lab,
+                answers,
+                &h2,
+                &c.m1,
+                &h2,
+                local,
+                "review-ok",
+                &bodies,
+            );
+            let e = r.unwrap().unwrap_err();
+            let fetches: Vec<_> = calls.iter().filter(|l| l.contains("fetch")).collect();
+            if local {
+                assert!(fetches.is_empty(), "{fetches:?}");
+            } else {
+                assert_eq!(
+                    fetches,
+                    ["git fetch --quiet --no-tags --no-recurse-submodules origin pull/7/head"],
+                    "{calls:#?}"
+                );
+            }
+            assert_eq!(
+                e.matches("unreadable, not carried over (W2: ").count(),
+                2,
+                "{e}"
+            );
+            let absent = e.matches("absent from the local objects").count();
+            assert_eq!(absent, if local { 2 } else { 1 }, "{e}");
+        }
+    }
+
+    /// A failed local read on the AS-55 path refuses the candidate, W2 kept in the reason.
+    #[test]
+    fn as55_failed_read_refuses() {
+        let c = overlap("as55-read");
+        let mut answers = commits(&[&c.a, &c.h]);
+        answers.push(("git rev-list".to_owned(), super::lab::FAIL.to_owned()));
+        let bodies = [format!("review-ok: {}", c.a)];
+        let (r, _) = resolve_in(
+            &c.lab,
+            answers,
+            &c.h,
+            &c.m1,
+            &c.h,
+            true,
+            "review-ok",
+            &bodies,
+        );
+        let e = r.unwrap().unwrap_err();
+        assert!(
+            e.contains("unreadable, not carried over (W2: ") && e.contains("AS-55: "),
+            "{e}"
+        );
     }
 
     /// Most recent approval first; a repeated SHA is looked at once; a quoted line does not count.
