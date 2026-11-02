@@ -213,3 +213,12 @@ L'utilisateur ne fait aucune action ([organisation.md](../time_switcher/docs/pil
 - **#94 reportée** au reliquat de la phase 1 (`feuille-de-route.md`, section « Reliquat par phase », créée aujourd'hui). Les marqueurs pointent déjà vers #94, depuis #99. Feuille de route remise à jour.
 - **Restent ouvertes** : 28 issues avant la clôture de #94, dont 24 `role:dev` traitées par lots, #87 (A15, conception), et #98 (AU8, anomalie de la nuit).
 - **AU1** (refus natifs dans `.claude/settings.json`) : en attente de la décision de l'utilisateur. La branche `claude/outillage-remove-guards` est prête.
+- **Points 5 et 6 de la phase 0 (V0-10)** : les preuves sont reçues.
+  - Python lit l'état du monde (#89) : le test numpy retrouve l'empreinte `short.world`, à 1 et à 4 fils.
+  - Visualisation minimale (#97) : `ts-viz positions` produit `positions.parquet`, qui se convertit en `.rrd`. La sécurité l'a approuvé (VZ7).
+- **#6 close** par le dev, avec une justification point par point.
+- **#50 découpée** (décidé) :
+  - la signature du manifeste (AS-37) passe au reliquat de la phase 5, car S27 n'arrive qu'en phase 5 ;
+  - m4 et m7 se corrigent en phase 0 ;
+  - m5 rejoint #45.
+- **En cours au dev** : #98, puis #63. #77 et #48 sont lancées.

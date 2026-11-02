@@ -33,6 +33,12 @@ Ce sont les *issues* reportées (organisation.md §5, point 5). Seul le travail 
 |---|---|---|---|---|
 | [#94](https://github.com/CreatorInstant548/time_switcher/issues/94) | Calibrer `PARALLEL_FROM_WORK` et `PAR_ITER_FROM` sur les systèmes de la phase 1 (AS-51) | dev, puis qualité pour les mesures | Les systèmes à mesurer n'existent pas encore. Les valeurs actuelles ne changent pas le résultat. Les marqueurs pointent déjà vers #94 (PR #99). | 02/11 |
 
+### Phase 5
+
+| *Issue* | Sujet | Rôle | Motif du report | Décidé le |
+|---|---|---|---|---|
+| [#50](https://github.com/CreatorInstant548/time_switcher/issues/50) | Faire signer par le manifeste de `ts_persist` tout l'en-tête de l'enveloppe ; la politique de signature appartient à l'hôte (exigence AS-37) | dev, avec `archsec-ok` | La signature des artefacts et du client n'arrive qu'en phase 5 (S27, securite.md §7). Les petits points m4 et m7 sont corrigés en phase 0. m5 est suivi dans #45. | 02/11 |
+
 ## Outils déjà installés
 
 | Outil | Version | Emplacement | Date |
