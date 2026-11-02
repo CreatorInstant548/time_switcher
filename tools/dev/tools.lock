@@ -32,6 +32,11 @@ cargo-audit.source = "crates.io (cargo install --locked --version 0.22.2 cargo-a
 cargo-fuzz.version = "0.13.2"
 cargo-fuzz.source = "crates.io (cargo install --locked --version 0.13.2 cargo-fuzz)"
 
-# Places réservées, à remplir à l'installation de l'outil (même forme) :
-# maturin.version = ""
-# maturin.source = "crates.io (cargo install --locked --version <v> maturin)"
+# uv (PY5), used by cargo xtask py: found on PATH, version and SHA-256 of the executable checked
+# before each use. uv.sha256 equals the uv.exe entry of the wheel's RECORD; uv.archive_sha256 is
+# the SHA-256 of that wheel published on PyPI.
+uv.version = "0.11.33"
+uv.source = "https://pypi.org/project/uv/0.11.33/ (uv-0.11.33-py3-none-win_amd64.whl)"
+uv.archive_sha256 = "521229afa69ad5f57127de800120cb2bea1ac729a05a0851aaf920124f8edf66"
+uv.sha256 = "b06d20dc4fab6f0a7772b9d070904f21b099d1ff8b613dc9dd949dc6706ad657"
+# maturin is pinned with its hashes in python/uv.lock (base group), not here.

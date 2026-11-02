@@ -14,8 +14,8 @@
 
 use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 use ts_kernel::{
-    LodComplete, MemorySnapshot, RunReport, Sim, SimConfig, SimTime, SnapshotScope, StableIndex,
-    StateLayout, StopCondition, Threads, state_hash_digest,
+    LodComplete, MemorySnapshot, ParallelPhases, RunReport, Sim, SimConfig, SimTime, SnapshotScope,
+    StableIndex, StateLayout, StopCondition, Threads, state_hash_digest,
 };
 use ts_persist::{Codec, Limits, decode_snapshot, encode_snapshot};
 use ts_toy::town::{Execution, TownSpec, generate};
@@ -63,11 +63,35 @@ pub fn pool(threads: Threads) {
     assert_eq!(pool.thread_num(), n);
 }
 
+/// With [`ParallelPhases::Always`]: on 4 threads, every phase runs on the parallel executor,
+/// as before issue #67, the most demanding case for the proof. [`default_policy_agrees`]
+/// checks that the default policy reaches the same values.
 fn config(threads: Threads) -> SimConfig {
     SimConfig {
         threads,
+        parallel_phases: ParallelPhases::Always,
         ..SimConfig::default()
     }
+}
+
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md §9.10 L6
+/// One straight run of `v` with the default [`ParallelPhases`] policy (the one the hosts
+/// use) gives the same global fingerprint as with [`ParallelPhases::Always`] (issue #67).
+pub fn default_policy_agrees(v: &Version, threads: Threads) {
+    let end = day_start(v.days);
+    let mut always = build(threads);
+    run(&mut always, end);
+    let cfg = SimConfig {
+        threads,
+        ..SimConfig::default()
+    };
+    let mut default = Sim::build(cfg, &rules(TownSpec::PHASE0), &public_test_key(SEED)).unwrap();
+    run(&mut default, end);
+    assert_eq!(
+        default.state_hash().global,
+        always.state_hash().global,
+        "the default policy changed the result"
+    );
 }
 
 fn build(threads: Threads) -> Sim {

@@ -9,12 +9,13 @@
 use std::sync::{Mutex, PoisonError};
 use std::thread::ThreadId;
 
-use bevy_ecs::prelude::{Component, Query, Res, ResMut, Resource};
-use ts_kernel::rng::{Stream, WorldKey, draw_block};
+use bevy_ecs::prelude::{Commands, Component, Entity, Has, Query, Res, ResMut, Resource, With};
+use ts_kernel::rng::{Stream, WorldKey, draw, draw_block};
 use ts_kernel::{
-    BuildError, CanonicalError, MemorySnapshot, Phase, Plugin, RestoreError, Sim, SimBuilder,
-    SimClock, SimConfig, SnapshotScope, StableEntity, StableId, StableIds, StableIndex,
-    StateDecode, StateHash, StateReader, StateWriter, Threads, WorldStreams,
+    BuildError, CanonicalError, LodComplete, MemorySnapshot, PAR_ITER_FROM, ParallelPhases, Phase,
+    Plugin, RestoreError, Sim, SimBuilder, SimClock, SimConfig, SnapshotScope, StableEntity,
+    StableId, StableIds, StableIndex, StateDecode, StateHash, StateReader, StateWriter, Threads,
+    WorldStreams, par_for_each_mut,
 };
 
 /// Expected global fingerprint after [`TICKS`] ticks, whatever the number of threads.
@@ -179,11 +180,165 @@ fn rules() -> Vec<Box<dyn Plugin>> {
     vec![Box::new(ParallelWorld)]
 }
 
+/// With [`ParallelPhases::Always`], so that 4 threads exercise the parallel executor on
+/// every phase, as before issue #67.
 fn config(threads: Threads) -> SimConfig {
     SimConfig {
         threads,
+        parallel_phases: ParallelPhases::Always,
         ..SimConfig::default()
     }
+}
+
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md §9.10 L6
+/// Expected global fingerprint of the switching world after [`SWITCHING_TICKS`] ticks,
+/// whatever the number of threads and the [`ParallelPhases`] policy.
+pub const SWITCHING_EXPECTED: &str =
+    "45e1d01154a36850d7b19c9983632bbfd7d48f0a4a17023609410b161a2ab957";
+/// Number of ticks of the switching world.
+pub const SWITCHING_TICKS: usize = 300;
+/// Entities of the switching world: more than [`PAR_ITER_FROM`], so that `climb` takes both
+/// branches of [`par_for_each_mut`].
+const SWITCHING_ENTITIES: u64 = 96;
+const _: () = assert!(SWITCHING_ENTITIES as usize > PAR_ITER_FROM);
+/// Threshold of [`ParallelPhases::FromWork`] that puts the switching world's `Act` phase on
+/// the parallel executor in about half of its ticks.
+pub const SWITCHING_FROM: u32 = 48;
+
+#[derive(Component, Clone)]
+struct Level(i64);
+
+impl StateHash for Level {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
+        w.i64(self.0);
+    }
+}
+
+impl StateDecode for Level {
+    fn decode_state(r: &mut StateReader<'_>) -> Result<Self, CanonicalError> {
+        r.i64().map(Self)
+    }
+}
+
+#[derive(Component, Clone)]
+struct Seen(u64);
+
+impl StateHash for Seen {
+    fn hash_state(&self, w: &mut StateWriter<'_>) {
+        w.u64(self.0);
+    }
+}
+
+impl StateDecode for Seen {
+    fn decode_state(r: &mut StateReader<'_>) -> Result<Self, CanonicalError> {
+        r.u64().map(Self)
+    }
+}
+
+/// Threads that ran `climb`, one per tick that ran it (diagnostic, outside the state).
+#[derive(Resource, Default)]
+struct Placement(Mutex<Vec<ThreadId>>);
+
+/// `Act` phase, first of two systems that do not conflict: the entities in full simulation
+/// climb by a keyed draw, on the pool from [`PAR_ITER_FROM`] of them.
+fn climb(
+    clock: Res<SimClock>,
+    streams: Res<WorldStreams>,
+    placement: Res<Placement>,
+    mut q: Query<(&StableEntity, &mut Level), With<LodComplete>>,
+) {
+    let slot = clock.now().as_millis().unsigned_abs();
+    let key = streams.get(Stream::Ai);
+    par_for_each_mut(&mut q, |(s, mut level)| {
+        level.0 += (draw(key, s.id(), slot, 0) % 7) as i64 - 3;
+    });
+    let mut seen = placement.0.lock().unwrap_or_else(PoisonError::into_inner);
+    seen.push(std::thread::current().id());
+}
+
+/// `Act` phase, second system: counts the ticks spent in full simulation.
+fn count(mut q: Query<&mut Seen, With<LodComplete>>) {
+    for mut seen in &mut q {
+        seen.0 += 1;
+    }
+}
+
+/// `Lod` phase: the number of entities in full simulation follows a saw from 0 to all of
+/// them, and a keyed draw picks which.
+fn toggle(
+    mut commands: Commands,
+    clock: Res<SimClock>,
+    streams: Res<WorldStreams>,
+    q: Query<(Entity, &StableEntity, Has<LodComplete>)>,
+) {
+    let tick = clock.now().as_millis().unsigned_abs() / clock.tick_millis().unsigned_abs();
+    let target = (tick * 5) % (SWITCHING_ENTITIES + 1);
+    for (e, s, complete) in &q {
+        let wanted = draw(streams.get(Stream::Ai), s.id(), tick, 1) % SWITCHING_ENTITIES < target;
+        if wanted && !complete {
+            commands.entity(e).insert(LodComplete);
+        } else if !wanted && complete {
+            commands.entity(e).remove::<LodComplete>();
+        }
+    }
+}
+
+struct SwitchingWorld;
+
+impl Plugin for SwitchingWorld {
+    fn name(&self) -> &'static str {
+        "switching_test"
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    fn build(&self, b: &mut SimBuilder) {
+        b.state_component::<Level>("test")
+            .state_component::<Seen>("test")
+            .insert_resource(Placement::default());
+        let world = b.world_mut();
+        for _ in 0..SWITCHING_ENTITIES {
+            let Some(id) = world.resource_mut::<StableIds>().allocate() else {
+                break;
+            };
+            world.spawn((StableEntity::new(id), Level(0), Seen(0)));
+        }
+        b.add_systems(Phase::Act, (climb, count));
+        b.add_systems(Phase::Lod, toggle);
+    }
+}
+
+/// Outcome of [`switching`].
+pub struct Switching {
+    /// Global fingerprint, in hexadecimal.
+    pub hash: String,
+    /// Ticks whose `Act` phase ran on the calling thread (single-threaded executor).
+    pub on_caller: usize,
+    /// Ticks whose `Act` phase ran on a pool thread (parallel executor).
+    pub on_pool: usize,
+}
+
+/// Runs the switching world for [`SWITCHING_TICKS`] ticks with `threads` and `policy`.
+pub fn switching(threads: Threads, policy: ParallelPhases) -> Result<Switching, BuildError> {
+    let rules: Vec<Box<dyn Plugin>> = vec![Box::new(SwitchingWorld)];
+    let cfg = SimConfig {
+        threads,
+        parallel_phases: policy,
+        ..SimConfig::default()
+    };
+    let mut sim = Sim::build(cfg, &rules, &key())?;
+    for _ in 0..SWITCHING_TICKS {
+        sim.step();
+    }
+    let me = std::thread::current().id();
+    let placement = sim.world().resource::<Placement>();
+    let seen = placement.0.lock().unwrap_or_else(PoisonError::into_inner);
+    let on_caller = seen.iter().filter(|&&id| id == me).count();
+    Ok(Switching {
+        hash: hex(&sim),
+        on_caller,
+        on_pool: seen.len() - on_caller,
+    })
 }
 
 fn key() -> WorldKey {

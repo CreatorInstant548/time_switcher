@@ -14,7 +14,7 @@ use ts_kernel::rng::{Stream, StreamKey, draw};
 use ts_kernel::{
     CanonicalError, DueEvents, EventQueue, LodComplete, Phase, Plugin, SimBuilder, SimClock,
     SimTime, StableEntity, StableId, StableIds, StableIndex, StateDecode, StateHash, StateReader,
-    StateWriter, TimedEvent, WorldStreams,
+    StateWriter, TimedEvent, WorldStreams, par_for_each_mut,
 };
 
 use crate::day_start;
@@ -297,7 +297,7 @@ fn on_events(
 
 // spec: revues/architecture.md §8.1, §9.2
 /// Phase `Act`, every tick: the residents in full simulation walk. Each writes only its own
-/// component, with a keyed draw per tick.
+/// component, with a keyed draw per tick; a plain loop while they are few (issue #67).
 fn stroll(
     clock: Res<SimClock>,
     streams: Res<WorldStreams>,
@@ -305,7 +305,7 @@ fn stroll(
 ) {
     let slot = clock.now().as_millis().unsigned_abs();
     let key = streams.get(Stream::Ai);
-    q.par_iter_mut().for_each(|(s, mut st)| {
+    par_for_each_mut(&mut q, |(s, mut st)| {
         st.steps += 1 + draw(key, s.id(), slot, P_STEP) % 3;
     });
 }

@@ -24,6 +24,15 @@ pub fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
+/// Names of the environment variables of this process (`cargo xtask py` strips some of them
+/// from its children).
+#[allow(clippy::disallowed_methods)] // tool: reads the names, never the values.
+pub fn env_names() -> Vec<String> {
+    std::env::vars_os()
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect()
+}
+
 #[allow(clippy::disallowed_methods)] // outil : xtask lit les fichiers du dépôt.
 pub fn read(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("lecture impossible de {} : {e}", path.display()))
@@ -132,27 +141,6 @@ pub fn outputs(
 pub fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes)
         .map_err(|e| format!("écriture impossible de {} : {e}", path.display()))
-}
-
-/// Noms des entrées d'un dossier, avec vrai si c'est un fichier ordinaire (lien : faux).
-#[allow(clippy::disallowed_methods)] // outil : contenu de la copie épinglée des crochets.
-pub fn entries(dir: &Path) -> Result<Vec<(String, bool)>, String> {
-    let err = |e: std::io::Error| format!("lecture impossible de {} : {e}", dir.display());
-    let mut out = Vec::new();
-    for e in std::fs::read_dir(dir).map_err(err)? {
-        let e = e.map_err(err)?;
-        let file = std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.file_type().is_file());
-        out.push((e.file_name().to_string_lossy().into_owned(), file));
-    }
-    out.sort();
-    Ok(out)
-}
-
-/// Dossier personnel de l'utilisateur (réglages de Claude Code, lus sans jamais être écrits).
-pub fn home() -> Option<PathBuf> {
-    env("USERPROFILE")
-        .or_else(|| env("HOME"))
-        .map(PathBuf::from)
 }
 
 /// SHA-256 d'un fichier, par l'outil du système (aucune crate de cryptographie ajoutée).

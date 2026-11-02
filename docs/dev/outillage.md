@@ -34,43 +34,26 @@ Mode d'emploi de `tools/dev/` (tâche T1 de la phase 0). Sources :
 
 ## 2. Crochets Git
 
-Les crochets vivent dans `tools/dev/hooks/`. Ils s'exécutent depuis une **copie épinglée hors du dépôt**, `TS_CACHE\hooks\<sha256>\`, désignée par `core.hooksPath` (SEC0-12).
+**Retirés par AS-50** (décision de l'utilisateur du 01/11, #55 : « les outils de développement prennent trop de temps »). Les crochets `pre-commit`, `pre-merge-commit`, `reference-transaction`, `pre-push` et `commit-msg`, `test-hooks.ps1` et `cargo xtask hooks` (`install` et `verify`) n'existent plus. Les exigences SEC0-12, SEC0-13 et la part locale de SEC0-14 tombent avec eux.
 
-| Crochet | Contrôles |
-|---|---|
-| `pre-commit` | Refus de **tout commit sur `main`**, sans variable d'exception (SEC0-13).<br>Refus d'un fichier de plus de 5 Mo (SEC0-11).<br>Refus, hors LFS, des extensions `.glb .gltf .png .jpg .ogg .wav .mp3 .otf .ttf .onnx .gguf .pt .safetensors .parquet .sqlite .db .blend .psd .fbx .zip .7z`. Exception : `**/tests/fixtures/**`, jusqu'à 256 Ko.<br>`gitleaks dir` sur une **extraction des fichiers indexés** (ajoutés ou modifiés). Elle est faite par `git checkout-index` dans `TS_CACHE\tmp`, puis supprimée. Un attribut `-diff`, `binary` ou `textconv` ne masque donc rien (I3 bis). Toutes les branches sont concernées, `pilotage` comprise (SEC0-08). |
-| `pre-merge-commit` | Mêmes contrôles, pour un `git merge` qui crée un commit de fusion. |
-| `reference-transaction` | `refs/heads/main` ne prend qu'une valeur : celle de `main` **sur le distant**, lue par `git ls-remote origin refs/heads/main`. C'est le cas de l'avance rapide de `git pull --ff-only`. La référence locale `refs/remotes/origin/main` ne fait pas foi, puisqu'elle peut être déplacée à la main (I2 bis). Sont refusés :<br>- la **suppression** de `main` ;<br>- toute mise à jour quand `origin/main` est absente, ou quand **le distant ne répond pas** ;<br>- tout autre déplacement : `revert`, `cherry-pick`, `rebase`, `am`, `reset`, `update-ref`, `branch -f`, `merge`.<br>Sont acceptés : une valeur inchangée, et l'élagage de `git pack-refs` ou `git gc`. Dans ce cas, la référence libre disparaît alors que `packed-refs` contient déjà la même valeur, sans `packed-refs.lock` ; une vraie suppression tient ce verrou (constaté en 2.56).<br>L'appel réseau n'a lieu que lorsque `main` bouge. Attention : un `reset --hard` refusé a déjà modifié l'index et les fichiers. On les rétablit par `git reset --hard`, sans argument. |
-| `pre-push` | Refus d'une poussée forcée (historique distant non ancêtre) vers toute branche **autre que `main`** ; refus de supprimer `main` ou `pilotage`.<br>La poussée directe et la poussée forcée vers le `main` du distant **`origin`** ne sont plus refusées ici depuis T3e-1 (AS-31) : le *ruleset* `main` de GitHub (26213563) les refuse pour tout le monde (§6.4). Vers le `main` de tout autre distant (autre nom, chemin ou URL), que le *ruleset* ne garde pas, la poussée reste refusée. Toute variante de casse (`refs/heads/Main`, `MAIN`) est refusée : le *ruleset* ne la garde pas, et elle se confondrait avec `main` dans un système de fichiers insensible à la casse.<br>`gitleaks git` sur la plage poussée, **`main` comprise**, avec `--text --no-ext-diff --no-textconv` (I3 bis, AS-31 E2). Vers `main`, la plage est `<distant>..<local>`, ou, si la valeur distante est inconnue ici, tout ce qui manque aux branches suivies du distant. |
-| `commit-msg` | Format `type(portée): description`, avec un type parmi `feat fix refactor perf test docs build ci chore` (A31). Restent permis : `Merge …`, `Revert "…"`, `fixup!`, `squash!` et `amend!`. |
+Ce qui reste :
+- **`main`** ne bouge que par le *ruleset* du serveur : PR obligatoire, `ci-ok`, historique linéaire, ni poussée forcée ni suppression (§6.4). Dans la copie principale, la règle « jamais éditée, jamais de commit sur `main` » est tenue par la discipline des sessions, et toute poussée vers `main` est refusée par GitHub.
+- **Format des commits** (A31) : le titre de la PR est contrôlé en CI (travail `pr-title`) et par `cargo xtask merge`, et c'est lui qui devient le message du *squash*. Les commits d'une branche ne sont plus contrôlés un par un.
+- **Secrets** (AS-50 AU5) : `gitleaks` tourne en CI à chaque PR (travail `security`) et sur tout l'historique chaque dimanche, et `cargo xtask check` le lance aussi en local (étape `gitleaks`, [xtask](xtask.md) §1). La **protection des poussées** de GitHub (`secret_scanning_push_protection`) reste active. Sans crochet `pre-push`, un secret hors des motifs de GitHub peut atteindre une branche publique avant la CI : ce risque est accepté. **Tout secret signalé, par la CI ou par GitHub, est révoqué**, jamais seulement effacé de l'historique.
+- **Configuration de gitleaks** : `tools/dev/hooks/gitleaks.toml` reste à sa place, parce que la CI et l'étape `gitleaks` la lisent sur `origin/main` (G5). Une exception passe toujours par une PR qui modifie ce fichier.
 
-Les crochets vident, avant tout contrôle, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, `GIT_EXTERNAL_DIFF`, `GITLEAKS_CONFIG` et `GITLEAKS_CONFIG_TOML`. Une option `git -c` ou une variable d'environnement ne change donc pas leurs contrôles.
+**Retirer `core.hooksPath` des copies existantes** (AS-50 AU4). Tant qu'il désigne `TS_CACHE\hooks\<empreinte>`, l'ancienne copie épinglée des crochets continue de tourner, avec ses refus. Après la fusion du retrait, archi-sécu le retire, une fois, depuis la copie principale (la configuration est commune à tous les worktrees) :
 
-**`gitleaks`** :
-- il est appelé par son chemin épinglé dans `tools/dev/tools.lock`, et son SHA-256 est **vérifié avant chaque usage** : s'il manque ou si l'empreinte diffère, le crochet refuse (SEC0-06) ;
-- il n'utilise que la **configuration épinglée** du jeu de crochets, `tools/dev/hooks/gitleaks.toml`, qui étend les règles par défaut. Les options sont `--config`, `--gitleaks-ignore-path` vers le jeu de crochets, et `--ignore-gitleaks-allow` ;
-- un `.gitleaksignore` à la racine de la copie de travail est **refusé**, car gitleaks 8.30.1 le lit malgré `--gitleaks-ignore-path` (constaté) ;
-- une exception passe par une PR qui modifie `gitleaks.toml` ;
-- **consigne pour T13** : la CI doit lancer gitleaks de la même façon, c'est-à-dire avec `--text` ou sur des fichiers extraits, et avec la configuration relue du dépôt seulement.
-
-**Installation (provisoire, remplacée en T3 par `cargo xtask hooks install`)**, depuis n'importe quelle copie de travail :
-
-```powershell
-pwsh -NoProfile -File tools/dev/install-hooks.ps1           # installe et règle core.hooksPath (configuration commune)
-pwsh -NoProfile -File tools/dev/install-hooks.ps1 -Verify   # contrôle seulement
+```
+git config --unset-all core.hooksPath
+git config --show-origin --get-all core.hooksPath   # ne doit plus rien afficher
 ```
 
-L'installation fait les opérations suivantes :
-- elle vérifie gitleaks ;
-- elle copie les crochets, `gitleaks.toml` et `tools.lock` dans `TS_CACHE\hooks\<empreinte du jeu>\`, en lecture seule ;
-- elle règle `core.hooksPath` dans `.git/config`, commun à toutes les copies de travail ;
-- elle écrit l'empreinte attendue dans `TS_CACHE\hooks\current.sha256`.
-
-`-Verify` contrôle l'empreinte du jeu installé. Il lit aussi la valeur **effective** de `core.hooksPath` dans **chaque** copie de travail, avec `git config --show-origin --get-all`, et refuse toute surcharge hors de la configuration commune : `config.worktree`, `includeIf`, configuration globale.
-
-L'empreinte du jeu est le SHA-256 de la liste `nom NUL sha256 LF` des fichiers, triée par nom en ordre ordinal. Toute modification de `tools/dev/hooks/` ou de `tools.lock` demande de réinstaller.
+Si une copie le définit ailleurs (`config.worktree`, `includeIf`, configuration globale), la seconde commande le montre : le retirer au même endroit. Le dossier `TS_CACHE\hooks\` peut ensuite être supprimé à la main. Ces commandes écrivent la configuration de Git : les gardes de Claude Code les refusent aux sessions tant qu'ils sont en place (§3.2).
 
 ## 3. Garde-fous de Claude Code
+
+**Retrait prévu (AS-50)** : `guard-git` et `guard-main` doivent laisser la place à des refus natifs de Claude Code, des règles `permissions.deny` dans `.claude/settings.json`, évaluées sans lancer `pwsh` (AU1). Ce changement touche aux réglages de Claude Code et à `CLAUDE.md` : il se fait dans une PR à part, sur une branche `claude/outillage-*` (SEC0-35), sur instruction directe de l'utilisateur. D'ici là, les gardes ci-dessous restent en place.
 
 Les crochets sont inscrits dans `.claude/settings.json` du projet (AS-15). La commande est lancée par Git Bash, l'interpréteur par défaut des crochets sous Windows :
 
@@ -162,7 +145,7 @@ pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check
 pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Apply
 ```
 
-La forme `-Check -SourceCommit <sha>` (AS-38, §6.2) n'en fait pas partie : elle est **réservée à `cargo xtask merge`**, qui la lance en processus enfant, et le garde la refuse aux sessions.
+La forme `-Check -SourceCommit <sha>` (AS-38, §6.2) n'en fait pas partie : le garde la refuse aux sessions. Elle était réservée à l'exception de réparation de `cargo xtask merge`, retirée par AS-50 : plus rien ne la lance.
 
 Tout autre segment qui cite le script est refusé : autre argument, `;` ou `&&`, redirection, autre chemin (`./tools/…`, barres obliques inverses, chemin absolu), motif (`repo-set*`, ou un motif dans `tools/` avec `repo-s`, `sett` ou `~<chiffre>` comme `tools/d?v/repo-setting?.ps1`), nom court 8.3 (`REPO-S~1.PS1`), nom fabriqué par concaténation (`'repo-'+'settings.ps1'`, ou tout nom du script qui n'apparaît en clair qu'une fois les guillemets et les `+` retirés), `pwsh -Command`, `bash -c`, `&`, `Start-Process`, argument tiré d'une variable. Un segment de lecture ou de données peut le citer : `cat`, `grep`, `git diff`, `git add`, titre de PR. Le fichier `tools/ci/repo-settings.json` contient `settings.json` dans son nom : la règle SEC0-35 refuse donc de le nommer dans une commande d'écriture (`git add tools/ci/repo-settings.json`). On passe par son dossier : `git add tools/ci/`.
 
@@ -197,29 +180,30 @@ En cas d'erreur interne, la commande est refusée.
 
 ### 3.3 Fusion : `cargo xtask merge <PR>`
 
-`cargo xtask merge` a remplacé `merge-pr.ps1` (T3) : c'est le **seul chemin de fusion**. C'est un chemin sensible, validé par archi-sécu. Le détail est dans [xtask](xtask.md) §6. Dans l'ordre, le premier contrôle qui échoue arrête tout. Les numéros sont ceux qu'affiche la commande (`[1]`, `[3-4]`, etc.) :
-- **[1] Copie principale** propre, sur `main`, mise à jour par `git pull --ff-only`. Le binaire doit être construit depuis `main` (J2). La commande est refusée en mode CI.
-- **[2] `verify-main`** (approbations de chaque commit de `main` qui touche un chemin sensible, réglages GitHub et attestation du *ruleset*) et **`hooks verify`** : une anomalie suspend les fusions. Depuis T3e-2 (AS-31 E3), un commit non sensible n'a plus à venir d'une PR avec `ci-ok` aux yeux de `verify-main` lancé par `merge` : le *ruleset* `main` l'impose (§6.4). La tâche de nuit rétablit J3 (squash d'une PR fusionnée) sur ces commits, par `verify-main --origin` : chaque nuit, J3 et G3 sur les 7 derniers jours ; le dimanche, J3 seul sur tout l'historique (AS-42, AS-44 ; `docs/dev/ci.md` §4).
-  - **Exception de réparation (AS-38)** : un écart des réglages **seul** (historique et crochets conformes) laisse passer une **PR de réparation**, vérifiée à l'étape **[6a]**, juste après la liste des fichiers. Il faut que toutes ces conditions soient réunies :
-    - la PR ne modifie **que** `tools/ci/repo-settings.json`, selon la liste complète de l'étape [6] : les deux chemins d'un renommage, le diff local compris. La comparaison se fait octet par octet : une variante de casse ou un nom court 8.3 du fichier est un autre chemin (G8, B1) ;
-    - le fichier de la tête passe les **invariants S2** du script de la copie principale, égal à `origin/main` (S4), et jamais ceux de la PR. Ces invariants fixent la valeur sûre de chaque champ (AS-41, §6.2) : la voie de réparation ne peut donc pas entériner un affaiblissement fait à la main sur GitHub ;
-    - l'écart **recalculé avec le fichier de la tête** de la PR (`repo-settings.ps1 -Check -SourceCommit <tête>`) est vide ;
-    - tous les autres contrôles passent : `ci-ok` sur la tête, PR à jour, `review-ok` et `archsec-ok`, exigés même hors de la liste sensible.
-
-    Toute autre PR reste refusée tant que l'écart dure. Le message de refus cite l'exception. **Après la fusion d'une PR de réparation**, l'orchestrateur lance `-Apply`, puis `-Check`, depuis la copie principale ; `merge` le rappelle.
-- **[3-4] État de la PR** : ouverte, base `main`, hors brouillon, `MERGEABLE`, en retard de 0 commit sur `main`, titre conforme (A31).
+`cargo xtask merge` a remplacé `merge-pr.ps1` (T3) : c'est le **seul chemin de fusion**. C'est un chemin sensible, validé par archi-sécu. Le détail est dans [xtask](xtask.md) §6. Depuis AS-50 (#55), il ne contrôle plus que la PR elle-même, en une vingtaine d'appels : ni l'historique de `main` (`verify-main`), ni les réglages GitHub (`-Check`), ni les crochets, ni le binaire (J2), ni l'exception de réparation (AS-38). Dans l'ordre, le premier contrôle qui échoue arrête tout. Les numéros sont ceux qu'affiche la commande (`[1]`, `[3-4]`, etc.) :
+- **[1] Copie principale** propre, sur `main`, **égale à `origin/main` dès le lancement** (après `git fetch`), et lancement depuis cette copie. La commande est refusée en mode CI. Ce qui reste de J2, sans coût : `cargo xtask` reconstruit le binaire depuis la copie propre avant de le lancer, donc une copie égale à `origin/main` donne un binaire construit depuis `main`. Une copie en retard est mise à jour par `git pull --ff-only`, puis la fusion est refusée : il suffit de relancer `cargo xtask merge <PR>`, qui reconstruit `xtask` depuis le nouveau `main`.
+- **[2] Aucune *issue* d'anomalie ouverte** (AS-50 AU2, AU3) : une seule lecture des *issues* ouvertes créées par le propriétaire, quelles que soient leurs étiquettes. Une *issue* écrite par le propriétaire (même filtre que P3) dont le titre est celui d'une anomalie de `verify-main` (commit de `main`, ou écart des réglages GitHub) suspend toutes les fusions ; `--dry-run` poursuit les autres contrôles, mais son résultat reste un refus. Ces *issues* sont ouvertes par `cargo xtask verify-main` lancé en local. Une seule définition sert à la fois au blocage et à la réutilisation (`github::is_anomaly`) : `verify-main` ne réutilise une *issue* ouverte que si elle a un titre d'anomalie et porte, sur une ligne à part, la clé de l'anomalie (`Clé : <SHA>` ou `Clé : repo-settings-drift`). Une remontée qui cite seulement la clé n'absorbe donc jamais une anomalie. La tâche de nuit, en `--dry-run`, ne peut pas en ouvrir. Une anomalie trouvée la nuit arrête donc les fusions dès que l'orchestrateur a lancé `cargo xtask verify-main`, chaque jour (AU3). On la lève (J5, ou `-Apply`), puis on ferme l'*issue*. **Limite** (l'exception AS-38 est retirée) : la PR qui corrige l'anomalie est elle-même refusée tant que l'*issue* est ouverte. On ferme l'*issue* juste avant de la fusionner ; si la correction n'aboutit pas, `verify-main` la rouvre au passage suivant.
+- **[3-4] État de la PR** : ouverte, **venue du dépôt lui-même** (`isCrossRepository` faux : jamais une PR de *fork*), base `main`, hors brouillon, `MERGEABLE`, en retard de 0 commit sur `main`, titre conforme (A31).
 - **[5] `ci-ok`** vert sur le SHA de tête, venu de `ci.yml` (G3).
 - **[6] Liste complète des fichiers**, par l'API `pulls/<n>/files` paginée. Un renommage compte ses deux chemins (I10). Le nombre de fichiers doit égaler `changedFiles`. L'arbre de tête est refusé s'il contient des chemins égaux à la casse près, ou un chemin non ASCII sous un chemin sensible (B1).
 - **[7] Chemins sensibles** : la liste `tools/ci/sensitive-paths.txt` d'`origin/main` (G8).
-- **[8-9] Workflows** de la tête, contrôlés avec le code de `main` (J1), et actions épinglées (J8).
-- **[10] Approbations**, pour un chemin sensible : `review-ok` **et** `archsec-ok`, chacun en première ligne d'un commentaire de la PR. **Seuls comptent les commentaires du propriétaire du dépôt** (AS-45 P3) : `user.login` égal au propriétaire du *slug*, `author_association: OWNER` et `user.type: User`. Tout autre commentaire est ignoré, dans `merge`, `verify-main` et le report d'AS-40 ; de même pour les *issues* d'anomalie que relit `verify-main`. L'approbation doit être :
+- **[8-9] Workflows** de la tête, contrôlés avec le code de `main` (J1), et actions épinglées (J8), **seulement si la PR modifie `.github/`** (comparé sans tenir compte de la casse). Sinon, les workflows sont ceux de `main`, déjà contrôlés à leur fusion.
+- **[10] Approbations**, pour un chemin sensible : `review-ok` **et** `archsec-ok`, chacun en première ligne d'un commentaire de la PR. **Seuls comptent les commentaires du propriétaire du dépôt** (AS-45 P3) : `user.login` égal au propriétaire du *slug*, `author_association: OWNER` et `user.type: User`. Tout autre commentaire est ignoré, dans `merge`, `verify-main` et le report d'AS-40. L'approbation doit être :
   - sur le SHA de tête ;
-  - **ou reportés d'un SHA antérieur `A` de la même PR**, après une simple mise à jour depuis `main` (AS-40). Toutes les conditions W1 à W7 doivent être remplies ([xtask](xtask.md) §6.1). `merge` affiche alors `<avis> carried over from <A> to the head <tête> (AS-40, W1 to W5 hold)`.
+  - **ou reportés d'un SHA antérieur `A` de la même PR**, après une simple mise à jour depuis `main` (AS-40). Toutes les conditions W1 à W7 doivent être remplies ([xtask](xtask.md) §6.1). `merge` affiche alors `<avis> carried over from <A> to the head <tête> (AS-40, W1 to W5 hold)`. Le report ne coûte que quelques lectures, et seulement quand l'avis n'est pas sur la tête.
 
   Une **résolution de conflit** dans un fichier de la PR, un fichier ajouté ou retiré, ou un changement de `main` dans un fichier de la PR empêchent le report : l'approbation doit alors être **reposée sur la tête**. Le refus nomme la condition qui a échoué.
 - **[11] Fusion** : l'état de la PR est relu. Puis `gh pr merge <PR> --squash --delete-branch --match-head-commit <sha>` et `git pull --ff-only`.
 
-`--dry-run` fait tous les contrôles, sans fusion ; hors de la copie principale, son résultat est au mieux « OK sauf J2 ».
+`--dry-run` fait tous les contrôles, sans fusion ; hors de la copie principale, son résultat est au mieux « OK sauf copie principale » (code 3).
+
+**Durée** (#55) : une PR hors des chemins sensibles et de `.github/` coûte 24 processus (12 `git`, 12 `gh`), contre environ 500 avant AS-50 sur l'historique du 01/11 (49 commits), dont la relecture GitHub de chaque commit sensible, `hooks verify` et `repo-settings.ps1 -Check`. Une PR sensible ajoute la lecture des commentaires et `git rev-parse` ; une PR qui modifie `.github/` ajoute J1 et J8.
+
+**Ce qui n'est plus vérifié à la fusion** (AS-50) et où il l'est encore :
+- l'historique de `main` : `cargo xtask verify-main`, lancé seul, et chaque nuit (`--origin 7d`, `all` le dimanche) ; une anomalie ouvre une *issue* qui arrête les fusions ([2]) ;
+- les réglages GitHub : `repo-settings.ps1 -Check`, lancé chaque jour par l'orchestrateur (AU3, §6.3) ; un écart ouvre une *issue* qui arrête les fusions ([2]) ;
+- les crochets : retirés (§2) ;
+- le binaire construit depuis `main` (J2) : l'empreinte est retirée ; il reste la règle de l'étape [1] (copie égale à `origin/main` au lancement).
 
 ### 3.4 Coût, limites et risques connus
 
@@ -229,17 +213,16 @@ En cas d'erreur interne, la commande est refusée.
 - un script écrit puis exécuté (`bash x.sh`, `pwsh -File x.ps1`) ;
 - un interpréteur qui construit un nom de fichier par morceaux.
 
-Un alias de Git défini ailleurs, par exemple dans un fichier désigné par `XDG_CONFIG_HOME`, passe toujours **au niveau de Git** : `--no-verify` saute `pre-push` par construction. La liste blanche de `guard-git` le refuse pourtant, puisque tout nom hors liste est refusé.
-
 **Risques connus**, relevés à la deuxième relecture et non corrigés (décidé) :
-- **m4** : le jeu épinglé `TS_CACHE\hooks\` n'est protégé en écriture que par l'attribut lecture seule. Une modification est détectée par `-Verify`, que lance `merge-pr.ps1` avant chaque fusion.
 - **m5** : une course entre trois sessions dans `Remove-OrphanLease` peut faire croire à deux sessions qu'elles tiennent le même bail. La fenêtre est de l'ordre de la milliseconde. Parade possible : un verrou `target\slots.lock` ouvert avec `FileShare.None` (T3).
 - **m6** : `.gitignore` restreint `id_*` de SEC0-09 à `id_rsa*`, `id_dsa*`, `id_ecdsa*` et `id_ed25519*`, puisque `id_*` attraperait des sources légitimes. Cet écart est à noter au carnet d'archi-sécu.
 
 **Risque résiduel (R-ARCH-04)** : une session peut modifier le `.claude/settings.json` de son propre worktree, par un moyen que le crochet ne voit pas, et retirer ainsi ses garde-fous. Restent alors :
-- les crochets Git épinglés hors du dépôt (`pre-commit`, `reference-transaction`, `pre-push`) ;
-- la CI (`ci-ok`) ;
-- la fusion par `merge-pr.ps1`, puis `xtask merge`, avec la vérification d'intégrité de SEC0-35 (T3).
+- le *ruleset* du serveur (§6.4) ;
+- la CI (`ci-ok`, `gitleaks`) ;
+- la fusion par `cargo xtask merge`, avec `ci-ok` et les approbations du propriétaire.
+
+Les crochets Git épinglés et la vérification d'intégrité de SEC0-35 par `merge` sont retirés par AS-50.
 
 ## 4. Tests
 
@@ -247,7 +230,6 @@ Tous travaillent dans des dépôts jetables sous `TS_CACHE\tmp\`, jamais dans le
 
 ```powershell
 pwsh -NoProfile -File tools/dev/test-guards.ps1        # table des commandes refusées et permises (guard-git, guard-main)
-pwsh -NoProfile -File tools/dev/test-hooks.ps1         # crochets Git et install-hooks, dans un TS_CACHE jetable
 pwsh -NoProfile -File tools/dev/test-slots.ps1         # logique des baux, dans un TS_CACHE jetable
 pwsh -NoProfile -File tools/dev/test-slots.ps1 -Real   # plus les vérifications du §6.3, dans les vrais emplacements
 pwsh -NoProfile -File tools/dev/test-repo-settings.ps1 # invariants, comparaison ; arguments et refus S4 dans un dépôt jetable dont origin est local ; script entier avec un faux gh, dépôt public et privé, chaque réglage d'AS-45 affaibli (AS-43, AS-45) : jamais d'appel à GitHub
@@ -297,7 +279,7 @@ C'est un chemin sensible. Il a six sections (deux ajoutées par AS-45, au passag
 
 Deux modes exclusifs, plus la forme réservée ci-dessous ; tout autre argument est refusé (code 2).
 
-**Forme réservée `-Check -SourceCommit <sha>` (AS-38)** : `-Check`, mais avec le fichier du commit `<sha>`, lu par `git show <sha>:tools/ci/repo-settings.json`, jamais sur le disque. Seul `cargo xtask merge` la lance, en processus enfant, pour la tête d'une PR de réparation (§3.3, étape [6a]). Le garde la refuse aux sessions (§3.2).
+**Forme réservée `-Check -SourceCommit <sha>` (AS-38)** : `-Check`, mais avec le fichier du commit `<sha>`, lu par `git show <sha>:tools/ci/repo-settings.json`, jamais sur le disque. Le garde la refuse aux sessions (§3.2). Depuis AS-50, `cargo xtask merge` ne la lance plus (l'exception de réparation est retirée) : elle reste dans le script, sans usage, jusqu'à une PR qui le simplifiera.
 - Le SHA doit compter exactement 40 caractères hexadécimaux minuscules, le commit doit être présent localement après `git fetch`, et le fichier doit exister dans ce commit. Sinon : code 2.
 - Le fichier passe d'abord les invariants S2 de ce script, celui de la copie principale (AS-41) : un fichier affaibli donne le code 1, sans appel à GitHub.
 - Les préalables S4 restent tous en place, et les workflows comparés restent ceux d'`origin/main`.
@@ -340,27 +322,29 @@ Codes de sortie : 0 conforme, 1 écart ou écriture refusée, 2 usage, préalabl
 ### 6.3 Qui lance quoi
 
 - **`-Apply`** : l'**orchestrateur**, après la fusion de la PR qui modifie `repo-settings.json` ou le script, depuis la copie principale à jour. Ordre de R6 : fusion, `-Apply`, `-Check` vert, puis essai de poussée directe vers `main`, qui doit être refusé par GitHub. Entre la fusion de T3d et le premier `-Apply`, `-Check` est en écart : les fusions sont suspendues jusqu'à `-Apply`.
-- **`-Check`** : `cargo xtask verify-main`, donc **à chaque `cargo xtask merge`** (étape 2) et chaque nuit (AS-31 E4). Le contrôle de nuit doit tourner **en local**, dans la copie principale, puisqu'il est sauté en CI. Cette tâche planifiée n'existe pas encore : elle relève de T3e, suivie par l'issue que le responsable développement ouvrira. `verify-main` lance `pwsh -NoProfile -NonInteractive -File <copie principale>\tools\dev\repo-settings.ps1 -Check` :
-  - code 1 (écart) : une *issue* `role:architecture` de clé `repo-settings-drift` est ouverte (ou réutilisée), et les fusions sont suspendues, sauf pour une PR de réparation (AS-38, §3.3) ;
+- **`-Check`** (AS-50 AU3) : l'**orchestrateur** le lance **chaque jour**, et après tout changement de réglages, depuis la copie principale, par `cargo xtask verify-main`, qui le lance après l'historique (décidé : la tâche de nuit tourne en `--dry-run` sans pouvoir ouvrir d'*issue* ; seul ce passage local ouvre l'*issue* d'une anomalie trouvée la nuit, qui arrête alors les fusions). `cargo xtask merge` ne le lance plus. Le contrôle doit tourner **en local**, puisqu'il est sauté en CI. `verify-main` lance `pwsh -NoProfile -NonInteractive -File <copie principale>\tools\dev\repo-settings.ps1 -Check` :
+  - code 1 (écart) : une *issue* `role:architecture` de clé `repo-settings-drift` est ouverte (ou réutilisée) ; tant qu'elle est ouverte, `cargo xtask merge` refuse toute fusion (§3.3, étape [2]). On la ferme après `-Apply` et un `-Check` vert. `repo-settings.ps1 -Check` lancé seul n'ouvre pas d'*issue* : l'orchestrateur l'ouvre lui-même, ou relance `verify-main` ;
   - autre code (préalable, réseau) : `verify-main` échoue ; en `--dry-run`, c'est un avertissement et le résultat reste un refus ;
-  - **en CI** (`CI=true` et `GITHUB_ACTIONS=true`), le contrôle est **sauté** avec un avertissement dans le résumé du travail : `GITHUB_TOKEN` n'a pas les droits d'administration. Pour que ce saut ne serve pas à contourner le contrôle, `cargo xtask merge` **refuse** de tourner en mode CI ;
+  - **en CI** (`CI=true` et `GITHUB_ACTIONS=true`), le contrôle est **sauté** avec un avertissement dans le résumé du travail : `GITHUB_TOKEN` n'a pas les droits d'administration. `cargo xtask merge` refuse toujours de tourner en mode CI ;
   - l'historique est vérifié avant les réglages : un `-Check` qui échoue ne cache pas une anomalie de l'historique.
 
 ### 6.4 Côté serveur, côté local
 
 | Barrière | Serveur (GitHub) | Local |
 |---|---|---|
-| PR obligatoire, `ci-ok` de GitHub Actions, branche à jour, historique linéaire | *ruleset* `main` | `cargo xtask merge` (G3, toujours en place, E5) ; `verify-main` pour les commits sensibles (contrôle d'origine retiré de `merge` par T3e-2) ; chaque nuit, J3 et G3 sur les commits de la semaine par `verify-main --origin 7d`, et J3 sur tout l'historique par `all` le dimanche (AS-42, AS-44) |
-| Poussée forcée vers `main` | *ruleset* `main` | — (retiré par T3e-1) ; `reference-transaction` pour la copie locale de `main` |
-| Poussée forcée vers `pilotage` et les autres branches | *ruleset* `pilotage` (aucun pour les branches de tâche) | `pre-push`, `guard-git` |
-| Suppression de `main` et de `pilotage` | *rulesets* | `pre-push`, `guard-git` ; `reference-transaction` pour la copie locale de `main` |
+| PR obligatoire, `ci-ok` de GitHub Actions, branche à jour, historique linéaire | *ruleset* `main` | `cargo xtask merge` (G3, toujours en place, E5) ; chaque nuit, `verify-main` pour les commits sensibles, J3 et G3 sur les commits de la semaine par `--origin 7d`, et J3 sur tout l'historique par `all` le dimanche (AS-42, AS-44) ; une anomalie ouvre une *issue* qui arrête `merge` (AS-50 AU2) |
+| Poussée forcée vers `main` | *ruleset* `main` | — (retiré par T3e-1 ; `reference-transaction` retiré par AS-50) |
+| Poussée forcée vers `pilotage` et les autres branches | *ruleset* `pilotage` (aucun pour les branches de tâche) | `guard-git` (tant qu'il est en place, §3) |
+| Suppression de `main` et de `pilotage` | *rulesets* | `guard-git` (tant qu'il est en place, §3) |
 | Poussée directe vers `main` | *ruleset* `main` | — (retiré par T3e-1) |
 | Squash seulement, pas de fusion automatique | réglages du dépôt | `cargo xtask merge` (seul chemin de fusion) |
-| Actions permises, épinglage par SHA | réglages d'Actions | étape `workflows` de `xtask check` |
+| Actions permises, épinglage par SHA | réglages d'Actions | étape `workflows` de `xtask check` ; J1 et J8 dans `merge` pour une PR qui modifie `.github/` |
 | Avis `review-ok` et `archsec-ok` sur les chemins sensibles | — (un seul compte) | `cargo xtask merge`, `verify-main` (J4) |
-| Secrets | — (pas de détection en Pro sur un dépôt privé) | `gitleaks` en `pre-commit`, `pre-push` et CI |
-| Dérive des réglages eux-mêmes, contournement possible du *ruleset* `main` | — | `repo-settings.ps1 -Check` dans `verify-main` (attestation comprise) |
+| Secrets | protection des poussées (`secret_scanning_push_protection`) | `gitleaks` en CI et dans `cargo xtask check` ; tout secret signalé est révoqué (AS-50 AU5) |
+| Dérive des réglages eux-mêmes, contournement possible du *ruleset* `main` | — | `repo-settings.ps1 -Check` (attestation comprise), lancé chaque jour par l'orchestrateur (AS-50 AU3) |
 
-**Risque résiduel (R-ARCH-05)** : un script écrit puis exécuté par une session peut appeler `gh api` en écriture avec le jeton administrateur, ce que `guard-git` ne voit pas (§3.4). Les *rulesets* sans contournement le lient pour `main` et `pilotage`, mais il peut modifier les réglages eux-mêmes : `-Check` le détecte après coup, à la fusion suivante ou la nuit.
+**Risque résiduel (R-ARCH-05)** : un script écrit puis exécuté par une session peut appeler `gh api` en écriture avec le jeton administrateur, ce que `guard-git` ne voit pas (§3.4). Les *rulesets* sans contournement le lient pour `main` et `pilotage`, mais il peut modifier les réglages eux-mêmes : `-Check` le détecte après coup, au plus tard au contrôle du jour suivant.
 
-T3d ne retire **aucune** barrière locale (S6). Les retraits viennent ensuite, dans l'ordre d'AS-31 : T3e-1 (refus de poussée et de poussée forcée vers `main` dans `pre-push` et `guard-git`, **fait**), l'essai R6.4, remplacé par l'attestation de GitHub que `-Check` relit à chaque exécution, donc à chaque `cargo xtask merge` (§6.2 ; sauté en CI, comme tout `-Check`), puis T3e-2 (contrôle d'origine de `verify-main` pour les commits non sensibles, **fait** ; son cache local, qui ne servait plus qu'à ce contrôle, est retiré avec lui). Restent sans changement : `gitleaks` en `pre-push` (E2), `pre-commit`, `commit-msg`, `reference-transaction`, `guard-main`, la liste blanche de `git` et de `gh` (dont `--no-verify`), `cargo xtask merge` et `verify-main`. Après la fusion de T3e-1, `cargo xtask hooks install` est relancé depuis la copie principale pour épingler le nouveau `pre-push`.
+**AS-50** : les crochets Git locaux et les contrôles de l'historique, des réglages et des crochets dans `merge` sont retirés. Ce qui protège encore `main` : le *ruleset*, la CI, la protection des poussées de GitHub, et dans `merge`, `ci-ok` (G3) et les approbations du propriétaire. Un écart de réglages ou d'historique ne bloque plus la fusion par lui-même : il est détecté après coup, et son *issue* arrête les fusions.
+
+T3d ne retire **aucune** barrière locale (S6). Les retraits viennent ensuite, dans l'ordre d'AS-31 : T3e-1 (refus de poussée et de poussée forcée vers `main` dans `pre-push` et `guard-git`, **fait**), l'essai R6.4, remplacé par l'attestation de GitHub que `-Check` relit à chaque exécution (§6.2 ; sauté en CI, comme tout `-Check` ; depuis AS-50, lancé chaque jour par l'orchestrateur et non plus par `cargo xtask merge`), puis T3e-2 (contrôle d'origine de `verify-main` pour les commits non sensibles, **fait** ; son cache local, qui ne servait plus qu'à ce contrôle, est retiré avec lui). AS-50 retire ensuite les crochets Git (`gitleaks` en `pre-push`, E2, compris), puis, dans une PR à part, `guard-main` et la liste blanche de `git` et de `gh`.

@@ -5,19 +5,17 @@
 // Outil en ligne de commande : il écrit sur la console.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-mod build_inputs;
 mod carry;
 mod determinism;
 mod disk;
 mod exemptions;
 mod github;
-mod hooks;
 mod manifests;
 mod merge;
 mod metadata;
+mod py;
 mod scan;
 mod sensitive;
-mod sha256;
 mod slots;
 mod spec_map;
 mod steps;
@@ -29,9 +27,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use steps::{Ctx, Outcome};
-
-/// Empreinte des entrées de construction, inscrite par `build.rs` (J2, AS-23 point 1).
-pub const BUILT_FROM: &str = env!("XTASK_INPUTS_SHA256");
 
 type Step = (&'static str, &'static str, fn(&Ctx) -> Outcome);
 
@@ -89,7 +84,7 @@ const STEPS: [Step; 14] = [
     ("spec-map", "spec-map check", steps::spec_map),
 ];
 
-const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask determinism [--full] [--bless] | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--origin <n>d|all] | cargo xtask hooks install|verify [--dry-run]";
+const USAGE: &str = "usage : cargo xtask check [--all] [--only <étape>[,<étape>…]] | cargo xtask check --list | cargo xtask determinism [--full] [--bless] | cargo xtask slots | cargo xtask disk [--clean] | cargo xtask merge <PR> [--dry-run] | cargo xtask verify-main [--dry-run] [--origin <n>d|all] | cargo xtask py";
 
 struct Options {
     all: bool,
@@ -142,8 +137,8 @@ fn main() -> ExitCode {
         Some("determinism") => return determinism::main(&args[1..]),
         Some("spec-map") => return spec_map::run(&args[1..]),
         Some("merge") => return merge::main(&args[1..]),
-        Some("hooks") => return hooks::main(&args[1..]),
         Some("verify-main") => return verify_main::main(&args[1..]),
+        Some("py") => return py::main(&args[1..]),
         _ => {}
     }
     let opts = match parse(&args) {

@@ -1,8 +1,14 @@
 //! The ten phases of a tick, one `bevy_ecs` `Schedule` per phase.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use bevy_ecs::error::{BevyError, ErrorContext};
 use bevy_ecs::schedule::{
-    LogLevel, Schedule, ScheduleBuildSettings, ScheduleLabel, SingleThreadedExecutor,
+    FixedBitSet, LogLevel, MultiThreadedExecutor, Schedule, ScheduleBuildSettings, ScheduleLabel,
+    SingleThreadedExecutor, SystemExecutor, SystemSchedule,
 };
+use bevy_ecs::world::World;
 
 use crate::Threads;
 
@@ -57,19 +63,98 @@ impl Phase {
     }
 }
 
-// spec: revues/architecture.md §9.2 ; carnet architecture-securite.md §9.10 L7
-/// `Schedule` of a phase: ordering ambiguities **as errors**, and a single-threaded executor
-/// for [`Threads::Single`].
-pub(crate) fn phase_schedule(phase: Phase, threads: Threads) -> Schedule {
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md §9.10 L7
+/// `Schedule` of a phase: ordering ambiguities **as errors**; a single-threaded executor
+/// for [`Threads::Single`], an [`AdaptiveExecutor`] for [`Threads::Fixed`], whose switch is
+/// returned with the schedule.
+pub(crate) fn phase_schedule(phase: Phase, threads: Threads) -> (Schedule, Option<ExecutorSwitch>) {
     let mut schedule = Schedule::new(phase);
     schedule.set_build_settings(ScheduleBuildSettings {
         ambiguity_detection: LogLevel::Error,
         ..ScheduleBuildSettings::default()
     });
-    if threads == Threads::Single {
-        schedule.set_executor(SingleThreadedExecutor::new());
+    match threads {
+        Threads::Single => {
+            schedule.set_executor(SingleThreadedExecutor::new());
+            (schedule, None)
+        }
+        Threads::Fixed(_) => {
+            let switch = ExecutorSwitch::default();
+            schedule.set_executor(AdaptiveExecutor {
+                single: SingleThreadedExecutor::new(),
+                parallel: MultiThreadedExecutor::new(),
+                switch: switch.clone(),
+            });
+            (schedule, Some(switch))
+        }
     }
-    schedule
+}
+
+// spec: revues/architecture.md §9.1, §9.2
+/// Choice of the executor for the next run of one phase, set by [`crate::Sim`] before each
+/// run. It lives outside the `World`: no system can read it, so no rule can depend on it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ExecutorSwitch(Arc<AtomicBool>);
+
+impl ExecutorSwitch {
+    /// Selects the parallel executor (`true`) or the single-threaded one (`false`).
+    pub(crate) fn set_parallel(&self, parallel: bool) {
+        // Set and read on the thread that runs the schedule: no ordering is needed.
+        self.0.store(parallel, Ordering::Relaxed);
+    }
+
+    fn parallel(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md §9.10 L6, L7
+/// Executor of a phase with [`Threads::Fixed`]: the parallel executor of `bevy_ecs` or its
+/// single-threaded executor, both initialised once on the same `SystemSchedule`, picked
+/// before each run by the [`ExecutorSwitch`].
+///
+/// **The choice changes the speed only** (R1). Every pair of systems whose accesses conflict
+/// is explicitly ordered (ambiguities are errors, L7), and both executors apply deferred
+/// commands in the topological order of the schedule; the toy world and the L6 tests already
+/// prove that both give the same fingerprint. Neither keeps anything from one run to the next:
+/// with `apply_final_deferred` left at its default (`true`; the kernel never changes it), each
+/// run ends with every buffer applied and its run state cleared.
+///
+/// Why (issue #67): each run of the parallel executor sends every system to a pool thread and
+/// waits for it: two thread wake-ups, measured at 50 to 60 µs per phase that has systems,
+/// even for a system that does almost nothing. `par_iter` uses the pool under either executor.
+struct AdaptiveExecutor {
+    single: SingleThreadedExecutor,
+    parallel: MultiThreadedExecutor,
+    switch: ExecutorSwitch,
+}
+
+impl SystemExecutor for AdaptiveExecutor {
+    fn init(&mut self, schedule: &SystemSchedule) {
+        self.single.init(schedule);
+        self.parallel.init(schedule);
+    }
+
+    fn run(
+        &mut self,
+        schedule: &mut SystemSchedule,
+        world: &mut World,
+        skip_systems: Option<&FixedBitSet>,
+        error_handler: fn(BevyError, ErrorContext),
+    ) {
+        if self.switch.parallel() {
+            self.parallel
+                .run(schedule, world, skip_systems, error_handler);
+        } else {
+            self.single
+                .run(schedule, world, skip_systems, error_handler);
+        }
+    }
+
+    fn set_apply_final_deferred(&mut self, value: bool) {
+        self.single.set_apply_final_deferred(value);
+        self.parallel.set_apply_final_deferred(value);
+    }
 }
 
 #[cfg(test)]
