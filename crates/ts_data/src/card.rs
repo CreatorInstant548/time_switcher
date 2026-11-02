@@ -1,6 +1,9 @@
 //! Minimal card kinds and their field rules. No game rule, no game value.
 
 use serde::Deserialize;
+use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
+
+use crate::error::Code;
 
 /// One content card. A file holds a RON list of cards, for example
 /// `[Item(id: "item.bread", name: "Bread")]`.
@@ -102,13 +105,67 @@ pub fn is_valid_card_id(id: &str) -> bool {
     is_valid_id(id) && id.contains('.')
 }
 
+/// Most combining marks in a row that a name may hold (M40e).
+const MAX_MARK_RUN: usize = 2;
+
 // spec: attendus-mesurables.md §10.2 (M40e)
-/// Whether `name` is 1 to [`MAX_NAME_BYTES`] bytes, in Unicode normalization form C, with no
-/// control character and no leading or trailing whitespace.
+/// Why `name` is not a valid display name, or `None` if it is valid. The code names the class
+/// of the first fault found, in this order: size, then the characters from left to right, then
+/// the edges, then the normalization form. Every class has its own code (decided, A17):
+/// [`Code::InvalidName`] (empty, over [`MAX_NAME_BYTES`] bytes, leading or trailing space,
+/// not in NFC), [`Code::NameControl`] (Cc), [`Code::NameFormat`] (Cf),
+/// [`Code::NamePrivateUse`] (Co), [`Code::NameUnassigned`] (Cn), [`Code::NameLineSeparator`]
+/// (Zl, Zp), [`Code::NameSpace`] (any space other than U+0020, U+00A0 and U+202F) and
+/// [`Code::NameMarkRun`] (more than two combining marks in a row).
+///
+/// The categories are those of the Unicode version of the NFC check (a test pins that the two
+/// tables agree), so refusing Cn means the NFC form of an accepted name cannot change later.
+pub fn name_fault(name: &str) -> Option<Code> {
+    if name.is_empty() || name.len() > MAX_NAME_BYTES {
+        return Some(Code::InvalidName);
+    }
+    // At most `MAX_NAME_BYTES` bytes from here: the scan is cheap whatever the input.
+    let mut marks = 0_usize;
+    for c in name.chars() {
+        let category = c.general_category();
+        let fault = match category {
+            GeneralCategory::Control => Some(Code::NameControl),
+            GeneralCategory::Format => Some(Code::NameFormat),
+            GeneralCategory::PrivateUse => Some(Code::NamePrivateUse),
+            GeneralCategory::Unassigned => Some(Code::NameUnassigned),
+            GeneralCategory::LineSeparator | GeneralCategory::ParagraphSeparator => {
+                Some(Code::NameLineSeparator)
+            }
+            GeneralCategory::SpaceSeparator if !matches!(c, ' ' | '\u{a0}' | '\u{202f}') => {
+                Some(Code::NameSpace)
+            }
+            _ => None,
+        };
+        if fault.is_some() {
+            return fault;
+        }
+        if matches!(
+            category,
+            GeneralCategory::NonspacingMark
+                | GeneralCategory::SpacingMark
+                | GeneralCategory::EnclosingMark
+        ) {
+            marks = marks.saturating_add(1);
+            if marks > MAX_MARK_RUN {
+                return Some(Code::NameMarkRun);
+            }
+        } else {
+            marks = 0;
+        }
+    }
+    if name.trim() != name || !unicode_normalization::is_nfc(name) {
+        return Some(Code::InvalidName);
+    }
+    None
+}
+
+// spec: attendus-mesurables.md §10.2 (M40e)
+/// Whether `name` is a valid display name: [`name_fault`] finds nothing.
 pub fn is_valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_NAME_BYTES
-        && !name.chars().any(char::is_control)
-        && name.trim() == name
-        && unicode_normalization::is_nfc(name)
+    name_fault(name).is_none()
 }

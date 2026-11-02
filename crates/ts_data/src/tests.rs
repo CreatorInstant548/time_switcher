@@ -208,12 +208,10 @@ fn invalid_id_and_name() {
     }
     for name in [
         "",
-        "tab\\there",
         &"n".repeat(257),
         " Pain",
         "Pain ",
         "Pain\u{a0}",
-        "\u{3000}Pain",
         // `e` then a combining acute accent: NFD, not NFC (M40e).
         "Pa\u{65}\u{301}n",
     ] {
@@ -444,6 +442,30 @@ fn lengths_are_never_saturated() {
         assert!(crate::pack::put_u32(&mut out, big).is_none());
         assert!(crate::pack::put_u32(&mut out, usize::MAX).is_none());
     }
+}
+
+#[test]
+fn file_name_cannot_start_a_workflow_command() {
+    // The runner trims leading whitespace, then reads `::name::` at the start of a line, and
+    // `##[` or `##vso[` anywhere in it.
+    for file in [
+        "::warning::x.ron",
+        "  ::error::x.ron",
+        "\t::error::x.ron",
+        "\u{3000}::error::x.ron",
+        ":::x",
+        "a/##[error]x.ron",
+        "##vso[task.logissue]x",
+    ] {
+        let d = Diagnostic::new(Code::RonSyntax, file, (1, 1), "##[error]y");
+        let line = d.to_string();
+        assert_eq!(line.lines().count(), 1, "{file:?}");
+        assert!(!line.contains("##"), "{line}");
+        assert!(!line.trim_start().starts_with("::"), "{line}");
+    }
+    // An ordinary path, with `:` inside, is kept as it is.
+    let d = Diagnostic::new(Code::RonSyntax, "dir/a:b.ron", (1, 1), "");
+    assert_eq!(d.file, "dir/a:b.ron");
 }
 
 #[test]
@@ -857,5 +879,131 @@ mod usage {
         assert!(row(5, 9).over_half());
         assert!(row(1, 0).over_half());
         assert!(row(u64::MAX, u64::MAX).over_half());
+    }
+}
+
+// spec: attendus-mesurables.md §10.2 (M40e, A17)
+mod names {
+    use super::*;
+    use crate::name_fault;
+
+    /// `name` as the body of a RON string: everything but printable ASCII as `\u{..}`.
+    fn ron_escaped(name: &str) -> String {
+        name.chars()
+            .map(|c| match c {
+                '"' | '\\' => format!("\\u{{{:x}}}", u32::from(c)),
+                ' '..='~' => c.to_string(),
+                c => format!("\\u{{{:x}}}", u32::from(c)),
+            })
+            .collect()
+    }
+
+    fn pack_with_name(name: &str) -> Result<ContentPack, LoadErrors> {
+        let text = format!("[Item(id: \"item.a\", name: \"{}\")]", ron_escaped(name));
+        build(vec![file("a.ron", &text)])
+    }
+
+    #[test]
+    fn unicode_version_of_categories_is_that_of_the_nfc_check() {
+        let nfc = unicode_normalization::UNICODE_VERSION;
+        assert_eq!(
+            (u64::from(nfc.0), u64::from(nfc.1), u64::from(nfc.2)),
+            unicode_properties::UNICODE_VERSION
+        );
+    }
+
+    #[test]
+    fn legitimate_french_is_accepted() {
+        for name in [
+            "Pain",
+            "cœur",
+            "Œuvre",
+            "æther",
+            "ça",
+            "Ça va",
+            "École",
+            "ÉCLAIR À L'ÉTAGE",
+            "Île-de-France",
+            "l’école",
+            "«\u{a0}bonjour\u{a0}»",
+            "«\u{202f}bonjour\u{202f}»",
+            "Quoi\u{202f}? Oui\u{a0}!",
+            "attends…",
+            "un — deux",
+            "a\u{a0}b c",
+            // Two combining marks in a row are allowed.
+            "x\u{300}\u{301}",
+        ] {
+            assert_eq!(name_fault(name), None, "{name:?}");
+            assert!(pack_with_name(name).is_ok(), "{name:?}");
+        }
+    }
+
+    /// One example per refusal class, with its code.
+    const REFUSED: [(&str, Code); 21] = [
+        ("tab\there", Code::NameControl),
+        ("a\u{7}b", Code::NameControl),
+        ("a\u{85}b", Code::NameControl),
+        ("a\u{7f}b", Code::NameControl),
+        ("a\u{200b}b", Code::NameFormat),
+        ("a\u{202e}b", Code::NameFormat),
+        ("a\u{ad}b", Code::NameFormat),
+        ("a\u{200d}b", Code::NameFormat),
+        ("a\u{feff}b", Code::NameFormat),
+        ("a\u{e000}b", Code::NamePrivateUse),
+        ("a\u{f0000}b", Code::NamePrivateUse),
+        ("a\u{378}b", Code::NameUnassigned),
+        ("a\u{ffff}b", Code::NameUnassigned),
+        ("a\u{2028}b", Code::NameLineSeparator),
+        ("a\u{2029}b", Code::NameLineSeparator),
+        ("a\u{2003}b", Code::NameSpace),
+        ("a\u{3000}b", Code::NameSpace),
+        ("a\u{2009}b", Code::NameSpace),
+        ("\u{3000}Pain", Code::NameSpace),
+        ("x\u{300}\u{301}\u{302}", Code::NameMarkRun),
+        ("ab\u{fe0f}\u{fe0f}\u{fe0f}", Code::NameMarkRun),
+    ];
+
+    #[test]
+    fn each_class_has_its_own_code() {
+        for (name, code) in REFUSED {
+            assert_eq!(name_fault(name), Some(code), "{name:?}");
+            assert!(!crate::is_valid_name(name), "{name:?}");
+            assert_eq!(codes(pack_with_name(name)), [code], "{name:?}");
+        }
+        let mut classes: Vec<&str> = REFUSED.iter().map(|(_, c)| c.as_str()).collect();
+        classes.sort_unstable();
+        classes.dedup();
+        assert_eq!(
+            classes,
+            [
+                "DATA_NAME_CONTROL",
+                "DATA_NAME_FORMAT",
+                "DATA_NAME_LINE_SEPARATOR",
+                "DATA_NAME_MARK_RUN",
+                "DATA_NAME_PRIVATE_USE",
+                "DATA_NAME_SPACE",
+                "DATA_NAME_UNASSIGNED",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_mark_run_is_counted_per_run_and_a_base_resets_it() {
+        // Two marks, a base, two marks: never more than two in a row.
+        assert_eq!(name_fault("x\u{300}\u{301}x\u{300}\u{301}"), None);
+        assert_eq!(
+            name_fault("x\u{300}\u{301}\u{302}y"),
+            Some(Code::NameMarkRun)
+        );
+    }
+
+    #[test]
+    fn size_edges_and_form_keep_the_invalid_name_code() {
+        for name in ["", " a", "a ", "a\u{a0}", "a\u{202f}", "e\u{301}"] {
+            assert_eq!(name_fault(name), Some(Code::InvalidName), "{name:?}");
+        }
+        assert_eq!(name_fault(&"n".repeat(256)), None);
+        assert_eq!(name_fault(&"n".repeat(257)), Some(Code::InvalidName));
     }
 }

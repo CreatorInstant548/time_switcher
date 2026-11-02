@@ -39,8 +39,9 @@ ts_kernel::not_public! {
 
 pub use card::{
     Card, MAX_ID_BYTES, MAX_NAME_BYTES, NAMESPACES, is_valid_card_id, is_valid_id, is_valid_name,
+    name_fault,
 };
-pub use error::{Code, Diagnostic, LoadErrors, MAX_DIAGNOSTICS};
+pub use error::{Code, Diagnostic, LoadErrors, MAX_DIAGNOSTICS, escape_for_log};
 pub use pack::{ContentPack, FORMAT_VERSION, Fingerprint};
 pub use registry::{IdState, REGISTRY_FILE, Registry};
 pub use source::{Limits, SourceFile, is_relative_path, read_bounded};
