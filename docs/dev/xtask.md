@@ -4,7 +4,7 @@ Mode d'emploi de la crate d'outil `tools/xtask` (tâches T2b et T2c de la phase 
 - [revue du développement par agents](../conception/revues/developpement-agents.md) §4.2, §6 et §9.2 ;
 - les exigences SEC0-03, 06, 08, 19, 20, 26 et 29 à 31 du carnet du responsable architecture et sécurité, avec les corrections F1 à F10 de son §9.5.
 
-`tools/xtask/` est un **chemin sensible** : toute modification passe par `/security-review`, un relecteur neuf et l'avis d'archi-sécu.
+`tools/xtask/` est un **chemin sensible** : toute modification passe par un relecteur neuf, qui fait la passe de sécurité (AS-59), et l'avis d'archi-sécu.
 
 L'alias `cargo xtask` vaut `cargo run --locked -p xtask --` (`.cargo/config.toml`). `xtask` n'est pas dans `default-members` : il se compile à la demande. Avant la première commande d'un worktree, prendre un emplacement : `pwsh -NoProfile -File tools/dev/session-start.ps1 -Acquire` ([outillage](outillage.md) §1).
 
@@ -184,6 +184,8 @@ W1, l'ascendance de W3, W4 à W7 restent exigées, dont `ci-ok` sur `H`, et J1 e
 - Au plus 5 SHA candidats sont examinés, du plus récent au plus ancien, après avoir écarté ceux qui ne sont pas dans la PR.
 - Tout est relu sur GitHub à chaque exécution (V5). `verify-main` n'a plus de cache local depuis T3e-2.
 - Une lecture qui échoue fait échouer le candidat, jamais l'inverse.
+
+**Limite (AS-59)** : `.git/shallow` et `objects/info/commit-graph` peuvent changer les parents que Git rapporte. Aucune neutralisation n'est prévue : celui qui peut écrire dans le dossier `.git` de la copie principale peut déjà tout changer. Le verrou reste le *ruleset* du serveur et la CI.
 
 **Portée de `verify-main` depuis T3e-2** (AS-31 E3). Chaque commit de `main` postérieur à la base doit avoir un seul parent, pour que sa sensibilité se calcule. Un commit **non sensible** ne demande rien d'autre et ne lit rien sur GitHub : le *ruleset* `main` impose la PR, `ci-ok` et l'historique linéaire, et `repo-settings.ps1 -Check` surveille ce *ruleset* : l'orchestrateur le lance chaque jour depuis la copie principale (AS-50 AU3 ; il est sauté en CI, et `cargo xtask merge` ne le lance plus). Un commit **sensible** garde tout : squash d'une PR fusionnée (J3), `ci-ok` sur sa tête (G3), `review-ok` et `archsec-ok` sur la tête ou reportés (§6.1), puis J4.
 
