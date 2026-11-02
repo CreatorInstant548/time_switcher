@@ -40,9 +40,10 @@ pub fn encode_snapshot(
 /// checked by the codec, then read by `MemorySnapshot::from_canonical` against the state
 /// types of `layout`, bounded by `limits.max_part_len`.
 ///
-/// The host then restores it with `Sim::restore(…, &WorldKey)`, which keeps all its checks
-/// and is the only path to a world: this crate never rebuilds one (m3 of the review of
-/// #30, AS-36).
+/// The host then restores it with `RestoreTarget::restore`, whose `layout` it passed here
+/// (the rules are built once, #58), or with `Sim::restore(…, &WorldKey)`. Both keep all the
+/// checks and are the only paths to a world: this crate never rebuilds one (m3 of the review
+/// of #30, AS-36).
 ///
 /// # Errors
 ///

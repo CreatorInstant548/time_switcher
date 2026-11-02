@@ -248,6 +248,8 @@ impl fmt::Debug for StateLayout {
 impl StateLayout {
     /// Layout of `rules` with `cfg`. The rules are built once into a world that is dropped
     /// at once (with a fixed public key, private to the kernel): no key is needed to decode.
+    /// A host that holds the key loads with [`RestoreTarget`] instead, which builds the
+    /// rules once in all (#58).
     ///
     /// Contract:
     /// - `cfg` and `rules` must be those later passed to [`Snapshot::restore`];
@@ -263,6 +265,64 @@ impl StateLayout {
     pub fn of(cfg: &SimConfig, rules: &[Box<dyn Plugin>]) -> Result<Self, BuildError> {
         let sim = Sim::build(cfg.clone(), rules, &WorldKey::from_bytes(LAYOUT_KEY))?;
         Ok(Self { entries: sim.state })
+    }
+}
+
+// spec: revues/architecture.md §7.1, §12.1 ; carnet architecture-securite.md §10
+/// A world built for a restore and not yet run: its state types serve to decode the
+/// snapshot, then [`RestoreTarget::restore`] puts the snapshot in place. Loading a save this
+/// way builds the rules **once** (#58), where [`StateLayout::of`] then [`Snapshot::restore`]
+/// build them twice.
+///
+/// The world is built with the real world key and nothing else reaches it: it is never run,
+/// hashed nor saved before the restore, and [`RestoreTarget::restore`] keeps every check of
+/// [`Snapshot::restore`], which is the same code. Use [`StateLayout::of`] to decode without a
+/// key (tools, fuzzing).
+pub struct RestoreTarget {
+    sim: Sim,
+    layout: StateLayout,
+}
+
+impl fmt::Debug for RestoreTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RestoreTarget")
+            .field("rules", &self.sim.rules)
+            .field("layout", &self.layout)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RestoreTarget {
+    /// Builds the world of `rules` with `cfg` and `world_key`, as [`Sim::build`].
+    ///
+    /// # Errors
+    ///
+    /// The [`BuildError`] of building these rules.
+    pub fn build(
+        cfg: SimConfig,
+        rules: &[Box<dyn Plugin>],
+        world_key: &WorldKey,
+    ) -> Result<Self, BuildError> {
+        let sim = Sim::build(cfg, rules, world_key)?;
+        let layout = StateLayout {
+            entries: sim.state.clone(),
+        };
+        Ok(Self { sim, layout })
+    }
+
+    /// State types of the rules, to decode the snapshot with
+    /// [`MemorySnapshot::from_canonical`].
+    pub const fn layout(&self) -> &StateLayout {
+        &self.layout
+    }
+
+    /// Puts `snap` in place, with every check of [`Snapshot::restore`].
+    ///
+    /// # Errors
+    ///
+    /// See [`RestoreError`].
+    pub fn restore(self, snap: &MemorySnapshot) -> Result<Sim, RestoreError> {
+        snap.put_in_place(self.sim)
     }
 }
 
@@ -337,7 +397,15 @@ impl Snapshot for MemorySnapshot {
         rules: &[Box<dyn Plugin>],
         world_key: &WorldKey,
     ) -> Result<Sim, RestoreError> {
-        let mut sim = Sim::build(cfg, rules, world_key).map_err(RestoreError::Build)?;
+        let sim = Sim::build(cfg, rules, world_key).map_err(RestoreError::Build)?;
+        self.put_in_place(sim)
+    }
+}
+
+impl MemorySnapshot {
+    /// Puts the snapshot in place in `sim`, **freshly built and never run** (only
+    /// [`Snapshot::restore`] and [`RestoreTarget`] call it), after every check.
+    fn put_in_place(&self, mut sim: Sim) -> Result<Sim, RestoreError> {
         check_rules(&sim, self)?;
         if layout_of(&sim.state) != self.layout {
             return Err(RestoreError::StateLayoutMismatch);

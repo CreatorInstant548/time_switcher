@@ -57,8 +57,9 @@ pub use plugin::{Plugin, RulesFingerprint, SimBuilder};
 pub use scheduler::{ScheduleError, Scheduled, Scheduler};
 pub use sim::{
     BuildError, DueEvents, EventQueue, LodComplete, MemorySnapshot, PARALLEL_FROM_WORK,
-    ParallelPhases, RestoreError, RunReport, Sim, SimClock, SimConfig, Snapshot, SnapshotScope,
-    StableIds, StateLayout, StepReport, StopCondition, Threads, TimedEvent, WorldStreams,
+    ParallelPhases, RestoreError, RestoreTarget, RunReport, Sim, SimClock, SimConfig, Snapshot,
+    SnapshotScope, StableIds, StateLayout, StepReport, StopCondition, Threads, TimedEvent,
+    WorldStreams,
 };
 pub use state::{
     KERNEL_FAMILY, StableEntity, StableIndex, StateDigest, StateHash, StateHashes, StateWriter,

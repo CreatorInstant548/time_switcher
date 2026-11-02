@@ -15,8 +15,8 @@ use core::fmt;
 
 use ts_kernel::rng::WorldKey;
 use ts_kernel::{
-    BuildError, MemorySnapshot, Plugin, RestoreError, Sim, SimConfig, SimTime, SnapshotScope,
-    StateLayout, StopCondition,
+    BuildError, MemorySnapshot, Plugin, RestoreError, RestoreTarget, Sim, SimConfig, SimTime,
+    SnapshotScope, StopCondition,
 };
 use ts_persist::{Codec, DecodeError, EncodeError, Limits, decode_snapshot, encode_snapshot};
 
@@ -92,15 +92,16 @@ pub fn check_resume(
         let snap: MemorySnapshot = straight.snapshot(SnapshotScope::Full);
         saves.push(encode_snapshot(&snap, Codec::Zstd, &limits).map_err(ResumeError::Encode)?);
     }
-    let layout = StateLayout::of(cfg, rules).map_err(ResumeError::Build)?;
     let mut resumes = 0;
     for (i, (&resumed_at, bytes)) in checkpoints.iter().zip(&saves).enumerate() {
         if i + 1 == checkpoints.len() {
             break;
         }
-        let decoded = decode_snapshot(bytes, &limits, &layout).map_err(ResumeError::Decode)?;
-        let mut resumed =
-            Sim::restore(&decoded, cfg.clone(), rules, key).map_err(ResumeError::Restore)?;
+        // As a host loads a save: the rules are built once (#58).
+        let target = RestoreTarget::build(cfg.clone(), rules, key).map_err(ResumeError::Build)?;
+        let decoded =
+            decode_snapshot(bytes, &limits, target.layout()).map_err(ResumeError::Decode)?;
+        let mut resumed = target.restore(&decoded).map_err(ResumeError::Restore)?;
         for (&at, expected) in checkpoints.iter().zip(&hashes).skip(i) {
             resumed.run_until(StopCondition::At(at));
             if resumed.state_hash() != *expected {
