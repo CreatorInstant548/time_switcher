@@ -52,8 +52,8 @@ flat_schema! {
     /// after.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct PartEntry {
-        /// Identifier: `/`-separated segments of `[a-z0-9._-]`, none empty, starting with `.`
-        /// or naming a reserved Windows device (`con`, `nul.x`…); never a file path.
+        /// Identifier: `/`-separated segments of `[a-z0-9._-]`, none empty, none starting with
+        /// `.`, none naming a reserved Windows device (`con`, `nul.x`…); never a file path.
         pub name: String,
         /// Storage of the part.
         pub codec: Codec,
@@ -71,7 +71,8 @@ flat_schema! {
 flat_schema! {
     // spec: revues/generation.md §8.1, P30 ; carnet architecture-securite.md §9.13
     /// List of the parts, strictly sorted by name; the payload holds their stored bytes in
-    /// this order.
+    /// this order. `parts` must stay the first field: the envelope reads its count from the
+    /// first bytes of the manifest before decoding it (m4 of #50, tested).
     #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
     pub struct Manifest {
         /// Parts, sorted by name.
@@ -101,7 +102,9 @@ const RESERVED: [&str; 24] = [
 ];
 
 /// Whether `segment` is a reserved Windows device name, with or without an extension: its
-/// stem (the text before the first `.`) matches [`RESERVED`], ignoring case.
+/// stem (the text before the first `.`) matches [`RESERVED`]. The comparison ignores case,
+/// as Windows does, so that it stays right if the alphabet of names ever admits capitals
+/// (today [`check_name`] refuses them first).
 fn is_reserved(segment: &str) -> bool {
     let stem = segment.split('.').next().unwrap_or(segment);
     RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
@@ -139,6 +142,8 @@ impl Manifest {
     /// length that the parts announce.
     pub(crate) fn check(&self, limits: &Limits) -> Result<u64, DecodeError> {
         let parts = &self.parts.0;
+        // Already checked on the announced count before decoding (envelope); checked again on
+        // the decoded entries so that this function holds on its own.
         too_large(
             Bound::Parts,
             len64(parts.len()),
