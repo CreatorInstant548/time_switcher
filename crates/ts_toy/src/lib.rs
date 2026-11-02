@@ -51,7 +51,7 @@ pub fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use ts_kernel::StableId;
-    use ts_kernel::rng::{Stream, StreamKeys, draw};
+    use ts_kernel::rng::{DrawSite, Stream, StreamKeys};
 
     use super::*;
 
@@ -60,7 +60,8 @@ mod tests {
     fn public_test_keys_follow_the_seed() {
         let first = |seed| {
             let keys = StreamKeys::derive(&public_test_key(seed));
-            draw(keys.get(Stream::Ai), StableId::from_snapshot_raw(0), 0, 0)
+            let site = DrawSite::new(Stream::Ai, 0, "test.first");
+            keys.draw(site, StableId::from_snapshot_raw(0), 0)
         };
         assert_eq!(first(1), first(1));
         assert_ne!(first(1), first(2));

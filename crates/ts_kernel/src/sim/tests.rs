@@ -1,6 +1,8 @@
 use super::*;
 use bevy_ecs::prelude::{IntoScheduleConfigs, Res, ResMut};
 
+use crate::rng::SiteDraw;
+
 struct TestPlugin {
     name: &'static str,
     version: u32,
@@ -448,4 +450,143 @@ fn thread_pool_is_fixed_per_process() {
             actual: 1
         }
     );
+}
+
+struct Drawing(&'static str, &'static [DrawSite]);
+
+impl Plugin for Drawing {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    fn disableable(&self) -> bool {
+        true
+    }
+    fn draw_sites(&self) -> &'static [DrawSite] {
+        self.1
+    }
+    fn build(&self, _: &mut SimBuilder) {}
+}
+
+const LOCK: DrawSite = DrawSite::new(Stream::CityServer, 1, "city.lock");
+const CAMERA: DrawSite = DrawSite::new(Stream::CityServer, 1, "city.camera");
+const HIT: DrawSite = DrawSite::new(Stream::Combat, 1, "combat.hit");
+
+/// #26 m1: two sites of the rules with the same stream and purpose fail the build, even
+/// when one plugin is disabled; the same purpose in another stream is allowed.
+#[test]
+fn draw_sites_are_unique_in_the_rules() {
+    let ok: Vec<Box<dyn Plugin>> = vec![
+        Box::new(Drawing("locks", &[LOCK])),
+        Box::new(Drawing("combat", &[HIT])),
+    ];
+    assert!(build(&ok).is_ok());
+    let conflict = BuildError::DrawSiteConflict {
+        first: ("locks", LOCK),
+        second: ("cameras", CAMERA),
+    };
+    let rules: Vec<Box<dyn Plugin>> = vec![
+        Box::new(Drawing("locks", &[LOCK])),
+        Box::new(Drawing("cameras", &[HIT, CAMERA])),
+    ];
+    assert_eq!(build(&rules).unwrap_err(), conflict);
+    assert_eq!(build_with(&["cameras"], &rules).unwrap_err(), conflict);
+    assert_eq!(
+        conflict.to_string(),
+        "draw site city.camera of plugin cameras reuses stream CityServer and purpose 1 of \
+         site city.lock of plugin locks"
+    );
+    let twice: Vec<Box<dyn Plugin>> = vec![Box::new(Drawing("locks", &[LOCK, LOCK]))];
+    assert!(matches!(
+        build(&twice),
+        Err(BuildError::DrawSiteConflict { .. })
+    ));
+}
+
+/// #26 m1: a system draws only at a site that an active plugin declares; the world streams
+/// refuse any other in debug builds, so the uniqueness check covers every draw.
+#[test]
+fn world_streams_draw_declared_sites_only() {
+    let rules: Vec<Box<dyn Plugin>> = vec![Box::new(Drawing("combat", &[HIT]))];
+    let sim = build(&rules).unwrap();
+    let streams = sim.world().resource::<WorldStreams>();
+    let subject = StableId::from_snapshot_raw(4);
+    assert_eq!(
+        streams.draw(HIT, subject, 9),
+        streams.draws(HIT, subject, 9).next().unwrap()
+    );
+    assert_eq!(
+        streams.draw(HIT, subject, 9),
+        streams.draw_block(HIT, subject, 9, 0)[0]
+    );
+    let undeclared = std::panic::catch_unwind(|| streams.draw(LOCK, subject, 9));
+    // Tests run with debug assertions (profiles `dev` and `ci`).
+    assert!(undeclared.is_err());
+}
+
+/// The lock of the review of #109 (I1): a helper over any holder of keys, as a generator.
+fn roll_lock(keys: &impl SiteDraw, who: StableId) -> u64 {
+    keys.draw(LOCK, who, 0)
+}
+
+fn lock_system(streams: Res<WorldStreams>) {
+    let _ = roll_lock(&*streams, StableId::from_snapshot_raw(4));
+}
+
+struct Locks;
+
+impl Plugin for Locks {
+    fn name(&self) -> &'static str {
+        "locks"
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    fn build(&self, b: &mut SimBuilder) {
+        b.add_systems(Phase::Act, lock_system);
+    }
+}
+
+/// #26 m1, review of #109 (I1): `cameras` declares (CityServer, 1); `locks` declares
+/// nothing and draws `LOCK`, the same pair. Every public path from the world streams refuses
+/// it in debug builds: the inherent draws, the sealed trait used by a generic helper, and a
+/// system of the plugin. No path hands out the keys themselves (no `Deref`, see the
+/// `compile_fail` of `WorldStreams`), so a lock can never reveal a camera.
+#[test]
+fn undeclared_sites_are_refused_on_every_path() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let rules: Vec<Box<dyn Plugin>> =
+        vec![Box::new(Drawing("cameras", &[CAMERA])), Box::new(Locks)];
+    let mut sim = build(&rules).unwrap();
+    let who = StableId::from_snapshot_raw(4);
+    let streams = sim.world().resource::<WorldStreams>();
+    let _ = streams.draw(CAMERA, who, 0);
+    let paths: [&dyn Fn(); 6] = [
+        &|| {
+            let _ = streams.draw(LOCK, who, 0);
+        },
+        &|| {
+            let _ = streams.draw_block(LOCK, who, 0, 0);
+        },
+        &|| {
+            let _ = streams.draws(LOCK, who, 0);
+        },
+        &|| {
+            let _ = roll_lock(streams, who);
+        },
+        &|| {
+            let _ = SiteDraw::draw_block(streams, LOCK, who, 0, 0);
+        },
+        &|| {
+            let _ = SiteDraw::draws(streams, LOCK, who, 0);
+        },
+    ];
+    // Tests run with debug assertions (profiles `dev` and `ci`).
+    for (i, path) in paths.iter().enumerate() {
+        assert!(catch_unwind(AssertUnwindSafe(path)).is_err(), "path {i}");
+    }
+    assert!(catch_unwind(AssertUnwindSafe(|| sim.step())).is_err());
 }
