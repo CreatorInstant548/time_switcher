@@ -219,7 +219,10 @@ fn validate(
         // spec: attendus-mesurables.md §10.2 (M40a à M40c, M40e)
         if !is_valid_card_id(&id) {
             report(sink, Code::InvalidId, &l, &id);
-        } else if id.split('.').next() != Some(l.card.namespace()) {
+        } else if !id
+            .strip_prefix(l.card.namespace())
+            .is_some_and(|rest| rest.starts_with('.'))
+        {
             report(sink, Code::WrongNamespace, &l, &id);
         } else if !is_valid_name(l.card.name()) {
             report(sink, Code::InvalidName, &l, &id);

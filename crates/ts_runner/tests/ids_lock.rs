@@ -5,6 +5,10 @@
 //!   every active identifier with a card;
 //! - against its version on `origin/main`: append-only. CI checks out with `fetch-depth: 0`,
 //!   so `origin/main` is there; a branch behind `main` must be updated first anyway.
+//!
+//! Decided: `origin/main` rather than the merge base, so that a branch which drops entries
+//! appended on `main` since it forked fails too. CI is the reference: locally, a stale
+//! `origin/main` gives a weaker check, and a missing one fails the test on purpose.
 #![allow(clippy::disallowed_methods, clippy::unwrap_used)] // test: reads the repository.
 
 use std::fs;
@@ -20,7 +24,7 @@ const BASE: &str = "origin/main";
 
 fn registry() -> Registry {
     let bytes = fs::read(Path::new(CONTENT).join(REGISTRY_FILE)).unwrap();
-    Registry::parse(&bytes).unwrap_or_else(|e| panic!("{e}"))
+    Registry::parse(&bytes, &Limits::default()).unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn git(args: &[&str]) -> std::process::Output {
@@ -55,7 +59,8 @@ fn registry_only_appends_to_its_version_on_main() {
     }
     let shown = git(&["show", &spec]);
     assert!(shown.status.success(), "git show {spec} failed");
-    let old = Registry::parse(&shown.stdout).unwrap_or_else(|e| panic!("{BASE}: {e}"));
+    let old = Registry::parse(&shown.stdout, &Limits::default())
+        .unwrap_or_else(|e| panic!("{BASE}: {e}"));
     old.check_successor(&registry())
         .unwrap_or_else(|e| panic!("{e}"));
 }

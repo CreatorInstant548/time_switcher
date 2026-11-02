@@ -5,14 +5,16 @@
 //!
 //! Format (decided, A15): UTF-8 text, one entry per line, `<identifier> <state>` with a single
 //! space, the state being `active` or `retired`. Empty lines and lines starting with `#` are
-//! comments, free to change. New entries go at the end. Pure functions, no file access: the
-//! host reads the file (and its previous version, for [`Registry::check_successor`]).
+//! comments, free to change. New entries go at the end. A byte order mark is skipped, as in a
+//! card file. Pure functions, no file access: the host reads the file (and its previous
+//! version, for [`Registry::check_successor`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::card::is_valid_card_id;
 use crate::error::{Code, Diagnostic, LoadErrors, Sink};
 use crate::pack::ContentPack;
+use crate::source::Limits;
 
 /// Name of the registry file, at the content root.
 pub const REGISTRY_FILE: &str = "ids.lock";
@@ -48,7 +50,15 @@ impl Registry {
     /// Parses the registry text. Refuses a malformed line and an identifier listed twice. The
     /// identifier must follow the card grammar (M40a, namespace first); its namespace is not
     /// checked against the current kinds, so a retired identifier stays valid if its kind goes.
-    pub fn parse(bytes: &[u8]) -> Result<Self, LoadErrors> {
+    ///
+    /// The registry is bounded by [`Limits::max_total_bytes`] (decided: it lists at most every
+    /// card of a pack, plus the retired ones, so the pack's total bound is its natural
+    /// ceiling; the per-file bound of the `.ron` files would cap it near 14,000 identifiers).
+    pub fn parse(bytes: &[u8], limits: &Limits) -> Result<Self, LoadErrors> {
+        if u64::try_from(bytes.len()).map_or(true, |n| n > limits.max_total_bytes) {
+            return Err(LoadErrors::single(at(Code::FileTooLarge, 0, "")));
+        }
+        let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
         let text = core::str::from_utf8(bytes)
             .map_err(|_| LoadErrors::single(at(Code::NotUtf8, 0, "")))?;
         let mut sink = Sink::default();

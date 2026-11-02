@@ -641,7 +641,7 @@ mod registry {
     }
 
     fn parse(text: &str) -> Registry {
-        Registry::parse(text.as_bytes()).unwrap()
+        Registry::parse(text.as_bytes(), &Limits::default()).unwrap()
     }
 
     fn found<T: std::fmt::Debug>(r: Result<T, LoadErrors>) -> Vec<(Code, u32, String)> {
@@ -659,6 +659,15 @@ mod registry {
         assert_eq!(ids.len(), 4);
         assert_eq!(ids[0], ("activity.bake", IdState::Active));
         assert!(parse("").entries().next().is_none());
+        // A byte order mark is skipped, as in a card file.
+        assert_eq!(parse(&format!("\u{feff}{LOCK}")).entries().count(), 4);
+        // Bounded by the pack's total bound.
+        let small = Limits {
+            max_total_bytes: 8,
+            ..Limits::default()
+        };
+        let f = found(Registry::parse(b"item.a active", &small));
+        assert_eq!(f[0].0, Code::FileTooLarge);
         assert_eq!(
             parse("item.a retired").entries().next(),
             Some(("item.a", IdState::Retired))
@@ -677,12 +686,15 @@ mod registry {
             ("item.a removed", 1),
             ("Item.a active", 1),
         ] {
-            let f = found(Registry::parse(text.as_bytes()));
+            let f = found(Registry::parse(text.as_bytes(), &Limits::default()));
             assert_eq!((f[0].0, f[0].1), (Code::RegistrySyntax, line), "{text:?}");
         }
-        let f = found(Registry::parse(b"item.a active\nitem.a retired\n"));
+        let f = found(Registry::parse(
+            b"item.a active\nitem.a retired\n",
+            &Limits::default(),
+        ));
         assert_eq!(f, [(Code::RegistryDuplicate, 2, "item.a".to_owned())]);
-        let f = found(Registry::parse(&[b'i', 0xff]));
+        let f = found(Registry::parse(&[b'i', 0xff], &Limits::default()));
         assert_eq!(f[0].0, Code::NotUtf8);
     }
 

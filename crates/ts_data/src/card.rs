@@ -54,8 +54,8 @@ impl Card {
     /// identifier must be this (M40b).
     pub fn namespace(&self) -> &'static str {
         match self {
-            Self::Item { .. } => "item",
-            Self::Activity { .. } => "activity",
+            Self::Item { .. } => ITEM,
+            Self::Activity { .. } => ACTIVITY,
         }
     }
 
@@ -74,7 +74,11 @@ pub const MAX_NAME_BYTES: usize = 256;
 // spec: attendus-mesurables.md §10.2 (M40b)
 /// Closed list of the card-kind namespaces, sorted: the name of each kind of [`Card`] in
 /// `snake_case`. A new kind of card adds its namespace here, in the same design PR.
-pub const NAMESPACES: [&str; 2] = ["activity", "item"];
+pub const NAMESPACES: [&str; 2] = [ACTIVITY, ITEM];
+/// Namespace of [`Card::Activity`].
+const ACTIVITY: &str = "activity";
+/// Namespace of [`Card::Item`].
+const ITEM: &str = "item";
 
 /// Whether `id` is `segment(.segment)*` with 1 to [`MAX_ID_BYTES`] bytes, each segment being a
 /// lowercase letter then lowercase letters, digits or `_` (for example `toy_year` or
