@@ -1,7 +1,7 @@
 //! Versioned envelope: magic, format version, signature scheme, lengths, manifest digest.
 
 use crate::error::{Bound, DecodeError, EncodeError};
-use crate::limits::Limits;
+use crate::limits::{Limits, MAX_DECODE_PEAK};
 use crate::manifest::{Manifest, len64, manifest_digest};
 
 /// Magic of an envelope.
@@ -41,10 +41,19 @@ impl<'a> Cursor<'a> {
 ///
 /// # Errors
 ///
-/// The first failed check, in this order: envelope bound, magic, version, signature scheme,
+/// The first failed check, in this order: memory peak of `limits` (M41h), envelope bound, magic, version, signature scheme,
 /// manifest bound, lengths, manifest digest, announced part count, manifest schema, manifest
 /// rules.
 pub fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Manifest, &'a [u8]), DecodeError> {
+    // spec: attendus-mesurables.md §10.3 (M41h)
+    let peak = limits.decode_peak_bound();
+    if peak > MAX_DECODE_PEAK {
+        return Err(DecodeError::TooLarge {
+            bound: Bound::Peak,
+            len: peak,
+            max: MAX_DECODE_PEAK,
+        });
+    }
     let max = limits.max_envelope_len;
     if len64(bytes.len()) > max {
         return Err(DecodeError::TooLarge {

@@ -17,8 +17,12 @@ serde.workspace = true
 ts_kernel = { path = "../ts_kernel" }
 
 # Les dérivations de `bevy_ecs` dans les tests demandent la crate par son nom.
+# `cap` (tests only): counting allocator with a cap, for the memory peak test of M41h
+# (`tests/peak_memory.rs`); no dependency of its own, MIT or Apache-2.0. Declared here rather
+# than in `[workspace.dependencies]`: only this test uses it.
 [dev-dependencies]
 bevy_ecs.workspace = true
+cap = { version = "=0.1.2", default-features = false }
 
 [lints]
 workspace = true

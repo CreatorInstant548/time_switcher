@@ -22,6 +22,9 @@ pub enum Bound {
     Total,
     /// `zstd` window announced by a frame.
     Window,
+    /// Memory peak the bounds allow ([`crate::Limits::decode_peak_bound`]), above the
+    /// ceiling [`crate::MAX_DECODE_PEAK`] (M41h): the bounds themselves are refused.
+    Peak,
 }
 
 // spec: carnet architecture-securite.md SEC0-23, §9.13
