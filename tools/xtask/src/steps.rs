@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::manifests::{self, DEV_FEATURES, HOSTS, TOOLS};
 use crate::metadata::{self, Metadata};
 use crate::sys::{self, cargo, run_captured, run_live, stdout_of};
-use crate::{exemptions, reserved, scan, workflows};
+use crate::{exemptions, macros, reserved, scan, workflows};
 
 pub enum Outcome {
     Ok(String),
@@ -930,6 +930,8 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
     let mut read = 0;
     for p in meta.packages.iter().filter(|p| is_core(&p.name)) {
         let dir = format!("{}/", meta.rel_dir(p));
+        // Every `macro_rules!` of the crate: file relative to the crate, line, name (AS-56).
+        let mut macros = Vec::new();
         let sources: Vec<&String> = files
             .iter()
             .filter(|f| f.starts_with(&dir) && f.ends_with(".rs"))
@@ -941,6 +943,11 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
         read += sources.len();
         for rel in sources {
             let text = String::from_utf8_lossy(&tri!(cx.read(rel))).into_owned();
+            macros.extend(
+                macros::definitions(&text)
+                    .into_iter()
+                    .map(|(line, name)| (rel[dir.len()..].to_owned(), line, name)),
+            );
             errors.extend(
                 exemptions::clippy_exemptions(&text)
                     .iter()
@@ -962,6 +969,7 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
                 errors.push(format!("{}: dependency on {}: {why}", p.name, d.name));
             }
         }
+        errors.extend(macros::errors(&p.name, &macros));
         // Un fichier non .rs sous src/ ne peut servir qu'à #[path] ou include! (I2).
         let src = format!("{dir}src/");
         for rel in files.iter().filter(|f| {

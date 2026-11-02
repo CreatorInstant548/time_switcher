@@ -10,6 +10,7 @@ mod determinism;
 mod disk;
 mod exemptions;
 mod github;
+mod macros;
 mod manifests;
 mod merge;
 mod metadata;
