@@ -436,6 +436,23 @@ fn checked_key_refuses_constant_bytes() {
     assert_eq!(key, Some(bytes));
 }
 
+/// #26 m-b (review of #109): a host refuses the shape of a test key, a seed then eight zero
+/// bytes, but not a key whose high bytes are drawn.
+#[test]
+fn checked_key_refuses_the_test_key_shape() {
+    for seed in [1_u64, 7, u64::MAX] {
+        let test_key = WorldKey::insecure_from_u64_for_tests(seed).0;
+        assert!(WorldKey::checked(test_key).is_none(), "{seed}");
+        assert!(ArtifactSeed::checked(test_key).is_none(), "{seed}");
+    }
+    let mut bytes = [0; 16];
+    bytes[8] = 1;
+    assert!(WorldKey::checked(bytes).is_some());
+    bytes = [0; 16];
+    bytes[15] = 1;
+    assert!(WorldKey::checked(bytes).is_some());
+}
+
 /// #26 m2, m3: a host refuses a constant artifact seed too.
 #[test]
 fn checked_artifact_seed_refuses_constant_bytes() {
@@ -443,5 +460,6 @@ fn checked_artifact_seed_refuses_constant_bytes() {
     assert!(ArtifactSeed::checked([9; 16]).is_none());
     let mut bytes = [0; 16];
     bytes[3] = 1;
+    bytes[12] = 2;
     assert_eq!(ArtifactSeed::checked(bytes).map(|s| s.0), Some(bytes));
 }

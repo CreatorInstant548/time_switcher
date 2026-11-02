@@ -5,7 +5,7 @@
 //! town.
 
 use bevy_tasks::ComputeTaskPool;
-use ts_kernel::rng::{DrawSite, Stream, StreamKeys};
+use ts_kernel::rng::{DrawSite, SiteDraw, Stream};
 use ts_kernel::{StableId, StateHash, StateWriter};
 
 /// Draw purposes of the generator.
@@ -144,7 +144,7 @@ where
 /// average are workplaces (`CityGen`), each home parcel holds 1 to 4 residents who each
 /// work on a drawn workplace (`PopGen`). Same town for [`Execution::Inline`] and
 /// [`Execution::Pool`], with any number of threads.
-pub fn generate(spec: &TownSpec, keys: &StreamKeys, exec: Execution) -> Town {
+pub fn generate<K: SiteDraw + Sync>(spec: &TownSpec, keys: &K, exec: Execution) -> Town {
     let parcels = in_chunks(spec, exec, |a, b| {
         (a..b)
             .map(|i| match keys.draw(KIND, parcel_id(i), 0) % 3 {

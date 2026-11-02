@@ -14,7 +14,7 @@ use bevy_ecs::world::World;
 use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 
 use crate::phase::{ExecutorSwitch, phase_schedule};
-use crate::rng::{DrawSite, Draws, Stream, StreamKeys, WorldKey};
+use crate::rng::{CosmeticSeed, DrawSite, Draws, Stream, StreamKeys, WorldKey};
 use crate::state::{
     StableIndex, StateEntry, StateWriter, hash_world, stable_entities, undeclared_components,
 };
@@ -250,11 +250,24 @@ impl StableIds {
 /// declared by the active plugins. The keys are never recorded or hashed; the world key is
 /// not kept.
 ///
-/// Systems draw through [`Self::draw`], [`Self::draw_block`] and [`Self::draws`]. In debug
-/// builds (every test), they panic on a site that no plugin declares
-/// ([`Plugin::draw_sites`]), so that the uniqueness check of the build covers every draw of
-/// the rules (#26 m1). The keys themselves ([`Deref`]) serve a generator run while building,
-/// whose sites its plugin declares too, and the cosmetic seeds.
+/// Systems draw through [`Self::draw`], [`Self::draw_block`] and [`Self::draws`], or
+/// through [`crate::rng::SiteDraw`] in code generic over the holder of the keys (a generator
+/// run while building). In debug builds (every test), every one of these panics on a site
+/// that no active plugin declares ([`Plugin::draw_sites`]), so that the uniqueness check of
+/// the build covers every draw of the rules (#26 m1). The keys themselves are never handed
+/// out: no `Deref` to [`StreamKeys`], whose draws check nothing. Witness, then the refusal:
+///
+/// ```
+/// fn draws_here(s: &ts_kernel::WorldStreams) -> &impl ts_kernel::rng::SiteDraw {
+///     s
+/// }
+/// ```
+///
+/// ```compile_fail,E0308
+/// fn keys(s: &ts_kernel::WorldStreams) -> &ts_kernel::rng::StreamKeys {
+///     s
+/// }
+/// ```
 #[derive(Resource, Debug)]
 pub struct WorldStreams {
     keys: StreamKeys,
@@ -282,6 +295,17 @@ impl WorldStreams {
         self.keys.draws(site, subject, slot)
     }
 
+    /// Cosmetic seed, see [`StreamKeys::cosmetic_seed`].
+    pub fn cosmetic_seed(&self, usage: &'static str, subject: StableId, slot: u64) -> CosmeticSeed {
+        self.keys.cosmetic_seed(usage, subject, slot)
+    }
+
+    /// The keys, for the tests of the kernel only.
+    #[cfg(test)]
+    pub(crate) const fn keys(&self) -> &StreamKeys {
+        &self.keys
+    }
+
     fn declared(&self, site: DrawSite) {
         debug_assert!(
             self.sites.contains(&site),
@@ -291,12 +315,6 @@ impl WorldStreams {
     }
 }
 
-impl Deref for WorldStreams {
-    type Target = StreamKeys;
-    fn deref(&self) -> &Self::Target {
-        &self.keys
-    }
-}
 
 // spec: revues/architecture.md §5.3, §7.1, §9.2
 /// Failure to build a [`Sim`].

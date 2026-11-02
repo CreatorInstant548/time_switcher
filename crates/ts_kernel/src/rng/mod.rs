@@ -101,11 +101,12 @@ impl WorldKey {
     }
 
     // spec: revues/generation.md P25
-    /// Key loaded or drawn by a host, or `None` if its 16 bytes are all equal (the zero key
-    /// included): such a key comes from a buffer left unfilled, never from a cryptographic
-    /// generator (P25).
+    /// Key loaded or drawn by a host, or `None` if it is weak: its 16 bytes all equal (the
+    /// zero key included), a buffer left unfilled, or its 8 high bytes all zero, the shape of
+    /// a test key (`insecure_from_u64_for_tests`). Neither comes from a cryptographic
+    /// generator (P25); a drawn key is refused with probability 2^-64.
     pub const fn checked(bytes: [u8; 16]) -> Option<Self> {
-        if is_constant(&bytes) {
+        if is_weak(&bytes) {
             None
         } else {
             Some(Self(bytes))
@@ -123,16 +124,19 @@ impl WorldKey {
     }
 }
 
-/// True if the 16 bytes are all equal: a buffer left unfilled, never a drawn secret.
-const fn is_constant(bytes: &[u8; 16]) -> bool {
-    let mut i = 1;
+/// True if the 16 bytes are all equal (a buffer left unfilled) or the 8 high ones are all
+/// zero (a test key): never a drawn secret.
+const fn is_weak(bytes: &[u8; 16]) -> bool {
+    let (mut constant, mut high_zero) = (true, true);
+    let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] != bytes[0] {
-            return false;
+        constant &= bytes[i] == bytes[0];
+        if i >= 8 {
+            high_zero &= bytes[i] == 0;
         }
         i += 1;
     }
-    true
+    constant || high_zero
 }
 
 impl fmt::Debug for WorldKey {
@@ -552,10 +556,10 @@ impl ArtifactSeed {
         Self(bytes)
     }
 
-    /// Secret seed loaded or drawn by a host (the online family), or `None` if its 16 bytes
-    /// are all equal, as [`WorldKey::checked`].
+    /// Secret seed loaded or drawn by a host (the online family), or `None` if it is weak,
+    /// as [`WorldKey::checked`].
     pub const fn checked(bytes: [u8; 16]) -> Option<Self> {
-        if is_constant(&bytes) {
+        if is_weak(&bytes) {
             None
         } else {
             Some(Self(bytes))
@@ -647,5 +651,81 @@ impl ArtifactKeys {
 impl fmt::Debug for ArtifactKeys {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("ArtifactKeys(..)")
+    }
+}
+
+/// Seal of [`SiteDraw`]: no other crate implements it.
+mod sealed {
+    pub trait Sealed {}
+}
+
+// spec: carnet architecture-securite.md §9.9 K3
+/// Holder of stream keys that draws at a [`DrawSite`], for code generic over who holds the
+/// keys: a generator run while building, or by a host or a test.
+///
+/// Sealed, implemented only by [`StreamKeys`], which only a holder of the [`WorldKey`]
+/// derives (hosts, tools, tests), and by [`crate::WorldStreams`], which checks that an
+/// active plugin declares the site (#26 m1). A system thus never reaches the keys of the
+/// world without that check. Witness, then the refusal:
+///
+/// ```
+/// use ts_kernel::rng::{DrawSite, SiteDraw, Stream, StreamKeys, WORLD_SUBJECT, WorldKey};
+/// fn roll(keys: &impl SiteDraw) -> u64 {
+///     keys.draw(DrawSite::new(Stream::Weather, 1, "weather.rain"), WORLD_SUBJECT, 0)
+/// }
+/// let _ = roll(&StreamKeys::derive(&WorldKey::from_bytes([7; 16])));
+/// ```
+///
+/// ```compile_fail,E0277
+/// use ts_kernel::StableId;
+/// use ts_kernel::rng::{DrawSite, Draws, SiteDraw};
+/// struct Mine;
+/// impl SiteDraw for Mine {
+///     fn draw(&self, _: DrawSite, _: StableId, _: u64) -> u64 { 0 }
+///     fn draw_block(&self, _: DrawSite, _: StableId, _: u64, _: u16) -> [u64; 8] { [0; 8] }
+///     fn draws(&self, _: DrawSite, _: StableId, _: u64) -> Draws<'_> { todo!() }
+/// }
+/// ```
+pub trait SiteDraw: sealed::Sealed {
+    /// First value of `site`, see [`StreamKeys::draw`].
+    #[must_use]
+    fn draw(&self, site: DrawSite, subject: StableId, slot: u64) -> u64;
+
+    /// Block `block` of `site`, see [`StreamKeys::draw_block`].
+    #[must_use]
+    fn draw_block(&self, site: DrawSite, subject: StableId, slot: u64, block: u16) -> [u64; 8];
+
+    /// Successive values of `site`, see [`StreamKeys::draws`].
+    fn draws(&self, site: DrawSite, subject: StableId, slot: u64) -> Draws<'_>;
+}
+
+impl sealed::Sealed for StreamKeys {}
+impl sealed::Sealed for crate::WorldStreams {}
+
+impl SiteDraw for StreamKeys {
+    fn draw(&self, site: DrawSite, subject: StableId, slot: u64) -> u64 {
+        Self::draw(self, site, subject, slot)
+    }
+
+    fn draw_block(&self, site: DrawSite, subject: StableId, slot: u64, block: u16) -> [u64; 8] {
+        Self::draw_block(self, site, subject, slot, block)
+    }
+
+    fn draws(&self, site: DrawSite, subject: StableId, slot: u64) -> Draws<'_> {
+        Self::draws(self, site, subject, slot)
+    }
+}
+
+impl SiteDraw for crate::WorldStreams {
+    fn draw(&self, site: DrawSite, subject: StableId, slot: u64) -> u64 {
+        Self::draw(self, site, subject, slot)
+    }
+
+    fn draw_block(&self, site: DrawSite, subject: StableId, slot: u64, block: u16) -> [u64; 8] {
+        Self::draw_block(self, site, subject, slot, block)
+    }
+
+    fn draws(&self, site: DrawSite, subject: StableId, slot: u64) -> Draws<'_> {
+        Self::draws(self, site, subject, slot)
     }
 }
