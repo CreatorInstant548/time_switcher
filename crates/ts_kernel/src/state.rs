@@ -205,7 +205,7 @@ fn index_insert(mut world: DeferredWorld<'_>, ctx: HookContext) {
     };
     if let Some(mut index) = world.get_resource_mut::<StableIndex>() {
         match index.map.get(&id) {
-            Some(&e) if e != ctx.entity => index.conflicts += 1,
+            Some(&e) if e != ctx.entity => index.duplicates.entry(id).or_default().push(ctx.entity),
             _ => {
                 index.map.insert(id, ctx.entity);
             }
@@ -217,10 +217,31 @@ fn index_discard(mut world: DeferredWorld<'_>, ctx: HookContext) {
     let Some(id) = world.get::<StableEntity>(ctx.entity).map(|s| s.id()) else {
         return;
     };
-    if let Some(mut index) = world.get_resource_mut::<StableIndex>()
-        && index.map.get(&id) == Some(&ctx.entity)
-    {
-        index.map.remove(&id);
+    let Some(mut index) = world.get_resource_mut::<StableIndex>() else {
+        return;
+    };
+    // #31 m1: a duplicate left alone takes the place of the indexed entity, so that it stays
+    // in the fingerprint and the snapshot; a duplicate that leaves is no longer counted.
+    let index = &mut *index;
+    let promoted = match index.duplicates.get_mut(&id) {
+        Some(extra) if index.map.get(&id) == Some(&ctx.entity) => Some(extra.remove(0)),
+        Some(extra) => {
+            extra.retain(|&e| e != ctx.entity);
+            None
+        }
+        None => None,
+    };
+    if index.duplicates.get(&id).is_some_and(Vec::is_empty) {
+        index.duplicates.remove(&id);
+    }
+    match promoted {
+        Some(e) => {
+            index.map.insert(id, e);
+        }
+        None if index.map.get(&id) == Some(&ctx.entity) => {
+            index.map.remove(&id);
+        }
+        None => {}
     }
 }
 
@@ -238,8 +259,9 @@ fn index_discard(mut world: DeferredWorld<'_>, ctx: HookContext) {
 #[derive(Resource, Debug, Default)]
 pub struct StableIndex {
     map: BTreeMap<StableId, Entity>,
-    /// Insertions refused because the id was already mapped to another entity.
-    conflicts: u32,
+    /// Other entities that carry an id already mapped, in insertion order: empty in a sound
+    /// world.
+    duplicates: BTreeMap<StableId, Vec<Entity>>,
 }
 
 impl StableIndex {
@@ -263,10 +285,11 @@ impl StableIndex {
         self.map.is_empty()
     }
 
-    /// Number of entities given an id that another entity already carried: always zero in
-    /// a sound world.
-    pub const fn conflicts(&self) -> u32 {
-        self.conflicts
+    /// Number of entities that currently carry an id that another entity carries too:
+    /// always zero in a sound world, and back to zero once the duplicates are gone (#31 m1).
+    pub fn conflicts(&self) -> u32 {
+        let n: usize = self.duplicates.values().map(Vec::len).sum();
+        u32::try_from(n).unwrap_or(u32::MAX)
     }
 }
 
