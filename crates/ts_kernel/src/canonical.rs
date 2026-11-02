@@ -24,9 +24,9 @@
 //! | date (header and state) | ±2^62 ms | decoder, `Sim::step`, `Sim::run_until` | `step` adds the tick length; the time skip |
 //! | day origin | ±2^35 days (about 3 × 10^18 ms) | decoder | day computations |
 //! | `StableId` counter | ≤ 2^62 | decoder, `StableIdAllocator::allocate` | `StableIdAllocator::allocate` adds 1 per identifier |
-//! | event counter `seq` | ≤ 2^62 | decoder, `Scheduler::schedule` | `Scheduler::schedule` adds 1 per event |
-//! | pending event date | ±2^62 ms | decoder, `Scheduler::schedule` | scheduler levels, `day * MILLIS_PER_DAY` |
-//! | pending event rank | < event counter, distinct | `Scheduler::restore` | ordering only |
+//! | event counter `seq` | ≤ 2^62 | decoder, `Scheduler::schedule`, `Scheduler::restore` | `Scheduler::schedule` adds 1 per event |
+//! | pending event date | ±2^62 ms | decoder, `Scheduler::schedule`, `Scheduler::restore` | scheduler levels, `day * MILLIS_PER_DAY` |
+//! | pending event rank | < event counter, distinct | `Scheduler::restore` (kernel only, #123) | ordering only |
 //! | stable ids, `LodComplete` | strictly increasing, below the counter (game ids) | decoder, `restore` | lookups only |
 //!
 //! Not bounded, on purpose: the event payload (`kind`, `arg`) and its `subject`, which the
