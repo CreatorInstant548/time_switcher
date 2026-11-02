@@ -455,3 +455,120 @@ fn bad_path_never_echoes_the_path() {
     assert!(d.file.is_empty() && d.detail.is_empty());
     assert!(!d.to_string().contains("hidden"));
 }
+
+mod fuzzing {
+    use crate::fuzzing::{SEPARATOR, limits, load, seeds};
+    use crate::{Code, FORMAT_VERSION};
+
+    use super::{ACTIVITIES, ITEMS};
+
+    fn examples() -> Vec<Vec<u8>> {
+        vec![ITEMS.as_bytes().to_vec(), ACTIVITIES.as_bytes().to_vec()]
+    }
+
+    fn code(data: &[u8]) -> Code {
+        load(data).unwrap_err().diagnostics()[0].code
+    }
+
+    #[test]
+    fn joined_examples_load_as_a_pack() {
+        let data = [ITEMS.as_bytes(), ACTIVITIES.as_bytes()].join(&SEPARATOR);
+        let pack = load(&data).unwrap();
+        assert_eq!(pack.cards().len(), 4);
+        assert!(
+            pack.canonical_bytes()
+                .starts_with(&FORMAT_VERSION.to_le_bytes())
+        );
+        // One file alone: the activity refers to an item of the other file.
+        assert_eq!(code(ACTIVITIES.as_bytes()), Code::BrokenReference);
+        assert_eq!(load(ITEMS.as_bytes()).unwrap().cards().len(), 2);
+    }
+
+    #[test]
+    fn every_seed_runs_and_the_examples_seeds_load() {
+        let seeds = seeds(&examples());
+        assert!(seeds.len() > 10);
+        for seed in &seeds {
+            let _ = load(seed);
+        }
+        // Joined in order and in reverse: the same pack.
+        let (Ok(a), Ok(b)) = (load(&seeds[2]), load(&seeds[3])) else {
+            panic!("the joined examples must load");
+        };
+        assert_eq!(a.fingerprint(), b.fingerprint());
+    }
+
+    #[test]
+    fn hand_written_seeds_reach_their_paths() {
+        let seeds = seeds(&[]);
+        // Two empty joins first, then each hand-written input alone and after the examples.
+        let codes: Vec<Option<Code>> = seeds
+            .iter()
+            .skip(2)
+            .step_by(2)
+            .map(|s| load(s).err().map(|e| e.diagnostics()[0].code))
+            .collect();
+        assert_eq!(
+            codes[0], None,
+            "byte order mark, raw strings and escapes load"
+        );
+        assert_eq!(codes[1], None, "comments and trailing commas load");
+        assert_eq!(codes[2], Some(Code::DuplicateId));
+        assert_eq!(codes[3], Some(Code::BrokenReference));
+        assert_eq!(codes[4], Some(Code::InvalidId));
+        assert_eq!(codes[5], Some(Code::UnknownField));
+        assert_eq!(codes[6], Some(Code::MissingField));
+        assert_eq!(codes[7], Some(Code::RonSyntax));
+    }
+
+    #[test]
+    fn names_with_quotes_and_backslashes_round_trip() {
+        let data = br#"[Item(id: "item.q", name: r"a\b"), Item(id: "item.r", name: "say \"hi\" \\ \u{e9}")]"#;
+        assert_eq!(load(data).unwrap().cards().len(), 2);
+    }
+
+    /// A small stable stand-in for the fuzzer: byte flips, insertions and deletions over the
+    /// seeds, with a fixed generator. Any panic is an invariant broken by a real input.
+    #[test]
+    fn mutated_seeds_keep_the_invariants() {
+        let seeds = seeds(&examples());
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = |bound: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap() % bound.max(1)
+        };
+        let alphabet = b"[](){},:\"\\#r/ \n\0aeiZ._019\xc3\xa9\xff";
+        for round in 0..3000 {
+            let mut data = seeds[round % seeds.len()].clone();
+            for _ in 0..1 + next(4) {
+                let at = next(data.len() + 1);
+                let byte = alphabet[next(alphabet.len())];
+                match next(3) {
+                    0 if at < data.len() => data[at] = byte,
+                    1 if at < data.len() => {
+                        data.remove(at);
+                    }
+                    _ => data.insert(at, byte),
+                }
+            }
+            let _ = load(&data);
+        }
+    }
+
+    #[test]
+    fn bounds_of_the_target() {
+        let limits = limits();
+        assert_eq!(
+            load(b"").err().map(|e| e.diagnostics()[0].code),
+            Some(Code::RonSyntax)
+        );
+        let many = vec![SEPARATOR; limits.max_files];
+        assert_eq!(code(&many), Code::TooManyFiles);
+        let big = vec![b' '; usize::try_from(limits.max_file_bytes).unwrap() + 1];
+        assert_eq!(code(&big), Code::FileTooLarge);
+        let empty_lists = [b"[]".as_slice(); 3].join(&SEPARATOR);
+        assert_eq!(load(&empty_lists).unwrap().cards().len(), 0);
+    }
+}

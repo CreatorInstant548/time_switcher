@@ -1,8 +1,9 @@
-//! Reads a content directory under the bounds of `ts_data`: symbolic links refused, file
-//! count and sizes bounded, relative `/` paths only.
+//! Reads a content directory under the bounds of `ts_data`: symbolic links refused, also when
+//! swapped in during the read (#48), file count and sizes bounded, relative `/` paths only.
 
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, File, Metadata, OpenOptions};
+use std::io;
 use std::path::{Path, PathBuf};
 
 // spec: carnet architecture-securite.md SEC0-25, SEC0-26
@@ -26,20 +27,34 @@ fn fail(code: Code, file: &str) -> LoadErrors {
 /// - Other files are ignored, whatever their name. Errors carry paths relative to `root`,
 ///   never the local path.
 ///
-/// # Residual risk R-ARCH-08 (AS-35), accepted
+/// # Link races (R-ARCH-08, AS-35, #48)
 ///
-/// The checks and the opening are not atomic. A writer who can change the content directory
-/// concurrently could, between the link check and `File::open`:
-/// - swap a file for a symbolic link: the link is followed, but the handle opened is checked
-///   with `File::metadata()` and refused unless it is a regular file, and the read stays
-///   bounded by `take(max + 1)`;
-/// - replace a parent directory by a link: not detected, the files under it are read;
-/// - on Unix, swap a file for a FIFO: `open` blocks until a writer comes (the metadata check
-///   runs after the open, so it cannot prevent this).
+/// The checks and the opening are not atomic: a writer who can change the content directory
+/// concurrently may swap an entry between its check and its opening. Each file is opened
+/// without following a link where `std` allows it, and the opened handle is checked against
+/// the entry that was checked (`read_checked`):
+/// - **a file swapped for a link is refused**. On Windows the file is opened with
+///   `FILE_FLAG_OPEN_REPARSE_POINT`: a file link is opened itself, never its target, and the
+///   handle's metadata shows it; a junction (a directory) fails to open. On Unix the device
+///   and inode of the opened handle must be those that `symlink_metadata` saw before the
+///   opening; a link is its own inode, so a followed link never matches. When the opening
+///   fails or the handle does not match, the entry is looked at again: a link there is
+///   reported as `SymlinkRefused`, anything else (a file renamed over it by an editor, a link
+///   already removed) as `ReadFailed`;
+/// - the handle must be a regular file, and the read stays bounded by `take(max + 1)`.
 ///
-/// All three need write access to the content directory, which already allows changing the
-/// content itself. Hardening with `O_NOFOLLOW` or `FILE_FLAG_OPEN_REPARSE_POINT` is tracked
-/// separately.
+/// Still open, accepted (AS-35: `std` without `unsafe` and without `libc`, so neither `openat`
+/// nor `O_NOFOLLOW`):
+/// - **replacement of a parent directory** by a link between its listing and the opening of
+///   a file under it: not detected, the file under the link is read (needs `openat` relative
+///   to an opened directory, or `cap-std`);
+/// - **on Unix, a FIFO swapped in** after the check: `open` blocks until a writer comes (the
+///   check before the opening refuses a FIFO already in place; only the race remains);
+/// - on Windows, a file swapped for **another regular file** (rename) is read: it is not a
+///   link, and the identity of a file needs an API that `std` has not stabilised.
+///
+/// All of them need write access to the content directory, which already allows changing the
+/// content itself.
 pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, LoadErrors> {
     if is_link(&fs::symlink_metadata(root).map_err(|_| fail(Code::ReadFailed, ""))?) {
         return Err(fail(Code::SymlinkRefused, ""));
@@ -82,7 +97,7 @@ pub fn load_content_dir(root: &Path, limits: &Limits) -> Result<ContentPack, Loa
                 }
                 pending.push((path, child, depth.saturating_add(1)));
             } else {
-                let file = read_file(&path, &child, limits).map_err(LoadErrors::single)?;
+                let file = read_checked(&path, &child, &md, limits).map_err(LoadErrors::single)?;
                 total_bytes =
                     total_bytes.saturating_add(u64::try_from(file.bytes.len()).unwrap_or(u64::MAX));
                 if total_bytes > limits.max_total_bytes {
@@ -116,14 +131,194 @@ fn read_dir_sorted(dir: &Path, room: usize) -> Result<Vec<(OsString, PathBuf)>, 
     Ok(out)
 }
 
-/// Opens one file, checks the opened handle is a regular file (AS-35), then reads it bounded.
-#[allow(clippy::disallowed_methods)] // host: opens one content file.
+/// Reads the content file at `path` as [`read_checked`] does, against its `symlink_metadata`
+/// taken now: a link is refused, never followed. `rel` names it in errors.
 pub(crate) fn read_file(path: &Path, rel: &str, limits: &Limits) -> Result<SourceFile, Diagnostic> {
+    let before = fs::symlink_metadata(path)
+        .map_err(|_| Diagnostic::new(Code::ReadFailed, rel, (0, 0), ""))?;
+    read_checked(path, rel, &before, limits)
+}
+
+// spec: carnet architecture-securite.md R-ARCH-08
+/// Opens one file and reads it bounded, against `before`, its `symlink_metadata` taken before
+/// the opening (AS-35, #48):
+/// - `before` must be a regular file, not a link;
+/// - the opening does not follow a link on Windows (`FILE_FLAG_OPEN_REPARSE_POINT`);
+/// - the opened handle must not be a link, must be a regular file, and on Unix must have the
+///   device and inode of `before`: a link, or another file, swapped in since is refused.
+///
+/// When the opening fails or the handle is another file, the entry is looked at again only to
+/// choose the error: `SymlinkRefused` if it is a link now, `ReadFailed` otherwise.
+fn read_checked(
+    path: &Path,
+    rel: &str,
+    before: &Metadata,
+    limits: &Limits,
+) -> Result<SourceFile, Diagnostic> {
     let failed = || Diagnostic::new(Code::ReadFailed, rel, (0, 0), "");
-    let file = fs::File::open(path).map_err(|_| failed())?;
-    let meta = file.metadata().map_err(|_| failed())?;
-    if !meta.is_file() {
+    let refused = || Diagnostic::new(Code::SymlinkRefused, rel, (0, 0), "");
+    let swapped = || match fs::symlink_metadata(path).is_ok_and(|now| is_link(&now)) {
+        true => refused(),
+        false => failed(),
+    };
+    if is_link(before) {
+        return Err(refused());
+    }
+    if !before.is_file() {
         return Err(failed());
     }
-    read_bounded(rel, meta.len(), file, limits)
+    let file = open_no_follow(path).map_err(|_| swapped())?;
+    let opened = file.metadata().map_err(|_| failed())?;
+    if is_link(&opened) {
+        return Err(refused());
+    }
+    if !same_file(before, &opened) {
+        return Err(swapped());
+    }
+    if !opened.is_file() {
+        return Err(failed());
+    }
+    read_bounded(rel, opened.len(), file, limits)
+}
+
+/// Opens `path` for reading without following a reparse point: a file link is opened itself,
+/// not its target, so [`read_checked`] sees it on the handle; a junction (a directory) fails
+/// to open.
+#[cfg(windows)]
+#[allow(clippy::disallowed_methods)] // host: opens one content file.
+fn open_no_follow(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    /// `FILE_FLAG_OPEN_REPARSE_POINT` of `CreateFileW` (winbase.h).
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+/// Opens `path` for reading. A link is followed: [`same_file`] refuses it afterwards.
+#[cfg(not(windows))]
+#[allow(clippy::disallowed_methods)] // host: opens one content file.
+fn open_no_follow(path: &Path) -> io::Result<File> {
+    OpenOptions::new().read(true).open(path)
+}
+
+/// Whether the opened handle is the entry checked before the opening: same device and inode.
+#[cfg(unix)]
+fn same_file(before: &Metadata, opened: &Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.dev() == opened.dev() && before.ino() == opened.ino()
+}
+
+/// Elsewhere, the identity of a file is not stable in `std`: the opening itself does not
+/// follow a link (Windows, [`open_no_follow`]), and [`read_checked`] refuses a link handle.
+#[cfg(not(unix))]
+fn same_file(_before: &Metadata, _opened: &Metadata) -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::disallowed_methods)] // test: throwaway files.
+
+    use super::*;
+
+    const CARD: &str = "[Item(id: \"item.x\", name: \"X\")]";
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("ts_runner_read_{name}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn code(read: Result<SourceFile, Diagnostic>) -> Code {
+        read.unwrap_err().code
+    }
+
+    #[test]
+    fn regular_file_is_read_and_a_directory_is_not() {
+        let dir = scratch("regular");
+        let path = dir.join("a.ron");
+        fs::write(&path, CARD).unwrap();
+        let file = read_file(&path, "a.ron", &Limits::default()).unwrap();
+        assert_eq!(file.bytes, CARD.as_bytes());
+        assert_eq!(
+            code(read_file(&dir, "d", &Limits::default())),
+            Code::ReadFailed
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The race itself: the entry was checked as a regular file (`before`), then swapped for
+    /// a symbolic link before the opening.
+    #[test]
+    fn link_swapped_in_after_the_check_is_refused() {
+        let dir = scratch("swap_link");
+        let checked = dir.join("checked.ron");
+        let target = dir.join("target.ron");
+        fs::write(&checked, CARD).unwrap();
+        fs::write(&target, CARD).unwrap();
+        let before = fs::symlink_metadata(&checked).unwrap();
+        let path = dir.join("a.ron");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(&target, &path).is_err() {
+            // Windows without the privilege: the junction test covers this platform.
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+        let read = read_checked(&path, "a.ron", &before, &Limits::default());
+        assert_eq!(code(read), Code::SymlinkRefused);
+        // Checked as the link itself: refused before any opening.
+        let link = fs::symlink_metadata(&path).unwrap();
+        let read = read_checked(&path, "a.ron", &link, &Limits::default());
+        assert_eq!(code(read), Code::SymlinkRefused);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// On Unix, another regular file renamed over the checked one (as an editor saves) is
+    /// refused too, as a failed read: no link is involved.
+    #[cfg(unix)]
+    #[test]
+    fn other_file_swapped_in_after_the_check_is_refused() {
+        let dir = scratch("swap_file");
+        let path = dir.join("a.ron");
+        let other = dir.join("other.ron");
+        fs::write(&path, CARD).unwrap();
+        fs::write(&other, CARD).unwrap();
+        let before = fs::symlink_metadata(&path).unwrap();
+        fs::rename(&other, &path).unwrap();
+        let read = read_checked(&path, "a.ron", &before, &Limits::default());
+        assert_eq!(code(read), Code::ReadFailed);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A junction needs no privilege on Windows. Swapped in for a checked file, its opening
+    /// with `FILE_FLAG_OPEN_REPARSE_POINT` fails (it is a directory), so its target is never
+    /// reached, and the second look reports the link. The handle check (`is_link` on the
+    /// opened file) is exercised by the file link test, where the platform allows file links.
+    #[cfg(windows)]
+    #[test]
+    fn junction_swapped_in_after_the_check_is_refused() {
+        let dir = scratch("swap_junction");
+        let checked = dir.join("checked.ron");
+        fs::write(&checked, CARD).unwrap();
+        let before = fs::symlink_metadata(&checked).unwrap();
+        let outside = dir.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let path = dir.join("a.ron");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&path)
+            .arg(&outside)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "mklink /J failed");
+        let read = read_checked(&path, "a.ron", &before, &Limits::default());
+        assert_eq!(code(read), Code::SymlinkRefused);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
