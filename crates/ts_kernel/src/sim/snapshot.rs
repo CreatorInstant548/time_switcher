@@ -437,8 +437,15 @@ impl MemorySnapshot {
         {
             return Err(RestoreError::StableIdBeyondCounter(id));
         }
+        // Also checked by `Scheduler::restore`; here first, to name the cause (#123).
+        if !self.now.is_savable() {
+            return Err(RestoreError::Corrupt("date out of range"));
+        }
+        if self.next_seq > canonical::MAX_COUNTER {
+            return Err(RestoreError::Corrupt("event counter"));
+        }
         let queue = Scheduler::restore(self.now, self.next_seq, self.events.clone())
-            .ok_or(RestoreError::Corrupt("event ranks"))?;
+            .ok_or(RestoreError::Corrupt("pending events"))?;
 
         let world = &mut sim.world;
         // Only the state entities are replaced. In `bevy_ecs` 0.20, resources and observers
