@@ -159,6 +159,8 @@ impl<E> Level<E> {
 /// fn pending(q: &ts_kernel::Scheduler<()>) -> usize {
 ///     q.len()
 /// }
+/// let _ = ts_kernel::SimTime::EPOCH;
+/// let _: Vec<ts_kernel::Scheduled<()>> = Vec::new();
 /// ```
 ///
 /// ```compile_fail,E0624
@@ -196,8 +198,8 @@ fn digit(rem: i64, k: usize) -> usize {
 
 impl<E> Scheduler<E> {
     /// Empty scheduler, unrolled up to `start` (the current date of the world). **Kernel
-    /// only** (#123): a rule holding [`crate::EventQueue`] cannot replace the scheduler, which
-    /// would reset its counter.
+    /// only** (#123): a rule holding [`crate::EventQueue`] cannot build a new scheduler to
+    /// put in its place, which would reset its counter.
     pub(crate) fn new(start: SimTime) -> Self {
         Self {
             cursor: start,
@@ -284,10 +286,16 @@ impl<E> Scheduler<E> {
     /// not savable ([`SimTime::is_savable`]), or `next_seq` above 2^62. Every scheduler it
     /// returns therefore saves to bytes that read back.
     pub(crate) fn restore(now: SimTime, next_seq: u64, items: Vec<Scheduled<E>>) -> Option<Self> {
-        if !now.is_savable() || next_seq > MAX_COUNTER || items.iter().any(|e| !e.at.is_savable()) {
+        if !now.is_savable() || next_seq > MAX_COUNTER {
             return None;
         }
-        let mut seqs: Vec<_> = items.iter().map(|e| e.seq).collect();
+        let mut seqs = Vec::with_capacity(items.len());
+        for e in &items {
+            if !e.at.is_savable() {
+                return None;
+            }
+            seqs.push(e.seq);
+        }
         seqs.sort_unstable();
         if seqs.windows(2).any(|w| w[0] == w[1]) || seqs.last().is_some_and(|&s| s >= next_seq) {
             return None;
