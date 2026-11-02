@@ -22,10 +22,16 @@ use crate::sys::{self, cargo, run_captured, run_live};
 pub const GOLDEN: &str = "data/golden/ts_toy.json";
 /// Préfixe des lignes de résultat.
 const MARKER: &str = "ts-toy-result ";
-/// Exécutables de test de `ts_toy`, chacun un processus distinct (L6).
-const PROCESSES: [&str; 2] = ["one_thread", "four_threads"];
-/// Clés propres à un processus, jamais comparées.
-const PER_PROCESS: [&str; 1] = ["process.threads"];
+/// Test executables of `ts_toy`, each a separate process (L6), with the thread count that
+/// process must report (issue #68, m1). Counts that are not the expected ones, or equal ones,
+/// would reduce the proof to the same thread count twice.
+const PROCESSES: [(&str, u16); 2] = [("one_thread", 1), ("four_threads", 4)];
+// The proof compares a single thread with several: the two processes must differ.
+const _: () = assert!(PROCESSES[0].1 == 1 && PROCESSES[1].1 > 1);
+/// Key under which each process reports its effective thread count.
+const THREADS_KEY: &str = "process.threads";
+/// Keys specific to one process, never compared.
+const PER_PROCESS: [&str; 1] = [THREADS_KEY];
 /// Préfixe des clés de l'an complet, produites seulement avec `--full`.
 const FULL_PREFIX: &str = "year.";
 
@@ -128,6 +134,18 @@ pub fn parse_results(output: &str) -> Result<Results, String> {
     Ok(out)
 }
 
+/// Checks that a process ran on the thread count it is meant to prove (issue #68, m1): its
+/// reported `process.threads` must be `expected`, and be present.
+pub fn check_threads(name: &str, results: &Results, expected: u16) -> Result<(), String> {
+    match results.get(THREADS_KEY).map(String::as_str) {
+        Some(got) if got == expected.to_string() => Ok(()),
+        Some(got) => Err(format!(
+            "{name} reported {THREADS_KEY} {got}, expected {expected}"
+        )),
+        None => Err(format!("{name} did not report {THREADS_KEY}")),
+    }
+}
+
 /// Résultats communs à tous les processus : sans les clés propres à chacun.
 fn shared(r: &Results) -> Results {
     r.iter()
@@ -210,7 +228,7 @@ pub fn run(root: &Path, full: bool, bless_it: bool) -> Result<String, String> {
     }
     let mut runs = Vec::new();
     let mut durations = Vec::new();
-    for name in PROCESSES {
+    for (name, expected_threads) in PROCESSES {
         let mut args = vec!["test", "-p", "ts_toy", "--locked", "--test", name, "--"];
         args.extend(["--nocapture", "--test-threads=1"]);
         if full {
@@ -227,6 +245,7 @@ pub fn run(root: &Path, full: bool, bless_it: bool) -> Result<String, String> {
         let results = parse_results(&out)?;
         results.iter().for_each(|(k, v)| println!("    {k} = {v}"));
         println!("    durée : {secs:.1} s");
+        check_threads(name, &results, expected_threads)?;
         durations.push(format!("{name} {secs:.1} s"));
         runs.push((name, results));
     }
@@ -315,6 +334,22 @@ mod tests {
     }
 
     #[test]
+    fn checks_the_effective_thread_counts() {
+        let reported = |n: &str| results(&[("generator", "g"), (THREADS_KEY, n)]);
+        assert!(check_threads("one_thread", &reported("1"), 1).is_ok());
+        assert!(check_threads("four_threads", &reported("4"), 4).is_ok());
+        // A process that ran on another thread count than the one it is meant to prove.
+        let wrong = check_threads("four_threads", &reported("1"), 4).unwrap_err();
+        assert_eq!(wrong, "four_threads reported process.threads 1, expected 4");
+        // A process that does not report its thread count proves nothing.
+        let missing = check_threads("one_thread", &results(&[("generator", "g")]), 1);
+        assert_eq!(
+            missing.unwrap_err(),
+            "one_thread did not report process.threads"
+        );
+    }
+
+    #[test]
     fn compares_with_golden() {
         let golden: Value = serde_json::from_str(
             r#"{"results":{"generator":"g","short.world":"s","year.world":"y"}}"#,
@@ -327,6 +362,52 @@ mod tests {
         // A value that differs, and a result with no golden value.
         let other = results(&[("generator", "h"), ("short.world", "s"), ("extra", "1")]);
         assert_eq!(against_golden(&other, &golden, false).len(), 2);
+    }
+
+    /// Metadata of a small workspace: `ts_toy` depends on `ts_kernel` (normal) and on
+    /// `ts_persist` (dev); `ts_viz` is unrelated.
+    fn workspace() -> Metadata {
+        crate::metadata::parse(
+            r#"{"workspace_root":"/w","packages":[
+            {"name":"ts_kernel","manifest_path":"/w/crates/ts_kernel/Cargo.toml",
+             "dependencies":[]},
+            {"name":"ts_persist","manifest_path":"/w/crates/ts_persist/Cargo.toml",
+             "dependencies":[{"name":"ts_kernel","kind":null}]},
+            {"name":"ts_toy","manifest_path":"/w/crates/ts_toy/Cargo.toml",
+             "dependencies":[{"name":"ts_kernel","kind":null},
+                             {"name":"ts_persist","kind":"dev"}]},
+            {"name":"ts_viz","manifest_path":"/w/crates/ts_viz/Cargo.toml",
+             "dependencies":[]},
+            {"name":"xtask","manifest_path":"/w/tools/xtask/Cargo.toml",
+             "dependencies":[]}]}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn touches_toy_decides_when_check_runs_the_proof() {
+        let meta = workspace();
+        let touches = |files: &[&str]| {
+            let changed: Vec<String> = files.iter().map(|f| (*f).to_owned()).collect();
+            touches_toy(&meta, &changed)
+        };
+        // The toy world itself, its normal and dev dependencies, and what they pull in.
+        assert!(touches(&["crates/ts_toy/src/town.rs"]));
+        assert!(touches(&["crates/ts_kernel/src/lib.rs"]));
+        assert!(touches(&["crates/ts_persist/src/lib.rs"]));
+        // The golden values, this check itself, and the root files that count as `--all`.
+        assert!(touches(&["data/golden/ts_toy.json"]));
+        assert!(touches(&["tools/xtask/src/determinism.rs"]));
+        assert!(touches(&["Cargo.lock"]));
+        assert!(touches(&[".cargo/config.toml"]));
+        // One matching file among others is enough.
+        assert!(touches(&["docs/a.md", "crates/ts_toy/tests/common/mod.rs"]));
+        // Nothing to do with the toy world.
+        assert!(!touches(&[]));
+        assert!(!touches(&["docs/a.md"]));
+        assert!(!touches(&["crates/ts_viz/src/lib.rs"]));
+        assert!(!touches(&["tools/xtask/src/steps.rs"]));
+        assert!(!touches(&["data/other.json", "README.md"]));
     }
 
     #[test]

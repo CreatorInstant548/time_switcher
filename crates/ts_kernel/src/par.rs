@@ -6,7 +6,7 @@ use bevy_ecs::system::Query;
 // spec: revues/architecture.md §9.2
 /// Matched entities from which [`par_for_each_mut`] uses the thread pool. A speed setting,
 /// never a game value.
-// PROVISIONAL(design #88): to calibrate on the phase 1 systems; the result does not depend on it.
+// PROVISIONAL(design #94): to calibrate on the phase 1 systems; the result does not depend on it.
 pub const PAR_ITER_FROM: usize = 64;
 
 // spec: revues/architecture.md §9.2 ; carnet architecture-securite.md §9.10 L6
