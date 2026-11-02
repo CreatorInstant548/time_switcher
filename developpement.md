@@ -457,3 +457,13 @@ erun\datanalytics\` ; l'utilisateur en est informé.
 - 02/11 : **#118 fusionnée (AU1).** Sur décision directe de l'utilisateur (« J'autorise, fais-le »), les gardes Claude Code sont retirés et remplacés par 190 refus natifs dans `.claude/settings.json`. #7 et #8 sont closes. AU4 (retrait de `core.hooksPath`) revient à archi-sécu. #119, l'extension des refus, est prioritaire dans le second lot xtask.
 - 02/11 : lot xtask 1 terminé : #105, #108, #111, #114, #115 et #117 (liste fermée des `macro_rules!`, AS-56). #116 (AS-55) est fusionnée.
 - En cours : second lot noyau (#113, #58, #59, #93) et second lot xtask.
+- 02/11 :
+  - **AU4 fait** sur accord direct de l'utilisateur : `core.hooksPath` est retiré de `.git/config`, et il n'en reste aucune trace.
+  - Fusions : #87 (A15 de la conception, qui ferme #43, #44 et #45), #120 (#113) et #124 (#119, 605 refus natifs).
+  - **Vérification AU1 réussie** : `gh pr merge` et `PUT …/merge` sont refusés sous Bash et sous PowerShell.
+  - Issues ouvertes : #123 (`Scheduler::restore`) et #119 (suites mineures).
+- En cours :
+  - #122 et #121 : remise à jour, plus correction de #121 (système exclusif avec commandes différées, ticks `Contiguous`) ;
+  - application d'A15 au code ;
+  - #36 et #91, première partie ;
+  - reste du lot tools, consigné dans `reste-lot-tools-2.md` (scratchpad).
