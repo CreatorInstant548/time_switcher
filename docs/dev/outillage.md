@@ -201,7 +201,7 @@ En cas d'erreur interne, la commande est refusée.
   - sur le SHA de tête ;
   - **ou reportés d'un SHA antérieur `A` de la même PR**, après une simple mise à jour depuis `main` (AS-40). Toutes les conditions W1 à W7 doivent être remplies ([xtask](xtask.md) §6.1). `merge` affiche alors `<avis> carried over from <A> to the head <tête> (AS-40, W1 to W5 hold)`. Le report ne coûte que quelques lectures, et seulement quand l'avis n'est pas sur la tête.
 
-  Un changement de `main` dans un fichier de la PR n'empêche plus le report si la mise à jour n'est faite que de fusions propres de `main` et que le diff de la PR reste identique octet pour octet (AS-55, X1 à X3, [xtask](xtask.md) §6.2). `merge` affiche alors `<avis> carried over from <A> to <tête> (AS-55: clean merges of main, identical diff)`.
+  Un changement de `main` dans un fichier de la PR n'empêche plus le report si la mise à jour n'est faite que de fusions propres de `main` et que le diff de la PR reste identique octet pour octet (AS-55, X1 à X4, [xtask](xtask.md) §6.2). `merge` affiche alors `<avis> carried over from <A> to <tête> (AS-55: clean merges of main, identical diff)`.
 
   Une **résolution de conflit**, même rendue à l'identique, une ligne ajoutée dans un commit de fusion, un commit ordinaire après `A`, un fichier ajouté ou retiré, ou une différence d'espaces dans les lignes de la PR empêchent le report : l'approbation doit alors être **reposée sur la tête**. Le refus nomme la condition qui a échoué.
 - **[11] Fusion** : l'état de la PR est relu. Puis `gh pr merge <PR> --squash --delete-branch --match-head-commit <sha>` et `git pull --ff-only`.

@@ -14,9 +14,19 @@
 //! - X1: the first-parent chain from `H` down to `A` holds only merges of two parents, whose second
 //!   parent is an ancestor of the reference `main`;
 //! - X2: the tree of each of those merges is `git merge-tree --write-tree <p1> <p2>` (git 2.38 or
-//!   later); a conflict, even resolved, fails;
+//!   later); a conflict, even resolved, fails. The replay reads the attributes of the current
+//!   `main` (`.gitattributes` of the work tree); none sets `merge=` today. If one ever does, pin
+//!   the source of the attributes (for instance `--attr-source`), or a driver could change what
+//!   « clean merge » means between two runs (m2 of the #116 review);
 //! - X3: the PR's diff at `H` (against its base) and at `A` (against its base) have the same lines
-//!   byte for byte, file headers included; only `index`, `@@` and context lines may differ.
+//!   byte for byte, file headers included; only `index`, `@@` and context lines may differ. A
+//!   binary delta is relative to its preimage, which X3 does not see (the `index` line is
+//!   dropped): that the head's binary files are A's plus `main`'s comes from X2, a binary file
+//!   changed on both sides being a conflict (m3 of the #116 review);
+//! - X4: when the head is not among the local objects (`verify-main`, CI included), it is fetched
+//!   anonymously (`pull/<n>/head`, once, no tags, no submodules), and only if the API shows a PR
+//!   from this repository (`head.repo.full_name`): a fork, or the field missing, refuses the carry
+//!   over without any fetch.
 //!
 //! `merge` and `verify-main` call this same code (W6); `verify-main` then does J4 on `A`. `ci-ok`
 //! stays required on `H` itself, by the callers (W7). Every PR fact is read on GitHub on each run,
@@ -24,8 +34,7 @@
 //! reference `main`, and what lands on `main` must have the head's tree. `merge` reads the trees
 //! of `A` and `H` from the objects fetched locally; `verify-main` reads them through the API,
 //! because in CI it has no PR objects (no `git fetch`). The bases are `main` commits, read from
-//! the local history. AS-55 reads the commits between `A` and `H` locally: `verify-main` fetches
-//! `pull/<n>/head` for that, once, when the head is not already among the local objects.
+//! the local history. AS-55 reads the commits between `A` and `H` locally (X4 for the fetch).
 //! spec: carnet architecture-securite.md §10 (AS-40, AS-55) ; §9.8 J4
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -84,8 +93,9 @@ fn changed(a: &Tree, b: &Tree) -> BTreeSet<String> {
 
 /// X3: the lines of the diff from `base` to `commit` that must stay byte for byte: every line but
 /// `index` and `@@` lines and context lines. File headers (`diff --git`, modes, `---`, `+++`),
-/// `+` and `-` lines, `\ No newline` and binary patches stay. Not `git patch-id`, which ignores
-/// white space (AS-55).
+/// `+` and `-` lines, `\ No newline` and binary patches stay. A binary patch may be a delta from a
+/// preimage named only by the dropped `index` line: X2, not X3, guarantees binary contents (m3).
+/// Not `git patch-id`, which ignores white space (AS-55).
 fn pr_diff(repo: &Repo, base: &str, commit: &str) -> Result<Vec<Vec<u8>>, String> {
     let mut args = DIFF.to_vec();
     args.extend([base, commit]);
@@ -152,8 +162,8 @@ pub struct Carry<'a> {
     /// W1 to W4 (or X1 to X3) per candidate, which do not depend on the tag: `Ok((base of A,
     /// rule))` or the failure.
     seen: BTreeMap<String, Result<(String, Rule), String>>,
-    /// `git fetch origin pull/<n>/head` already tried (AS-55, `verify-main`).
-    fetched: bool,
+    /// X4, decided once: `None` not yet tried; `Some(None)` fetched; `Some(Some(why))` refused.
+    fetch: Option<Option<String>>,
 }
 
 impl<'a> Carry<'a> {
@@ -164,7 +174,7 @@ impl<'a> Carry<'a> {
             commits: None,
             head: None,
             seen: BTreeMap::new(),
-            fetched: false,
+            fetch: None,
         }
     }
 
@@ -343,11 +353,14 @@ impl<'a> Carry<'a> {
         }
     }
 
-    /// AS-55, X1 to X3, on the local objects: `Ok(Err(condition))` on the first one that fails.
+    /// AS-55, X4 then X1 to X3, on the local objects: `Ok(Err(condition))` on the first one that
+    /// fails.
     fn clean_merges(&mut self, a: &str, base_a: &str) -> Result<Result<(), String>, String> {
-        self.pr_objects()?;
-        let (head, main) = (self.pr.head, self.pr.main);
         let fail = |x: String| Ok(Err(x));
+        if let Err(x4) = self.pr_objects()? {
+            return fail(x4);
+        }
+        let (head, main) = (self.pr.head, self.pr.main);
         // X1: walk the first parents from the head down to `a`; one more line than the bound
         // tells a longer chain from one that ends on `a`.
         let max = format!("--max-count={}", MAX_MERGES + 1);
@@ -434,26 +447,57 @@ impl<'a> Carry<'a> {
     }
 
     /// AS-55 reads the commits between `A` and the head locally. `merge` has fetched them;
-    /// `verify-main` fetches the PR's head ref, once, when the head is not already local.
-    fn pr_objects(&mut self) -> Result<(), String> {
+    /// `verify-main` fetches the PR's head ref, once, when the head is not already local, and
+    /// only for a PR of this repository (X4): `Ok(Err(why))` refuses without fetching.
+    fn pr_objects(&mut self) -> Result<Result<(), String>, String> {
         let spec = format!("{}^{{commit}}", self.pr.head);
         let local = |c: &Self| c.repo.ok(&c.repo.main, "git", &["cat-file", "-e", &spec]);
         if local(&*self)? {
-            return Ok(());
+            return Ok(Ok(()));
         }
-        if !self.pr.local_objects && !self.fetched {
-            self.fetched = true;
-            let r = format!("pull/{}/head", self.pr.number);
-            self.repo
-                .git(&["fetch", "--quiet", "--no-tags", "origin", &r])?;
-            if local(&*self)? {
-                return Ok(());
-            }
+        let absent = format!("head {} absent from the local objects", self.pr.head);
+        match &self.fetch {
+            _ if self.pr.local_objects => return Err(absent),
+            Some(Some(why)) => return Ok(Err(why.clone())),
+            Some(None) => return Err(absent),
+            None => {}
         }
-        Err(format!(
-            "head {} absent from the local objects",
-            self.pr.head
-        ))
+        if let Some(why) = self.foreign()? {
+            self.fetch = Some(Some(why.clone()));
+            return Ok(Err(why));
+        }
+        self.fetch = Some(None);
+        let r = format!("pull/{}/head", self.pr.number);
+        self.repo.git(&[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "origin",
+            &r,
+        ])?;
+        if local(&*self)? {
+            Ok(Ok(()))
+        } else {
+            Err(absent)
+        }
+    }
+
+    /// X4: `None` when the API shows the PR's head in this repository, else why it is refused
+    /// (a fork, or the field missing, for instance once the fork is deleted).
+    fn foreign(&self) -> Result<Option<String>, String> {
+        let (s, n) = (&self.repo.slug, self.pr.number);
+        let pr = self.repo.api(&format!("repos/{s}/pulls/{n}"))?;
+        Ok(match pr["head"]["repo"]["full_name"].as_str() {
+            Some(name) if name == s.as_str() => None,
+            Some(name) => Some(format!(
+                "X4: PR #{n} comes from the fork {name}: its objects are never fetched"
+            )),
+            None => Some(format!(
+                "X4: the head repository of PR #{n} is unreadable on GitHub (deleted fork?): \
+                 nothing fetched"
+            )),
+        })
     }
 
     /// W5: the caller's change is sensitive under the list of `base`. A missing or unreadable
@@ -1480,21 +1524,73 @@ mod tests {
         assert!(e.contains(&format!("X1: the second parent {side}")), "{e}");
     }
 
-    /// `verify-main` without the head among the local objects: `pull/<n>/head` is fetched once,
-    /// whatever the number of candidates, and a failed fetch refuses them. `merge`, whose objects
-    /// were fetched, never fetches again.
-    #[test]
-    fn as55_fetches_the_head_once() {
-        let c = overlap("as55-fetch");
-        c.lab.git(&["checkout", "-q", "-b", "two", &c.a]);
+    /// Two approved SHAs before a merge of `main`, and a head absent from the local objects (as in
+    /// CI, `verify-main`): the answers of `gh` for the PR, and those that make the head absent.
+    fn absent_head(
+        c: &Case,
+        head_repo: serde_json::Value,
+    ) -> (String, String, Vec<(String, String)>) {
+        c.lab.git(&["checkout", "-q", "-B", "two", &c.a]);
         let a2 = c.lab.commit(&[]);
         c.lab.git(&["merge", "-q", "--no-edit", &c.m1]);
         let h2 = c.lab.git(&["rev-parse", "HEAD"]);
-        let bodies = [format!("review-ok: {a2}"), format!("review-ok: {}", c.a)];
+        let mut answers = commits(&[&c.a, &a2, &h2]);
+        answers.push((
+            format!("git cat-file -e {h2}^{{commit}}"),
+            super::lab::FAIL.to_owned(),
+        ));
+        answers.push((
+            "gh api repos/o/r/pulls/7".to_owned(),
+            json!({"number": 7, "head": {"sha": h2, "repo": head_repo}}).to_string(),
+        ));
+        (a2, h2, answers)
+    }
+
+    /// X4: a PR from a fork, or whose head repository is missing, is refused without any fetch;
+    /// the API is read once for both candidates.
+    #[test]
+    fn as55_never_fetches_a_fork() {
+        let c = overlap("as55-fork");
+        for (repo, why) in [
+            (
+                json!({"full_name": "x/r"}),
+                "X4: PR #7 comes from the fork x/r",
+            ),
+            (
+                json!(null),
+                "X4: the head repository of PR #7 is unreadable",
+            ),
+            (json!({}), "X4: the head repository of PR #7 is unreadable"),
+        ] {
+            let (a2, h2, answers) = absent_head(&c, repo);
+            let bodies = [format!("review-ok: {a2}"), format!("review-ok: {}", c.a)];
+            let (r, calls) = resolve_in(
+                &c.lab,
+                answers,
+                &h2,
+                &c.m1,
+                &h2,
+                false,
+                "review-ok",
+                &bodies,
+            );
+            let e = r.unwrap().unwrap_err();
+            assert_eq!(e.matches(why).count(), 2, "{e}");
+            assert!(!calls.iter().any(|l| l.contains("fetch")), "{calls:#?}");
+            let reads = calls.iter().filter(|l| *l == "gh api repos/o/r/pulls/7");
+            assert_eq!(reads.count(), 1, "{calls:#?}");
+        }
+    }
+
+    /// `verify-main` without the head among the local objects: `pull/<n>/head` of a PR of this
+    /// repository is fetched once, whatever the number of candidates, and a failed fetch refuses
+    /// them. `merge`, whose objects were fetched, never fetches again.
+    #[test]
+    fn as55_fetches_the_head_once() {
+        let c = overlap("as55-fetch");
         for local in [false, true] {
-            let mut answers = commits(&[&c.a, &a2, &h2]);
-            let absent = format!("git cat-file -e {h2}^{{commit}}");
-            answers.push((absent, super::lab::FAIL.to_owned()));
+            let (a2, h2, answers) = absent_head(&c, json!({"full_name": "o/r"}));
+            let bodies = [format!("review-ok: {a2}"), format!("review-ok: {}", c.a)];
             let (r, calls) = resolve_in(
                 &c.lab,
                 answers,
@@ -1512,7 +1608,7 @@ mod tests {
             } else {
                 assert_eq!(
                     fetches,
-                    ["git fetch --quiet --no-tags origin pull/7/head"],
+                    ["git fetch --quiet --no-tags --no-recurse-submodules origin pull/7/head"],
                     "{calls:#?}"
                 );
             }
