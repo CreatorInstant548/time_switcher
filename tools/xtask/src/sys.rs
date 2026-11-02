@@ -143,27 +143,6 @@ pub fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("écriture impossible de {} : {e}", path.display()))
 }
 
-/// Noms des entrées d'un dossier, avec vrai si c'est un fichier ordinaire (lien : faux).
-#[allow(clippy::disallowed_methods)] // outil : contenu de la copie épinglée des crochets.
-pub fn entries(dir: &Path) -> Result<Vec<(String, bool)>, String> {
-    let err = |e: std::io::Error| format!("lecture impossible de {} : {e}", dir.display());
-    let mut out = Vec::new();
-    for e in std::fs::read_dir(dir).map_err(err)? {
-        let e = e.map_err(err)?;
-        let file = std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.file_type().is_file());
-        out.push((e.file_name().to_string_lossy().into_owned(), file));
-    }
-    out.sort();
-    Ok(out)
-}
-
-/// Dossier personnel de l'utilisateur (réglages de Claude Code, lus sans jamais être écrits).
-pub fn home() -> Option<PathBuf> {
-    env("USERPROFILE")
-        .or_else(|| env("HOME"))
-        .map(PathBuf::from)
-}
-
 /// SHA-256 d'un fichier, par l'outil du système (aucune crate de cryptographie ajoutée).
 pub fn sha256(root: &Path, file: &Path) -> Result<String, String> {
     let path = file.to_string_lossy();
