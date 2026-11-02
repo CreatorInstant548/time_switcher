@@ -9,7 +9,7 @@
 //! A guard against mistakes, not against a determined author, whom review catches: a
 //! renamed dependency or a re-export inside an allowed crate, or `StateDecode` for
 //! `StableId`, reach the same items without naming them.
-//! spec: carnet architecture-securite.md §9.9 K5, K9
+//! spec: carnet architecture-securite.md §9.9 K5, K9, AS-57
 
 use crate::exemptions::{Src, normalize};
 
@@ -20,8 +20,10 @@ struct Reserved {
     why: &'static str,
 }
 
-/// Closed list (decided, #26). `WorldKey` and `from_snapshot_raw` cover their constructors.
-const RESERVED: [Reserved; 4] = [
+/// Closed list (decided, #26; AS-57 for the sync points). `WorldKey` and `from_snapshot_raw`
+/// cover their constructors. `ApplyDeferred` is also banned by `clippy.toml`, which misses its
+/// use as a value (`add_systems((a, ApplyDeferred, b))`): hence the identifier here too.
+const RESERVED: [Reserved; 6] = [
     Reserved {
         ident: "WorldKey",
         allowed: &["crates/ts_kernel/", "crates/ts_toy/"],
@@ -48,6 +50,16 @@ const RESERVED: [Reserved; 4] = [
             "crates/ts_toy/",
         ],
         why: "raw primitive: draw through a DrawSite, hash through StateHash (#26 m4)",
+    },
+    Reserved {
+        ident: "ApplyDeferred",
+        allowed: &["crates/ts_kernel/"],
+        why: "manual sync point: the commands of a phase apply at its end, visible from the next phase (AS-57 K-b, #93)",
+    },
+    Reserved {
+        ident: "apply_deferred",
+        allowed: &["crates/ts_kernel/"],
+        why: "manual sync point: the commands of a phase apply at its end, visible from the next phase (AS-57 K-b, #93)",
     },
 ];
 
@@ -202,6 +214,35 @@ mod tests {
             idents(rule, "use ts_kernel::rng::r#WorldKey as K;"),
             [(1, "WorldKey")]
         );
+    }
+
+    /// AS-57 K-b: a manual sync point, as a type, a value or a method, outside the kernel.
+    #[test]
+    fn sync_points_are_reserved_to_the_kernel() {
+        let rule = "crates/ts_model/src/lib.rs";
+        assert_eq!(
+            idents(
+                rule,
+                "b.add_systems(Phase::Act, (a, bevy_ecs::schedule::ApplyDeferred, c).chain());"
+            ),
+            [(1, "ApplyDeferred")]
+        );
+        assert_eq!(
+            idents(
+                rule,
+                "use bevy_ecs::prelude::*;
+fn f(s: &mut S, w: &mut World) { s.apply_deferred(w); }"
+            ),
+            [(2, "apply_deferred")]
+        );
+        assert!(
+            idents(
+                rule,
+                "let s = ScheduleBuildSettings { auto_insert_apply_deferred: false };"
+            )
+            .is_empty()
+        );
+        assert!(idents("crates/ts_kernel/src/phase.rs", "use x::ApplyDeferred;").is_empty());
     }
 
     #[test]

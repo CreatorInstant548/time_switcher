@@ -42,6 +42,14 @@ use crate::{Phase, StateDecode, StateHash};
 /// - a cache that can be rebuilt from the state is declared with
 ///   [`SimBuilder::transient_component`].
 ///
+/// **Deferred commands** (AS-57, #93): the `Commands` of a phase are applied **once, at the
+/// end of the phase**, in the order of the phase's systems as the build fixes it, never in
+/// the middle of the phase. A command is therefore visible from the **next phase** on, never
+/// to another system of the same phase, whatever their order and the number of threads. The
+/// kernel inserts no sync point inside a phase, and `clippy.toml` bans the manual ones
+/// (`ApplyDeferred`, `apply_deferred`). A system that must see an insertion goes in a later
+/// phase.
+///
 /// Enforced (#31, AS-27) by the generic resume test `ts_toy::resume::check_resume`, which
 /// `ts_game` runs on `standard_rules()` and each rule crate on its plugins, and by the
 /// `clippy.toml` bans on `Local`, `Added`, `Changed` and the other change-detection reads

@@ -590,3 +590,34 @@ fn undeclared_sites_are_refused_on_every_path() {
     }
     assert!(catch_unwind(AssertUnwindSafe(|| sim.step())).is_err());
 }
+
+// spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md AS-57
+/// No phase gets an automatic sync point (#93): a system with `Commands` ordered before
+/// another adds none, so the phase holds exactly its own systems, whereas a schedule with the
+/// default settings of `bevy_ecs` holds one more.
+#[test]
+fn phases_insert_no_sync_point() {
+    use bevy_ecs::system::Commands;
+
+    fn writes(mut commands: Commands) {
+        commands.insert_resource(PhaseLog::default());
+    }
+    fn reads(_: Res<Counter>) {}
+    fn writes_too(mut commands: Commands) {
+        commands.insert_resource(PhaseLog::default());
+    }
+    let rules = [plugin("sync", |b| {
+        b.insert_resource(Counter::default());
+        b.add_systems(Phase::Act, (writes, reads.after(writes), writes_too));
+    })];
+    let sim = build(&rules).unwrap();
+    assert_eq!(sim.phases[Phase::Act.index()].systems_len(), 3);
+    let mut default = Schedule::new(Phase::Act);
+    default.add_systems((writes, reads.after(writes), writes_too));
+    default.initialize(&mut World::new()).unwrap();
+    assert_eq!(
+        default.systems_len(),
+        4,
+        "the default settings insert a sync point"
+    );
+}

@@ -6,6 +6,8 @@
 //! separate executable, hence a separate process, and the two compare their fingerprint
 //! with the same frozen value.
 
+pub mod deferred;
+
 use std::sync::{Mutex, PoisonError};
 use std::thread::ThreadId;
 
