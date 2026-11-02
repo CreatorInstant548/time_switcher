@@ -26,7 +26,7 @@
 //! | `StableId` counter | ≤ 2^62 | decoder, `StableIdAllocator::allocate` | `StableIdAllocator::allocate` adds 1 per identifier |
 //! | event counter `seq` | ≤ 2^62 | decoder, `Scheduler::schedule` | `Scheduler::schedule` adds 1 per event |
 //! | pending event date | ±2^62 ms | decoder, `Scheduler::schedule` | scheduler levels, `day * MILLIS_PER_DAY` |
-//! | pending event rank | < event counter, distinct | `Scheduler::restore` | ordering only |
+//! | pending event rank | < event counter, distinct | `Scheduler::restore` (kernel only, also bounds the dates and the counter, #123) | ordering only |
 //! | stable ids, `LodComplete` | strictly increasing, below the counter (game ids) | decoder, `restore` | lookups only |
 //!
 //! Not bounded, on purpose: the event payload (`kind`, `arg`) and its `subject`, which the

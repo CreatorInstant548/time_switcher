@@ -152,6 +152,22 @@ impl<E> Level<E> {
 /// Invariant: an event in a slot of level `k` has the same day and the same digits above
 /// level `k` as the cursor, and a level-`k` digit greater than the cursor's (equal or
 /// greater at level 0). The cursor only advances up to a requested date.
+///
+/// Only the kernel builds or restores one (#123). Witness, then the two refusals:
+///
+/// ```
+/// fn pending(q: &ts_kernel::Scheduler<()>) -> usize {
+///     q.len()
+/// }
+/// ```
+///
+/// ```compile_fail,E0624
+/// let _ = ts_kernel::Scheduler::<()>::new(ts_kernel::SimTime::EPOCH);
+/// ```
+///
+/// ```compile_fail,E0624
+/// let _ = ts_kernel::Scheduler::<()>::restore(ts_kernel::SimTime::EPOCH, 0, Vec::new());
+/// ```
 #[derive(Debug)]
 pub struct Scheduler<E> {
     /// Date up to which the wheel is unrolled; never beyond a requested date.
@@ -179,8 +195,10 @@ fn digit(rem: i64, k: usize) -> usize {
 }
 
 impl<E> Scheduler<E> {
-    /// Empty scheduler, unrolled up to `start` (the current date of the world).
-    pub fn new(start: SimTime) -> Self {
+    /// Empty scheduler, unrolled up to `start` (the current date of the world). **Kernel
+    /// only** (#123): a rule holding [`crate::EventQueue`] cannot replace the scheduler, which
+    /// would reset its counter.
+    pub(crate) fn new(start: SimTime) -> Self {
         Self {
             cursor: start,
             levels: RADIX.map(|n| Level::new(n as usize)),
@@ -257,10 +275,18 @@ impl<E> Scheduler<E> {
         out
     }
 
-    // spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §9.10 L5
+    // spec: revues/architecture.md §12.1 ; carnet architecture-securite.md §9.10 L5, §10
     /// Scheduler restored at date `now`, with its counter and its events, ranks included.
-    /// `None` if a rank is duplicated or is not below `next_seq`.
-    pub fn restore(now: SimTime, next_seq: u64, items: Vec<Scheduled<E>>) -> Option<Self> {
+    /// **Kernel only** (#123): its one caller is the restore of a snapshot.
+    ///
+    /// `None` if a rank is duplicated or is not below `next_seq`, or if a value is beyond what
+    /// [`Scheduler::schedule`] would write (#123, same family as #113): `now` or an event date
+    /// not savable ([`SimTime::is_savable`]), or `next_seq` above 2^62. Every scheduler it
+    /// returns therefore saves to bytes that read back.
+    pub(crate) fn restore(now: SimTime, next_seq: u64, items: Vec<Scheduled<E>>) -> Option<Self> {
+        if !now.is_savable() || next_seq > MAX_COUNTER || items.iter().any(|e| !e.at.is_savable()) {
+            return None;
+        }
         let mut seqs: Vec<_> = items.iter().map(|e| e.seq).collect();
         seqs.sort_unstable();
         if seqs.windows(2).any(|w| w[0] == w[1]) || seqs.last().is_some_and(|&s| s >= next_seq) {
@@ -626,6 +652,33 @@ mod tests {
             event: (),
         }];
         assert!(Scheduler::restore(SimTime::EPOCH, 5, late).is_none());
+    }
+
+    /// #123: a restore is bounded as `schedule` is, at each bound.
+    #[test]
+    fn restore_is_bounded_like_schedule() {
+        const M: i64 = SimTime::MAX_SAVED_ABS_MILLIS;
+        let at = |ms: i64| {
+            vec![Scheduled {
+                at: t(ms),
+                seq: 0,
+                event: (),
+            }]
+        };
+        for ms in [-M, M] {
+            assert!(Scheduler::restore(t(ms), 1, at(ms)).is_some(), "{ms}");
+        }
+        for ms in [i64::MIN, -M - 1, M + 1, i64::MAX] {
+            assert!(Scheduler::restore(t(0), 1, at(ms)).is_none(), "event {ms}");
+            assert!(
+                Scheduler::<()>::restore(t(ms), 0, Vec::new()).is_none(),
+                "now {ms}"
+            );
+        }
+        assert!(Scheduler::<()>::restore(t(0), MAX_COUNTER, Vec::new()).is_some());
+        for next_seq in [MAX_COUNTER + 1, u64::MAX] {
+            assert!(Scheduler::<()>::restore(t(0), next_seq, Vec::new()).is_none());
+        }
     }
 
     /// T6a review I1: many next-day events in one hour, scheduled out of date order, cascade
