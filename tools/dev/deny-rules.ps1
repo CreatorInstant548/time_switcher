@@ -15,9 +15,12 @@ Set-StrictMode -Version Latest
 $Resources = @(
   'rulesets', '/protection', 'actions/permissions', 'interaction-limits',
   'private-vulnerability-reporting',
-  # #119: merge through the API (pulls/<n>/merge, and the merges endpoint), and the access to the
-  # repository (collaborators, deploy keys, webhooks, environments).
-  '/merge', 'collaborators', 'keys', 'hooks', 'environments'
+  # #119: merge through the API (pulls/<n>/merge, and the merges endpoint), the access to the
+  # repository (collaborators, deploy keys, webhooks, environments), what gh secret, gh variable
+  # and gh workflow disable do, and the transfer of the repository. A leading `/` keeps the word
+  # out of prose (`-f body='the hooks fail'`).
+  '/merge', '/collaborators', '/keys', '/hooks', '/environments', 'actions/workflows',
+  'actions/secrets', 'actions/variables', '/transfer'
 )
 
 $Base = [System.Collections.Generic.List[string]]::new()
@@ -36,7 +39,9 @@ foreach ($p in @(
     'git -C * push *--force*', 'git -C * push -f*', 'git -C * push * -f', 'git -C * push * -f *',
     'git -C * push -uf*', 'git -C * push * -fu*', 'git -C * push * -uf*', 'git -C * push * main',
     'git -C * push * main *', 'git -C * push *:main*', 'git -C * push * refs/heads/main*',
-    'git -C * push * +*'
+    'git -C * push * +*', 'git -C * push *:refs/heads/main*',
+    # #119: --mirror forces and deletes.
+    'git push --mirror*', 'git push * --mirror*', 'git -C * push *--mirror*'
   )) { $Base.Add($p) }
 # Writes through the API of gh.
 $Base.Add('gh api *-X DELETE*')
@@ -56,10 +61,15 @@ foreach ($p in @(
     'gh api *--method=*', 'gh api *-X=*',
     # #119: GraphQL mutations that merge, or change rulesets, branch protection or the repository.
     'gh api graphql*mergePullRequest*', 'gh api graphql*RepositoryRuleset*',
-    'gh api graphql*BranchProtectionRule*', 'gh api graphql*updateRepository*'
+    'gh api graphql*BranchProtectionRule*', 'gh api graphql*updateRepository*',
+    'gh api graphql*enablePullRequestAutoMerge*', 'gh api graphql*mergeBranch*',
+    'gh api graphql*updateRef*', 'gh api graphql*deleteRef*', 'gh api graphql*createCommitOnBranch*',
+    # #119: a query read from a file hides the mutation name from these patterns.
+    'gh api graphql*=@*', 'gh api graphql*--input*'
   )) { $Base.Add($p) }
 # Settings and secrets of the repository.
-foreach ($p in @('gh repo edit:*', 'gh repo delete:*', 'gh secret:*', 'gh workflow disable:*', 'gh ruleset:*')) {
+foreach ($p in @('gh repo edit:*', 'gh repo delete:*', 'gh secret:*', 'gh workflow disable:*', 'gh ruleset:*',
+    'gh repo archive:*', 'gh repo rename:*', 'gh variable:*')) {
   $Base.Add($p)
 }
 
@@ -90,27 +100,44 @@ $json = $text | ConvertFrom-Json
 $actual = @($json.permissions.deny)
 
 if ($Check) {
+  $twice = @($actual | Group-Object -CaseSensitive | Where-Object Count -GT 1 | ForEach-Object Name)
   $missing = @($rules | Where-Object { $actual -cnotcontains $_ })
   $extra = @($actual | Where-Object { $rules -cnotcontains $_ })
   $sameOrder = ($actual.Count -eq $rules.Count) -and -not (Compare-Object $actual $rules -SyncWindow 0 -CaseSensitive)
-  if ($missing.Count -eq 0 -and $extra.Count -eq 0 -and $sameOrder) {
+  if ($missing.Count -eq 0 -and $extra.Count -eq 0 -and $twice.Count -eq 0 -and $sameOrder) {
     Write-Output "deny rules: $($rules.Count) rules ($($Base.Count) base patterns x 5 forms), as generated"
     exit 0
   }
   $missing | ForEach-Object { Write-Output "missing: $_" }
   $extra | ForEach-Object { Write-Output "not generated: $_" }
-  if ($missing.Count -eq 0 -and $extra.Count -eq 0) { Write-Output 'same rules, other order' }
+  $twice | ForEach-Object { Write-Output "listed twice: $_" }
+  if ($missing.Count -eq 0 -and $extra.Count -eq 0 -and $twice.Count -eq 0) { Write-Output 'same rules, other order' }
   Write-Output 'deny rules differ from tools/dev/deny-rules.ps1: run it with -Write, then review the diff'
   exit 1
 }
 
-# -Write: only the deny array is replaced, the rest of the file is kept byte for byte.
-$pattern = '(?s)("deny"\s*:\s*\[)(.*?)(\n(\s*)\])'
-$m = [regex]::Match($text, $pattern)
-if (-not $m.Success) { Write-Output "ERROR: no deny array in $Settings"; exit 2 }
-$indent = $m.Groups[4].Value + '  '
-$items = ($rules | ForEach-Object { $indent + ($_ | ConvertTo-Json) }) -join ",`n"
-$new = $text.Substring(0, $m.Index) + $m.Groups[1].Value + "`n" + $items + $m.Groups[3].Value + $text.Substring($m.Index + $m.Length)
-$null = $new | ConvertFrom-Json
+# -Write: only the deny array is replaced, the rest of the file is kept byte for byte. The array is
+# found by its key, then its closing bracket by a scan that skips strings, whatever its layout.
+$key = [regex]::Match($text, '"deny"\s*:\s*\[')
+if (-not $key.Success -or ([regex]::Matches($text, '"deny"\s*:')).Count -ne 1) {
+  Write-Output "ERROR: expected exactly one deny array in $Settings"; exit 2
+}
+$open = $key.Index + $key.Length - 1
+$close = -1; $inString = $false; $depth = 0
+for ($i = $open; $i -lt $text.Length; $i++) {
+  $c = $text[$i]
+  if ($inString) {
+    if ($c -eq [char]92) { $i++ } elseif ($c -eq '"') { $inString = $false }
+  } elseif ($c -eq '"') { $inString = $true
+  } elseif ($c -eq '[') { $depth++
+  } elseif ($c -eq ']') { $depth--; if ($depth -eq 0) { $close = $i; break } }
+}
+if ($close -lt 0) { Write-Output "ERROR: unterminated deny array in $Settings"; exit 2 }
+$line = $text.LastIndexOf("`n", $key.Index) + 1
+$indent = ($text.Substring($line, $key.Index - $line) -replace '\S.*$', '')
+$items = ($rules | ForEach-Object { "$indent  " + ($_ | ConvertTo-Json) }) -join ",`n"
+$new = $text.Substring(0, $open + 1) + "`n" + $items + "`n" + $indent + $text.Substring($close)
+$parsed = $new | ConvertFrom-Json
+if (@($parsed.permissions.deny).Count -ne $rules.Count) { Write-Output 'ERROR: rewritten file does not hold the rules'; exit 2 }
 [System.IO.File]::WriteAllText($Settings, $new, [System.Text.UTF8Encoding]::new($false))
 Write-Output "deny rules written: $($rules.Count) rules in $Settings"
