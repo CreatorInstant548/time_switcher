@@ -184,7 +184,7 @@ fn restore_checks_rules_fingerprint() {
             assert_eq!(snapshot, a.rules_fingerprint());
             assert_eq!(current, RulesFingerprint::of(&[("life", 2)]));
         }
-        other => panic!("refus attendu : {other:?}"),
+        other => panic!("expected a refusal: {other:?}"),
     }
     let migrating: Vec<Box<dyn Plugin>> = vec![Box::new(Life {
         version: 2,
