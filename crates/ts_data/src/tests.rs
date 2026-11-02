@@ -742,3 +742,120 @@ mod registry {
         assert_eq!(f, [(Code::RegistryRewritten, 5, "item.bread".to_owned())]);
     }
 }
+
+/// Measure of the data bounds (M39a to M39f, #136).
+mod usage {
+    use super::*;
+    use crate::{Row, Usage};
+
+    fn depth_of(text: &str) -> u64 {
+        Usage::of_files(&[file("a.ron", text)], &Limits::default())
+            .depth
+            .0
+    }
+
+    #[test]
+    fn measures_sizes_and_depth_of_the_files() {
+        let limits = Limits::default();
+        let files = [file("b.ron", ITEMS), file("a.ron", ACTIVITIES)];
+        let usage = Usage::of_files(&files, &limits);
+        let largest = ITEMS.len().max(ACTIVITIES.len()) as u64;
+        let at = if ITEMS.len() >= ACTIVITIES.len() {
+            "b.ron"
+        } else {
+            "a.ron"
+        };
+        assert_eq!(usage.file_bytes, (largest, at.to_owned()));
+        assert_eq!(usage.total_bytes, (ITEMS.len() + ACTIVITIES.len()) as u64);
+        // The host fills these three.
+        assert_eq!((usage.entries, usage.cards, usage.dir_depth), (0, 0, 0));
+        // The activities nest a list deeper than the items.
+        assert!(usage.depth.0 > depth_of(ITEMS), "{usage:?}");
+        assert_eq!(usage.depth.1, "a.ron");
+        assert!(Usage::of_files(&[], &limits) == Usage::default());
+    }
+
+    /// The depth is the smallest recursion limit that parses the file: the very quantity M39e
+    /// refuses. One less fails with the recursion error, through the loader itself.
+    #[test]
+    fn depth_is_the_smallest_limit_that_loads() {
+        let both = "[Item(id: \"item.a\", name: \"A\"), Activity(id: \"activity.a\", name: \"A\", items: [\"item.a\"])]";
+        for text in [ITEMS, both, "[]"] {
+            let depth = usize::try_from(depth_of(text)).unwrap();
+            let at = |max_depth| Limits {
+                max_depth,
+                ..Limits::default()
+            };
+            let files = vec![file("a.ron", text)];
+            assert!(
+                ContentPack::build(files.clone(), &at(depth)).is_ok(),
+                "{text}"
+            );
+            if depth > 0 {
+                let refused = ContentPack::build(files, &at(depth - 1));
+                assert_eq!(codes(refused), [Code::RecursionLimit], "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_that_does_not_parse_counts_over_the_bound() {
+        let limits = Limits::default();
+        let deep = format!("{}{}", "[".repeat(40), "]".repeat(40));
+        assert_eq!(depth_of(&deep), limits.max_depth as u64 + 1);
+        assert_eq!(depth_of("not ron"), limits.max_depth as u64 + 1);
+    }
+
+    #[test]
+    fn rows_follow_the_design_order_and_bounds() {
+        let limits = Limits::default();
+        let usage = Usage {
+            file_bytes: (10, "x.ron".to_owned()),
+            total_bytes: 20,
+            entries: 3,
+            cards: 4,
+            depth: (5, "y.ron".to_owned()),
+            dir_depth: 6,
+        };
+        let rows = usage.rows(&limits);
+        let ids: Vec<&str> = rows.iter().map(|r| r.id).collect();
+        assert_eq!(ids, ["M39a", "M39b", "M39c", "M39d", "M39e", "M39f"]);
+        let values: Vec<u64> = rows.iter().map(|r| r.value).collect();
+        assert_eq!(values, [10, 20, 3, 4, 5, 6]);
+        let bounds: Vec<u64> = rows.iter().map(|r| r.bound).collect();
+        assert_eq!(bounds, [1 << 20, 64 << 20, 4096, 65_536, 32, 8]);
+        let at: Vec<Option<&str>> = rows.iter().map(|r| r.at.as_deref()).collect();
+        assert_eq!(at, [Some("x.ron"), None, None, None, Some("y.ron"), None]);
+        // An empty pack names no file.
+        assert!(
+            Usage::default()
+                .rows(&limits)
+                .iter()
+                .all(|r| r.at.is_none())
+        );
+    }
+
+    #[test]
+    fn share_and_warning_threshold() {
+        let row = |value, bound| Row {
+            id: "M39x",
+            what: "",
+            value,
+            bound,
+            at: None,
+        };
+        assert_eq!(row(0, 16).per_mille(), 0);
+        assert_eq!(row(1, 3).per_mille(), 333);
+        assert_eq!(row(16, 16).per_mille(), 1000);
+        assert_eq!(row(0, 0).per_mille(), 0);
+        assert_eq!(row(1, 0).per_mille(), u64::MAX);
+        assert_eq!(row(u64::MAX, 1).per_mille(), u64::MAX);
+        // Strictly over half warns; exactly half does not.
+        assert!(!row(8, 16).over_half());
+        assert!(row(9, 16).over_half());
+        assert!(!row(4, 9).over_half());
+        assert!(row(5, 9).over_half());
+        assert!(row(1, 0).over_half());
+        assert!(row(u64::MAX, u64::MAX).over_half());
+    }
+}
