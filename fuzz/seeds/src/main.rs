@@ -43,12 +43,27 @@ fn decode_seeds() -> io::Result<Vec<Vec<u8>>> {
     Ok(ts_persist::fuzzing::seeds(&[first, later]))
 }
 
-/// The `*.ron` files of `data/content/`, sorted by name.
+/// The `*.ron` files of `data/content/` and its sub-directories (extension in any case, as
+/// the loader reads them), sorted by path.
 fn examples() -> io::Result<Vec<Vec<u8>>> {
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(EXAMPLES)?
-        .map(|e| e.map(|e| e.path()))
-        .collect::<io::Result<_>>()?;
-    paths.retain(|p| p.extension().is_some_and(|e| e == "ron"));
+    let mut paths = Vec::new();
+    let mut pending = vec![PathBuf::from(EXAMPLES)];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let path = entry.path();
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("ron"))
+            {
+                paths.push(path);
+            }
+        }
+    }
     paths.sort();
     if paths.is_empty() {
         return Err(io::Error::other("no example card in data/content"));

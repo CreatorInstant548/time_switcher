@@ -251,7 +251,8 @@ fn junctions_are_refused() {
     };
     assert_eq!(first(&dir), Code::SymlinkRefused);
     assert_eq!(first(&link), Code::SymlinkRefused);
-    // A junction named as a content file, in place of a card file (#48).
+    // A junction named as a content file, in place of a card file (#48): refused when the
+    // directory is listed. A swap during the read is tested by the unit tests of the reader.
     let dir = scratch("junction_as_file");
     let made = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])

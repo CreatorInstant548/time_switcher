@@ -42,7 +42,9 @@ fn split(data: &[u8], limits: &Limits) -> Result<Vec<SourceFile>, LoadErrors> {
 // spec: carnet architecture-securite.md SEC0-24 (révisé), §10 ; revues/architecture.md §5.2
 /// Loads `data` as a pack under [`limits`]: bounded reading, RON parsing, validation and
 /// canonical encoding, then checks three invariants of the loader:
-/// - the result does not depend on the order in which the host read the files;
+/// - the same files under other names (the input order reversed, then renamed) are valid
+///   exactly when these are, and then give the same pack: neither file names nor their order
+///   change the result;
 /// - a valid pack starts its canonical bytes with [`FORMAT_VERSION`] and its card count;
 /// - a valid pack written back as one RON file loads to the same cards and fingerprint.
 ///
@@ -54,14 +56,25 @@ fn split(data: &[u8], limits: &Limits) -> Result<Vec<SourceFile>, LoadErrors> {
 pub fn load(data: &[u8]) -> Result<ContentPack, LoadErrors> {
     let limits = limits();
     let files = split(data, &limits)?;
-    let mut reversed = files.clone();
-    reversed.reverse();
+    let renamed: Vec<SourceFile> = files
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, f)| SourceFile {
+            path: format!("f{i:02}.ron"),
+            bytes: f.bytes.clone(),
+        })
+        .collect();
     let pack = ContentPack::build(files, &limits);
+    let other = ContentPack::build(renamed, &limits);
     assert_eq!(
-        pack,
-        ContentPack::build(reversed, &limits),
-        "the reading order changed the result"
+        pack.is_ok(),
+        other.is_ok(),
+        "file names or order changed whether the pack is valid"
     );
+    if let (Ok(a), Ok(b)) = (&pack, &other) {
+        assert_eq!(a, b, "file names or order changed the pack");
+    }
     if let Ok(pack) = &pack {
         let count = u32::try_from(pack.cards().len()).unwrap_or(u32::MAX);
         let head = [FORMAT_VERSION.to_le_bytes(), count.to_le_bytes()].concat();

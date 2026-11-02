@@ -33,14 +33,18 @@ fn fail(code: Code, file: &str) -> LoadErrors {
 /// concurrently may swap an entry between its check and its opening. Each file is opened
 /// without following a link where `std` allows it, and the opened handle is checked against
 /// the entry that was checked (`read_checked`):
-/// - **a file swapped for a link is refused** (`SymlinkRefused`). On Windows the file is
-///   opened with `FILE_FLAG_OPEN_REPARSE_POINT`, so a link is opened itself, never its target,
-///   and the handle's metadata shows it. On Unix the device and inode of the opened handle
-///   must be those that `symlink_metadata` saw before the opening; a link is its own inode, so
-///   a followed link never matches;
+/// - **a file swapped for a link is refused**. On Windows the file is opened with
+///   `FILE_FLAG_OPEN_REPARSE_POINT`: a file link is opened itself, never its target, and the
+///   handle's metadata shows it; a junction (a directory) fails to open. On Unix the device
+///   and inode of the opened handle must be those that `symlink_metadata` saw before the
+///   opening; a link is its own inode, so a followed link never matches. When the opening
+///   fails or the handle does not match, the entry is looked at again: a link there is
+///   reported as `SymlinkRefused`, anything else (a file renamed over it by an editor, a link
+///   already removed) as `ReadFailed`;
 /// - the handle must be a regular file, and the read stays bounded by `take(max + 1)`.
 ///
-/// Still open, accepted (`std` without `unsafe` has neither `openat` nor `O_NOFOLLOW`):
+/// Still open, accepted (AS-35: `std` without `unsafe` and without `libc`, so neither `openat`
+/// nor `O_NOFOLLOW`):
 /// - **replacement of a parent directory** by a link between its listing and the opening of
 ///   a file under it: not detected, the file under the link is read (needs `openat` relative
 ///   to an opened directory, or `cap-std`);
@@ -142,6 +146,9 @@ pub(crate) fn read_file(path: &Path, rel: &str, limits: &Limits) -> Result<Sourc
 /// - the opening does not follow a link on Windows (`FILE_FLAG_OPEN_REPARSE_POINT`);
 /// - the opened handle must not be a link, must be a regular file, and on Unix must have the
 ///   device and inode of `before`: a link, or another file, swapped in since is refused.
+///
+/// When the opening fails or the handle is another file, the entry is looked at again only to
+/// choose the error: `SymlinkRefused` if it is a link now, `ReadFailed` otherwise.
 fn read_checked(
     path: &Path,
     rel: &str,
@@ -150,23 +157,23 @@ fn read_checked(
 ) -> Result<SourceFile, Diagnostic> {
     let failed = || Diagnostic::new(Code::ReadFailed, rel, (0, 0), "");
     let refused = || Diagnostic::new(Code::SymlinkRefused, rel, (0, 0), "");
+    let swapped = || match fs::symlink_metadata(path).is_ok_and(|now| is_link(&now)) {
+        true => refused(),
+        false => failed(),
+    };
     if is_link(before) {
         return Err(refused());
     }
     if !before.is_file() {
         return Err(failed());
     }
-    // An opening that fails on a link swapped in (a junction on Windows, a dangling link) is
-    // reported as the link it met.
-    let file = open_no_follow(path).map_err(|_| {
-        match fs::symlink_metadata(path).is_ok_and(|now| is_link(&now)) {
-            true => refused(),
-            false => failed(),
-        }
-    })?;
+    let file = open_no_follow(path).map_err(|_| swapped())?;
     let opened = file.metadata().map_err(|_| failed())?;
-    if is_link(&opened) || !same_file(before, &opened) {
+    if is_link(&opened) {
         return Err(refused());
+    }
+    if !same_file(before, &opened) {
+        return Err(swapped());
     }
     if !opened.is_file() {
         return Err(failed());
@@ -174,8 +181,9 @@ fn read_checked(
     read_bounded(rel, opened.len(), file, limits)
 }
 
-/// Opens `path` for reading. A reparse point (symbolic link, junction) is opened itself, not
-/// its target, so [`read_checked`] sees it on the handle.
+/// Opens `path` for reading without following a reparse point: a file link is opened itself,
+/// not its target, so [`read_checked`] sees it on the handle; a junction (a directory) fails
+/// to open.
 #[cfg(windows)]
 #[allow(clippy::disallowed_methods)] // host: opens one content file.
 fn open_no_follow(path: &Path) -> io::Result<File> {
@@ -271,7 +279,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// On Unix, another regular file renamed over the checked one is refused too.
+    /// On Unix, another regular file renamed over the checked one (as an editor saves) is
+    /// refused too, as a failed read: no link is involved.
     #[cfg(unix)]
     #[test]
     fn other_file_swapped_in_after_the_check_is_refused() {
@@ -283,12 +292,14 @@ mod tests {
         let before = fs::symlink_metadata(&path).unwrap();
         fs::rename(&other, &path).unwrap();
         let read = read_checked(&path, "a.ron", &before, &Limits::default());
-        assert_eq!(code(read), Code::SymlinkRefused);
+        assert_eq!(code(read), Code::ReadFailed);
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A junction needs no privilege on Windows: swapped in for a checked file, it is opened
-    /// itself (`FILE_FLAG_OPEN_REPARSE_POINT`), never its target.
+    /// A junction needs no privilege on Windows. Swapped in for a checked file, its opening
+    /// with `FILE_FLAG_OPEN_REPARSE_POINT` fails (it is a directory), so its target is never
+    /// reached, and the second look reports the link. The handle check (`is_link` on the
+    /// opened file) is exercised by the file link test, where the platform allows file links.
     #[cfg(windows)]
     #[test]
     fn junction_swapped_in_after_the_check_is_refused() {

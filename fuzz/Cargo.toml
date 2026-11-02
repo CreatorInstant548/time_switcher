@@ -1,14 +1,14 @@
-# Cibles de fuzzing (SEC0-24), hors de l'espace de travail racine (exclude). Chemin sensible.
+# Fuzzing targets (SEC0-24), outside the root workspace (exclude). Sensitive path.
 # spec: carnet architecture-securite.md SEC0-24 (révisé), §9.13
 #
-# En CI seulement, avec la nightly datée de nightly.yml (A14 : aucune nightly sur le poste) :
+# In CI only, with the dated nightly of nightly.yml (A14: no nightly on a workstation):
 #   cargo run --locked --manifest-path fuzz/seeds/Cargo.toml -- fuzz/corpus
-#   cargo +<nightly> fuzz run <cible> -- -max_total_time=<3600 / nombre de cibles>
-# Le programme du corpus écrit fuzz/corpus/<cible> pour chaque cible ; `cargo fuzz run` le lit
-# par défaut. Le corpus initial est régénérable : il n'est jamais commité (.gitignore, TS_CACHE).
-# Cibles, chacune avec son corps compilé et testé en stable :
-# - `decode` : instantanés, `ts_persist::fuzzing::decode` ;
-# - `content` : paquet de contenu, `ts_data::fuzzing::load` (m7 de la revue de #47, #48).
+#   cargo +<nightly> fuzz run <target> -- -max_total_time=<3600 / number of targets>
+# The seeds program writes fuzz/corpus/<target> for every target, which `cargo fuzz run` reads
+# by default. The initial corpus is regenerable: it is never committed (.gitignore, TS_CACHE).
+# Targets, each with its body compiled and tested on stable:
+# - `decode`: snapshots, `ts_persist::fuzzing::decode`;
+# - `content`: content pack, `ts_data::fuzzing::load` (m7 of the review of #47, #48).
 
 [package]
 name = "ts_persist_fuzz"
@@ -39,12 +39,12 @@ test = false
 doc = false
 bench = false
 
-# Espace de travail propre au fuzzing : la cible, et le programme du corpus initial, qui se
-# compile en stable sans libFuzzer.
+# Workspace of the fuzzing alone: the targets, and the seeds program, which compiles on stable
+# without libFuzzer.
 [workspace]
 members = [".", "seeds"]
 
-# Comme l'espace de travail racine (E2) : un dépassement d'entier panique, donc se voit.
+# As in the root workspace (E2): an integer overflow panics, so it shows.
 [profile.release]
 overflow-checks = true
 debug = 1
