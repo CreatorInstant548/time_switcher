@@ -1,16 +1,14 @@
 # tools/dev/repo-settings.ps1 : réglages GitHub du dépôt, décrits dans tools/ci/repo-settings.json (T3d).
-# Mode d'emploi : docs/dev/outillage.md §6. Trois formes exclusives, sans autre argument :
+# Mode d'emploi : docs/dev/outillage.md §6. Deux formes exclusives, sans autre argument :
 #   -Check : lecture seule (GET) ; tout écart avec le fichier d'origin/main est affiché (code 1) ;
-#   -Apply : crée ou remplace les rulesets, règle le dépôt et les Actions selon ce fichier, puis -Check ;
-#   -Check -SourceCommit <sha> (AS-38) : -Check avec le fichier du commit <sha> (40 caractères
-#     hexadécimaux minuscules, présent après git fetch). Réservé à l'ancienne exception de réparation de
-#     cargo xtask merge (retirée par AS-50) : plus rien ne la lance.
-# Les valeurs sont lues par git show (origin/main, ou <sha>), jamais sur le disque : une branche ne peut
+#   -Apply : crée ou remplace les rulesets, règle le dépôt et les Actions selon ce fichier, puis -Check.
+# (-Check -SourceCommit <sha>, d'AS-38, est retiré avec l'exception de réparation de merge, AS-50, #85.)
+# Les valeurs sont lues par git show origin/main, jamais sur le disque : une branche ne peut
 # pas faire appliquer les siennes. Lancé depuis la racine de la copie principale, propre, sur main, à jour
 # d'origin/main, et le script lancé doit être celui de cette copie (S4). Les invariants sont codés ici
 # (S2) : affaiblir les règles demande de modifier aussi ce script.
 # Codes de sortie : 0 conforme ; 1 écart, fichier refusé ou écriture refusée ; 2 usage, préalable ou erreur.
-# Conditions suivies : AS-30 R1 à R5, AS-31 E4 et E5 (et l'attestation qui remplace R6.4), AS-38, AS-41, AS-43, AS-45,
+# Conditions suivies : AS-30 R1 à R5, AS-31 E4 et E5 (et l'attestation qui remplace R6.4), AS-41, AS-43, AS-45,
 # §9.12 S1 à S5.
 # spec: carnet architecture-securite.md SEC0-30 ; §9.12 S1, S2, S3, S4, S5
 $ErrorActionPreference = 'Stop'
@@ -40,7 +38,7 @@ $NeutralParameters = @{
 }
 # S2, AS-41 : valeur sûre de CHAQUE champ du fichier, fixée ici (clés fermées). Seuls les paramètres neutres
 # ci-dessus peuvent s'ajouter, avec leur valeur neutre ; tout champ inconnu est refusé. Ainsi un fichier ne
-# peut entériner aucun affaiblissement fait à la main sur GitHub, même par une PR de réparation (AS-38).
+# peut entériner aucun affaiblissement fait à la main sur GitHub.
 function Get-RulesetPins([string]$Branch) {
   return [ordered]@{ name = $Branch; target = 'branch'; enforcement = 'active'; bypass_actors = @()
                      conditions = @{ ref_name = @{ include = @("refs/heads/$Branch"); exclude = @() } } }
@@ -60,7 +58,8 @@ $RepoValues = [ordered]@{   # R2 : squash seulement, sans fusion automatique ; u
   allow_auto_merge = $false; allow_merge_commit = $false; allow_rebase_merge = $false; allow_squash_merge = $true
   delete_branch_on_merge = $true; squash_merge_commit_title = 'PR_TITLE'
   # AS-45 P2: public repository, with secret scanning, push protection and Dependabot security
-  # updates (enabled, as read on 01/11).
+  # updates, all pinned to enabled. Secret scanning and push protection were still disabled on
+  # GitHub on 01/11, until the -Apply that followed the merge of PR #83 (#85).
   visibility = 'public'
   security_and_analysis = [ordered]@{ dependabot_security_updates = [ordered]@{ status = 'enabled' }
     secret_scanning = [ordered]@{ status = 'enabled' }; secret_scanning_push_protection = [ordered]@{ status = 'enabled' } }
@@ -320,7 +319,7 @@ function Invoke-Write([string]$Method, [string]$Path, $Body) {
   Write-Host "  $Method repos/$Slug$Path : fait"
 }
 
-# Fichier de valeurs du commit $Rev, lu par git show, jamais sur le disque ; $null si le JSON est
+# Fichier de valeurs de la révision $Rev (origin/main), lu par git show, jamais sur le disque ; $null si le JSON est
 # illisible. Un git show qui échoue arrête le script (Stop-With, code 2) : vérifier le chemin avant.
 function Read-Config([string]$Rev) {
   try { $c = ConvertFrom-Json (@(Invoke-Git show "${Rev}:$File") -join "`n") -AsHashtable -Depth 50 -NoEnumerate } catch { return $null }
@@ -350,16 +349,9 @@ function Get-CheckResult($C, [string]$Mode, [string]$From, [string]$RepoName) {
 if ($MyInvocation.InvocationName -eq '.') { return }   # chargé par tools/dev/test-repo-settings.ps1
 
 # --- Arguments et préalables ---
-$forms = ($args.Count -eq 1 -and $args[0] -cin '-Check', '-Apply') -or ($args.Count -eq 3 -and $args[0] -ceq '-Check' -and $args[1] -ceq '-SourceCommit')
-if (-not $forms) { Stop-With 2 'usage : pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check|-Apply (-Check -SourceCommit <sha> : réservé à cargo xtask merge)' }
+if (-not ($args.Count -eq 1 -and $args[0] -cin '-Check', '-Apply')) { Stop-With 2 'usage : pwsh -NoProfile -File tools/dev/repo-settings.ps1 -Check|-Apply' }
 $Apply = $args[0] -ceq '-Apply'
-# AS-38 : SHA complet, en hexadécimal minuscule, sans rien d'autre (\z : pas de saut de ligne final).
-$Source = 'origin/main'
-if ($args.Count -eq 3) {
-  if ("$($args[2])" -cnotmatch '^[0-9a-f]{40}\z') { Stop-With 2 '-SourceCommit : SHA complet attendu (40 caractères hexadécimaux minuscules)' }
-  $Source = "$($args[2])"
-}
-$From = if ($Source -ceq 'origin/main') { "d'origin/main" } else { "du commit $Source" }
+$From = "d'origin/main"
 # S4 d'abord, puis le fichier d'origin/main, puis le distant : chaque refus a son message (testés par
 # tools/dev/test-repo-settings.ps1 dans un dépôt jetable dont origin est local, sans appel à GitHub).
 $common = "$(Invoke-Git rev-parse --path-format=absolute --git-common-dir)".Trim()
@@ -373,16 +365,9 @@ Invoke-Git fetch --quiet origin | Out-Null
 if ("$(Invoke-Git rev-parse HEAD)".Trim() -cne "$(Invoke-Git rev-parse origin/main)".Trim()) { Stop-With 2 'la copie principale n''est pas à jour d''origin/main : git pull --ff-only' }
 & git cat-file -e "origin/main:$File" 2>$null
 if ($LASTEXITCODE) { Stop-With 2 "$File absent d'origin/main : réglages pas encore fusionnés, rien à comparer ni à appliquer" }
-if ($Source -cne 'origin/main') {
-  & git cat-file -e "$($Source)^{commit}" 2>$null
-  if ($LASTEXITCODE) { Stop-With 2 "-SourceCommit : commit $Source introuvable après git fetch" }
-  & git cat-file -e "$($Source):$File" 2>$null
-  if ($LASTEXITCODE) { Stop-With 2 "$File absent $From : rien à comparer" }
-}
 # S2 avant tout appel à GitHub, avec les invariants de ce script, celui d'origin/main (S4) : un fichier
-# refusé est déjà un écart, et GitHub n'est pas comparé à des valeurs refusées. Vaut aussi pour le
-# fichier de -SourceCommit : la voie de réparation ne peut pas entériner un affaiblissement (AS-41).
-$cfg = Read-Config $Source
+# refusé est déjà un écart, et GitHub n'est pas comparé à des valeurs refusées (AS-41).
+$cfg = Read-Config 'origin/main'
 $invalid = if ($null -eq $cfg) { [Collections.Generic.List[string]]@("$File : JSON illisible") } else { Get-Invalid $cfg }
 foreach ($x in $invalid) { Write-Host "  REFUS du fichier : $x" }
 if ($invalid.Count) {
