@@ -39,8 +39,7 @@ pub enum Code {
     EncodingOverflow,
     /// The identifier does not follow the identifier grammar (M40a).
     InvalidId,
-    /// The name is empty, too long, not in NFC, has a control character, or leading or
-    /// trailing whitespace (M40e).
+    /// The name is empty, too long, not in NFC, or has leading or trailing whitespace (M40e).
     InvalidName,
     /// Two cards have the same identifier.
     DuplicateId,
@@ -61,6 +60,21 @@ pub enum Code {
     /// A registry line was removed, moved or changed other than from active to retired
     /// (M40d: append-only).
     RegistryRewritten,
+    /// The name has a control character, category Cc (M40e, A17).
+    NameControl,
+    /// The name has a format character, category Cf: writing-direction marks, zero-width
+    /// characters... (M40e, A17).
+    NameFormat,
+    /// The name has a private-use character, category Co (M40e, A17).
+    NamePrivateUse,
+    /// The name has an unassigned code point, category Cn (M40e, A17).
+    NameUnassigned,
+    /// The name has a line or paragraph separator, category Zl or Zp (M40e, A17).
+    NameLineSeparator,
+    /// The name has a space other than U+0020, U+00A0 and U+202F (M40e, A17).
+    NameSpace,
+    /// The name has more than two combining marks in a row (M40e, A17).
+    NameMarkRun,
 }
 
 impl Code {
@@ -84,6 +98,13 @@ impl Code {
             Self::EncodingOverflow => "DATA_ENCODING_OVERFLOW",
             Self::InvalidId => "DATA_INVALID_ID",
             Self::InvalidName => "DATA_INVALID_NAME",
+            Self::NameControl => "DATA_NAME_CONTROL",
+            Self::NameFormat => "DATA_NAME_FORMAT",
+            Self::NamePrivateUse => "DATA_NAME_PRIVATE_USE",
+            Self::NameUnassigned => "DATA_NAME_UNASSIGNED",
+            Self::NameLineSeparator => "DATA_NAME_LINE_SEPARATOR",
+            Self::NameSpace => "DATA_NAME_SPACE",
+            Self::NameMarkRun => "DATA_NAME_MARK_RUN",
             Self::DuplicateId => "DATA_DUPLICATE_ID",
             Self::BrokenReference => "DATA_BROKEN_REFERENCE",
             Self::WrongNamespace => "DATA_WRONG_NAMESPACE",
@@ -115,7 +136,20 @@ impl Code {
             Self::UnknownKind => "type de fiche inconnu",
             Self::EncodingOverflow => "longueur trop grande pour l'encodage",
             Self::InvalidId => "identifiant invalide",
-            Self::InvalidName => "nom invalide",
+            Self::InvalidName => {
+                "nom invalide (vide, trop long, espace en bord ou forme non normalisée NFC)"
+            }
+            Self::NameControl => "nom invalide : caractère de contrôle",
+            Self::NameFormat => {
+                "nom invalide : caractère de format (sens d'écriture, largeur nulle...)"
+            }
+            Self::NamePrivateUse => "nom invalide : caractère d'usage privé",
+            Self::NameUnassigned => "nom invalide : point de code non attribué",
+            Self::NameLineSeparator => "nom invalide : séparateur de ligne ou de paragraphe",
+            Self::NameSpace => {
+                "nom invalide : espace autre que l'espace simple ou les espaces insécables"
+            }
+            Self::NameMarkRun => "nom invalide : plus de 2 marques combinantes de suite",
             Self::DuplicateId => "identifiant déjà utilisé",
             Self::BrokenReference => "référence vers une fiche objet introuvable",
             Self::WrongNamespace => {
@@ -133,6 +167,37 @@ impl Code {
             }
         }
     }
+}
+
+/// Text from the input made safe to print inside a log line: every control character and
+/// every non-printable character is escaped (`escape_debug`, so no newline or terminal escape
+/// survives), and every `#` is escaped (the Actions runner reads the `##[` and `##vso[`
+/// commands anywhere in a line). Used by [`Diagnostic::new`] and by hosts that print paths
+/// themselves. A text that may come first on a line also needs [`Diagnostic::new`]'s rule for
+/// a leading `:`.
+pub fn escape_for_log(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars().flat_map(char::escape_debug) {
+        if c == '#' {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
+/// [`escape_for_log`] for a text that comes first on a line (the file of a [`Diagnostic`]): a
+/// `:` that is first after optional whitespace is escaped too, because the runner trims
+/// leading whitespace and reads a `::` command at the start of a line.
+fn escape_line_start(text: &str) -> String {
+    let escaped = escape_for_log(text);
+    let rest = escaped.trim_start();
+    if !rest.starts_with(':') {
+        return escaped;
+    }
+    let lead = escaped.len().saturating_sub(rest.len());
+    let (space, command) = escaped.split_at(lead);
+    format!("{space}\\{command}")
 }
 
 /// Longest `detail` kept: text from the input is never copied whole into an error.
@@ -158,20 +223,18 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    /// Builds a diagnostic; `file` and `detail` are escaped (no newline or terminal escape
-    /// survives), and `detail` is cut to its first 80 characters first.
+    /// Builds a diagnostic; `file` and `detail` are escaped by [`escape_for_log`] (no newline,
+    /// terminal escape or workflow command survives), `file` also for a leading `:` since the
+    /// [`fmt::Display`] line starts with it (a file named `::warning::x.ron` is not a
+    /// workflow command), and `detail` is cut to its first 80 characters first.
     pub fn new(code: Code, file: &str, position: (u32, u32), detail: &str) -> Self {
         Self {
             code,
-            file: file.chars().flat_map(char::escape_debug).collect(),
+            file: escape_line_start(file),
             line: position.0,
             column: position.1,
             // Input text is escaped: no newline or terminal escape can forge a line of output.
-            detail: detail
-                .chars()
-                .take(MAX_DETAIL)
-                .flat_map(char::escape_debug)
-                .collect(),
+            detail: escape_for_log(&detail.chars().take(MAX_DETAIL).collect::<String>()),
         }
     }
 }

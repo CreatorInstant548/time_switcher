@@ -96,12 +96,13 @@ fn percent(per_mille: u64) -> String {
     format!("{}.{} %", per_mille / 10, per_mille % 10)
 }
 
-/// A relative path as printed: control characters escaped, so it cannot end a line, and every
-/// `#` escaped, so it cannot hold the `##[` or `##vso[` commands that the Actions runner looks
-/// for anywhere in a line. A `::` command only counts at the start of a line, and no path comes
-/// first on a line here.
+/// A relative path as printed, escaped by `ts_data::escape_for_log`: control characters
+/// escaped, so it cannot end a line, and every `#` escaped, so it cannot hold the `##[` or
+/// `##vso[` commands that the Actions runner looks for anywhere in a line. A `::` command only
+/// counts at the start of a line, and no path comes first on a line of this report (the error
+/// lines of `ts_data::Diagnostic`, which do start with a path, escape a leading `:` themselves).
 fn printable(path: &str) -> String {
-    path.escape_debug().to_string().replace('#', r"\#")
+    ts_data::escape_for_log(path)
 }
 
 /// One report line.

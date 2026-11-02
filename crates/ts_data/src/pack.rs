@@ -5,7 +5,7 @@ use core::fmt;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
-use crate::card::{Card, is_valid_card_id, is_valid_name};
+use crate::card::{Card, is_valid_card_id, name_fault};
 use crate::error::{Code, Diagnostic, LoadErrors, Sink};
 use crate::scan::element_starts;
 use crate::source::{Limits, SourceFile, is_relative_path};
@@ -234,8 +234,8 @@ fn validate(
             .is_some_and(|rest| rest.starts_with('.'))
         {
             report(sink, Code::WrongNamespace, &l, &id);
-        } else if !is_valid_name(l.card.name()) {
-            report(sink, Code::InvalidName, &l, &id);
+        } else if let Some(fault) = name_fault(l.card.name()) {
+            report(sink, fault, &l, &id);
         } else {
             match by_id.entry(id) {
                 Entry::Occupied(taken) => report(sink, Code::DuplicateId, &l, taken.key()),
