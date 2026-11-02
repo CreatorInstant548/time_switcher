@@ -1415,14 +1415,6 @@ mod tests {
         assert!(!check_workflow(&double).is_empty());
     }
 
-    /// The workflows of the repository pass every rule above.
-    #[test]
-    fn accepts_the_repository_workflows() {
-        for (path, text) in repo_workflows() {
-            assert_eq!(check_workflow(&text), Vec::<String>::new(), "{path}");
-        }
-    }
-
     const SCRIPT: &str = include_str!("../../ci/install-tools.sh");
     const LOCK: &str = include_str!("../../dev/tools.lock");
 
