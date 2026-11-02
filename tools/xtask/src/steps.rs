@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::manifests::{self, DEV_FEATURES, HOSTS, TOOLS};
 use crate::metadata::{self, Metadata};
 use crate::sys::{self, cargo, run_captured, run_live, stdout_of};
-use crate::{exemptions, scan, workflows};
+use crate::{exemptions, reserved, scan, workflows};
 
 pub enum Outcome {
     Ok(String),
@@ -221,16 +221,37 @@ pub fn clippy(cx: &Ctx) -> Outcome {
     ))
 }
 
-/// Crate name of a `path = "crate::item"` entry of `clippy.toml`, when it is one that tolerates
-/// an invalid path (`allow-invalid = true`).
-fn lenient_entry_crate(line: &str) -> Option<&str> {
-    if line.trim_start().starts_with('#') {
-        return None;
-    }
-    let rest = line.split_once("path = \"")?.1;
-    let path = rest.split_once('"')?.0;
-    line.contains("allow-invalid = true")
-        .then(|| path.split("::").next().unwrap_or(path))
+/// An entry of `clippy.toml` in the one layout the file uses, a whole entry on one line:
+/// `{ path = "P", reason = "R" },` with or without `, allow-invalid = true` after the reason.
+struct Entry<'a> {
+    path: &'a str,
+    reason: &'a str,
+    /// The entry has `allow-invalid = true`.
+    lenient: bool,
+    /// What follows the entry: `,` or nothing.
+    tail: &'a str,
+}
+
+/// Reads a line in that layout. `P` is plain (`[A-Za-z0-9_:]`) and `R` has no quote or escape.
+fn entry(line: &str) -> Option<Entry<'_>> {
+    let rest = line.trim().strip_prefix("{ path = \"")?;
+    let (path, rest) = rest.split_once('"')?;
+    let rest = rest.strip_prefix(", reason = \"")?;
+    let (reason, rest) = rest.split_once('"')?;
+    let (lenient, rest) = match rest.strip_prefix(", allow-invalid = true }") {
+        Some(tail) => (true, tail),
+        None => (false, rest.strip_prefix(" }")?),
+    };
+    let plain = !path.is_empty()
+        && path
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b':');
+    (plain && !reason.contains('\\') && matches!(rest, "" | ",")).then_some(Entry {
+        path,
+        reason,
+        lenient,
+        tail: rest,
+    })
 }
 
 /// Crates whose banned paths are internal locations that an upgrade moves (the hash collections of
@@ -240,23 +261,35 @@ const STRICT_CRATE_PREFIX: &str = "bevy_";
 
 /// `clippy.toml` with `allow-invalid = true` removed from every entry of a bevy crate that is in
 /// `closure` (m1 of the review of PR #33): such an entry must resolve, so one that became dead after
-/// a dependency upgrade is a warning. The other entries keep the flag. Rejects an entry it cannot
-/// rewrite. Returns the text and the number of entries made strict.
+/// a dependency upgrade is a warning. The other entries keep the flag. Fails closed: a line that
+/// carries `allow-invalid` in any other layout than [`entry`] (no blanks around `=`,
+/// several lines, single quotes, an escaped crate name, two entries on a line, a flag on a line
+/// of its own) is an error, never skipped. Returns the text and the number of entries made strict.
 fn strict_clippy_config(text: &str, closure: &BTreeSet<String>) -> Result<(String, usize), String> {
     let (mut out, mut strict) = (String::new(), 0);
     for line in text.lines() {
-        let line = match lenient_entry_crate(line) {
-            Some(krate) if krate.starts_with(STRICT_CRATE_PREFIX) && closure.contains(krate) => {
-                if line.matches("path = \"").count() != 1 {
-                    return Err(format!("clippy.toml: one entry per line expected: {line}"));
-                }
+        // Only a line with the flag is rewritten, and it must be in the one layout; a line
+        // without it (an entry already strict, possibly spread over lines) is left as it is.
+        let line = if line.trim_start().starts_with('#') || !line.contains("allow-invalid") {
+            line.to_owned()
+        } else {
+            let Some(e) = entry(line) else {
+                return Err(format!(
+                    "clippy.toml: entry layout not understood: {}",
+                    line.trim()
+                ));
+            };
+            let krate = e.path.split("::").next().unwrap_or(e.path);
+            if e.lenient && krate.starts_with(STRICT_CRATE_PREFIX) && closure.contains(krate) {
                 strict += 1;
-                let (head, tail) = line
-                    .split_once(", allow-invalid = true")
-                    .ok_or_else(|| format!("clippy.toml entry not understood: {line}"))?;
-                format!("{head}{tail}")
+                let indent = &line[..line.len() - line.trim_start().len()];
+                format!(
+                    "{indent}{{ path = \"{}\", reason = \"{}\" }}{}",
+                    e.path, e.reason, e.tail
+                )
+            } else {
+                line.to_owned()
             }
-            _ => line.to_owned(),
         };
         out.push_str(&line);
         out.push('\n');
@@ -782,7 +815,14 @@ pub fn unsafe_code(cx: &Ctx) -> Outcome {
     from_errors(errors, format!("{} crate(s)", meta.packages.len()))
 }
 
-/// `public` avec chaque fonctionnalité de développement doit échouer sur notre message (SEC0-20, E8).
+/// Message of the `compile_error!` raised by `ts_kernel` for `public` together with the
+/// development feature `f` (`crates/ts_kernel/src/build_profile.rs`), searched for word for word
+/// by [`profiles`]. A test checks that the kernel still carries it.
+fn profile_error(f: &str) -> String {
+    format!("public profile: feature `{f}` is forbidden (SEC0-20, M28)")
+}
+
+/// `public` with each development feature must fail on our own message (SEC0-20, E8).
 pub fn profiles(cx: &Ctx) -> Outcome {
     for f in DEV_FEATURES {
         let features = format!("public,{f}");
@@ -796,15 +836,19 @@ pub fn profiles(cx: &Ctx) -> Outcome {
         ];
         println!("  $ cargo {}", args.join(" "));
         let (ok, out) = tri!(run_captured(&cx.root, &cargo(), &args));
-        let message = format!("profil public : la fonctionnalité `{f}` est interdite");
+        let message = profile_error(f);
         if ok || !out.contains(&message) {
+            // Error lines without a path separator only (SEC0-26: no local path in the output).
+            out.lines()
+                .filter(|l| l.starts_with("error") && !l.contains(['/', '\\']))
+                .for_each(|l| println!("  {l}"));
             return Outcome::Fail(format!(
-                "public,{f} n'échoue pas sur le compile_error! attendu"
+                "public,{f} does not fail on the expected compile_error!"
             ));
         }
-        println!("  échec attendu : « {message} »");
+        println!("  expected failure: \"{message}\"");
     }
-    Outcome::Ok("4 combinaisons refusées".to_owned())
+    Outcome::Ok(format!("{} combinations refused", DEV_FEATURES.len()))
 }
 
 pub fn features(cx: &Ctx) -> Outcome {
@@ -847,6 +891,7 @@ pub fn features(cx: &Ctx) -> Outcome {
 }
 
 /// Exemptions de clippy hors des hôtes et des outils (E6, F5) ; `clippy.toml` hors de la racine.
+/// Also the kernel items reserved to some crates, and the raw primitives (#26 m3, m4).
 pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
     let meta = tri!(cx.meta());
     let mut errors = Vec::new();
@@ -866,6 +911,21 @@ pub fn clippy_exemptions(cx: &Ctx) -> Outcome {
                     .iter()
                     .map(|l| format!("{rel}:{l} : exemption ou code caché à clippy interdit")),
             );
+            // #26 m3, m4: what clippy cannot ban in the core, which may not exempt itself.
+            errors.extend(
+                reserved::reserved_uses(rel, &text)
+                    .into_iter()
+                    .map(|(l, ident, why)| format!("{rel}:{l}: {ident} is reserved: {why}")),
+            );
+        }
+        for d in p
+            .dependencies
+            .iter()
+            .filter(|d| d.kind.as_deref() != Some("dev"))
+        {
+            if let Some(why) = reserved::refused_dependency(&p.name, &d.name) {
+                errors.push(format!("{}: dependency on {}: {why}", p.name, d.name));
+            }
         }
         // Un fichier non .rs sous src/ ne peut servir qu'à #[path] ou include! (I2).
         let src = format!("{dir}src/");
@@ -1060,10 +1120,36 @@ mod tests {
         assert!(out.contains("{ path = \"bevy_ecs::entity::EntityHashMap\", reason = \"r\" },"));
         assert!(out.contains("{ path = \"rand::rng\", reason = \"r\", allow-invalid = true },"));
         assert_eq!(out.lines().count(), text.lines().count());
-        // An entry of the closure that cannot be rewritten is refused, not skipped.
-        let odd = "{ allow-invalid = true, path = \"bevy_ecs::X\", reason = \"r\" },
-";
-        assert!(super::strict_clippy_config(odd, &closure).is_err());
+        // An entry of the closure that cannot be read is refused, never skipped (review of #114).
+        for odd in [
+            "{ allow-invalid = true, path = \"bevy_ecs::X\", reason = \"r\" },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", allow-invalid=true },",
+            "{path = \"bevy_ecs::X\", reason = \"r\", allow-invalid = true},",
+            "{ path=\"bevy_ecs::X\", reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = 'r', allow-invalid = true },",
+            "{ path = 'bevy_ecs::X', reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\", allow-invalid = true }, # note",
+            "{ path = \"\\u0062evy_ecs::X\", reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\",\n  reason = \"r\", allow-invalid = true },",
+            "{ path = \"bevy_ecs::X\", reason = \"r\",\n  allow-invalid = true },",
+            "    allow-invalid = true,",
+            "[[disallowed-types]]\npath = \"bevy_ecs::X\"\nallow-invalid = true",
+            "{ path = \"bevy_ecs::X\", reason = \"r \\\" q\", allow-invalid = true },",
+        ] {
+            assert!(super::strict_clippy_config(odd, &closure).is_err(), "{odd}");
+        }
+        // Whatever the crate: a flag in a layout that cannot be read is an error too.
+        assert!(
+            super::strict_clippy_config("{path=\"rand::rng\", allow-invalid=true},", &closure)
+                .is_err()
+        );
+        // A strict (flag-free) entry may span lines, and other keys are left alone.
+        let multi = "x = 1\n{ path = \"bevy_ecs::X\",\n  reason = \"r\" },\n";
+        assert_eq!(
+            super::strict_clippy_config(multi, &closure).unwrap().0,
+            multi
+        );
         // The real file: its entries on bevy crates all become strict.
         let real = include_str!("../../../clippy.toml");
         let all: BTreeSet<String> = [
@@ -1089,8 +1175,37 @@ mod tests {
         // Comments and two entries on one line are not rewritten silently.
         let commented = "# { path = \"bevy_ecs::X\", allow-invalid = true },\n";
         assert_eq!(super::strict_clippy_config(commented, &all).unwrap().1, 0);
-        let two = "{ path = \"bevy_ecs::X\", allow-invalid = true }, { path = \"bevy_ecs::Y\" },\n";
+        let two = "{ path = \"bevy_ecs::X\", reason = \"r\", allow-invalid = true }, { path = \"bevy_ecs::Y\", reason = \"r\" },\n";
         assert!(super::strict_clippy_config(two, &all).is_err());
+    }
+
+    /// The `profiles` step searches the output for these messages: the kernel must carry exactly
+    /// one `compile_error!` per development feature, under the `cfg` of that very feature, with
+    /// the text the step expects.
+    #[test]
+    fn kernel_carries_the_profile_errors() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/ts_kernel/src/build_profile.rs");
+        let source = crate::sys::read_text(&path)
+            .expect("build_profile.rs moved: update this test and the `profiles` step");
+        for f in crate::manifests::DEV_FEATURES {
+            let literal = format!("\"{}\"", super::profile_error(f));
+            assert_eq!(source.matches(&literal).count(), 1, "{f}: message");
+            let head = &source[..source.find(&literal).unwrap_or_default()];
+            let cfg = head.rfind("#[cfg(all(").unwrap_or_default();
+            let expected = format!("#[cfg(all(feature = \"public\", feature = \"{f}\"))]");
+            let gate = head[cfg..].split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(gate.starts_with(&expected), "{f}: gate {gate}");
+        }
+        let count = source
+            .lines()
+            .filter(|l| l.trim_start().starts_with("compile_error!("))
+            .count();
+        assert_eq!(
+            count,
+            crate::manifests::DEV_FEATURES.len(),
+            "compile_error! count"
+        );
     }
 
     #[test]
