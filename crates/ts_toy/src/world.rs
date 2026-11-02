@@ -10,7 +10,7 @@
 //! kernel's keyed streams.
 
 use bevy_ecs::prelude::{Commands, Component, Query, Res, ResMut, Resource, With};
-use ts_kernel::rng::{DrawSite, Stream, StreamKeys};
+use ts_kernel::rng::{DrawSite, Stream};
 use ts_kernel::{
     CanonicalError, DueEvents, EventQueue, LodComplete, Phase, Plugin, SimBuilder, SimClock,
     SimTime, StableEntity, StableId, StableIds, StableIndex, StateDecode, StateHash, StateReader,
@@ -204,20 +204,20 @@ const fn after(at: SimTime, minutes: i64) -> SimTime {
 }
 
 /// Drawn number in `0..spread`.
-fn spread(keys: &StreamKeys, site: DrawSite, who: StableId, day: u64, spread: u64) -> i64 {
+fn spread(keys: &WorldStreams, site: DrawSite, who: StableId, day: u64, spread: u64) -> i64 {
     // Exact: below `spread`, itself small.
     (keys.draw(site, who, day) % spread) as i64
 }
 
 /// Departure from home on `day`.
-fn departure(keys: &StreamKeys, who: StableId, day: u64) -> SimTime {
+fn departure(keys: &WorldStreams, who: StableId, day: u64) -> SimTime {
     let minutes = DEPART_FROM + spread(keys, DEPART, who, day, DEPART_SPREAD);
     after(day_start(day as i64), minutes)
 }
 
 /// Travel time of leg `leg` ([`TRAVEL_OUT`] to work, [`TRAVEL_BACK`] home) on `day`, in
 /// minutes.
-fn travel(keys: &StreamKeys, who: StableId, c: &Commuter, day: u64, leg: DrawSite) -> i64 {
+fn travel(keys: &WorldStreams, who: StableId, c: &Commuter, day: u64, leg: DrawSite) -> i64 {
     let jitter = spread(keys, leg, who, day, TRAVEL_SPREAD);
     TRAVEL_BASE + TRAVEL_PER_CELL * i64::from(c.cells) + jitter
 }
@@ -239,7 +239,7 @@ fn on_events(
     mut people: Query<(&Commuter, &mut Whereabouts)>,
     mut commands: Commands,
 ) {
-    let keys = &**streams;
+    let keys = &*streams;
     for item in due.iter() {
         let TimedEvent { kind, subject, arg } = item.event;
         let Some(e) = index.get(subject) else {
@@ -249,12 +249,14 @@ fn on_events(
             continue;
         };
         let mut next = |when: SimTime, kind: u32, day: u64| {
-            let event = TimedEvent {
-                kind,
-                subject,
-                arg: day,
-            };
-            queue.schedule(when, event);
+            queue.schedule(
+                when,
+                TimedEvent {
+                    kind,
+                    subject,
+                    arg: day,
+                },
+            );
         };
         let moved = |place: Place, at: &mut Whereabouts| {
             at.place = place;
@@ -315,7 +317,7 @@ fn stroll(
     mut q: Query<(&StableEntity, &mut Stroll), With<LodComplete>>,
 ) {
     let slot = clock.now().as_millis().unsigned_abs();
-    let keys = &**streams;
+    let keys = &*streams;
     par_for_each_mut(&mut q, |(s, mut st)| {
         st.steps += 1 + keys.draw(STEP, s.id(), slot) % 3;
     });
@@ -374,7 +376,7 @@ impl Plugin for ToyWorld {
             }
             people.push(id);
         }
-        let keys: &StreamKeys = world.resource::<WorldStreams>();
+        let keys = world.resource::<WorldStreams>();
         let mut first: Vec<(SimTime, TimedEvent)> = people
             .iter()
             .map(|&subject| {

@@ -11,9 +11,9 @@ use ts_kernel::{StableId, StateHash, StateWriter};
 /// Draw purposes of the generator.
 /// Draw sites of the generator: kind of each parcel (`CityGen`), size and workplaces of each
 /// household (`PopGen`).
-pub const KIND: DrawSite = DrawSite::new(Stream::CityGen, 1, "toy.parcel_kind");
-pub const MEMBERS: DrawSite = DrawSite::new(Stream::PopGen, 2, "toy.household_members");
-pub const WORKPLACE: DrawSite = DrawSite::new(Stream::PopGen, 3, "toy.workplace");
+pub(crate) const KIND: DrawSite = DrawSite::new(Stream::CityGen, 1, "toy.parcel_kind");
+pub(crate) const MEMBERS: DrawSite = DrawSite::new(Stream::PopGen, 2, "toy.household_members");
+pub(crate) const WORKPLACE: DrawSite = DrawSite::new(Stream::PopGen, 3, "toy.workplace");
 
 /// Size of the toy town. **Test parameters**, not game values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

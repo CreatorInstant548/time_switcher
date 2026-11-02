@@ -435,3 +435,13 @@ fn checked_key_refuses_constant_bytes() {
     let key = WorldKey::checked(bytes).map(|k| k.0);
     assert_eq!(key, Some(bytes));
 }
+
+/// #26 m2, m3: a host refuses a constant artifact seed too.
+#[test]
+fn checked_artifact_seed_refuses_constant_bytes() {
+    assert!(ArtifactSeed::checked([0; 16]).is_none());
+    assert!(ArtifactSeed::checked([9; 16]).is_none());
+    let mut bytes = [0; 16];
+    bytes[3] = 1;
+    assert_eq!(ArtifactSeed::checked(bytes).map(|s| s.0), Some(bytes));
+}

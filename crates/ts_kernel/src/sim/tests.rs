@@ -476,3 +476,24 @@ fn draw_sites_are_unique_in_the_rules() {
         Err(BuildError::DrawSiteConflict { .. })
     ));
 }
+
+/// #26 m1: a system draws only at a site that an active plugin declares; the world streams
+/// refuse any other in debug builds, so the uniqueness check covers every draw.
+#[test]
+fn world_streams_draw_declared_sites_only() {
+    let rules: Vec<Box<dyn Plugin>> = vec![Box::new(Drawing("combat", &[HIT]))];
+    let sim = build(&rules).unwrap();
+    let streams = sim.world().resource::<WorldStreams>();
+    let subject = StableId::from_snapshot_raw(4);
+    assert_eq!(
+        streams.draw(HIT, subject, 9),
+        streams.draws(HIT, subject, 9).next().unwrap()
+    );
+    assert_eq!(
+        streams.draw(HIT, subject, 9),
+        streams.draw_block(HIT, subject, 9, 0)[0]
+    );
+    let undeclared = std::panic::catch_unwind(|| streams.draw(LOCK, subject, 9));
+    // Tests run with debug assertions (profiles `dev` and `ci`).
+    assert!(undeclared.is_err());
+}

@@ -86,6 +86,9 @@ impl Plugin for Town {
     fn version(&self) -> u32 {
         1
     }
+    fn draw_sites(&self) -> &'static [DrawSite] {
+        &[WALK, SETTLE]
+    }
     fn build(&self, b: &mut SimBuilder) {
         b.state_component::<Pos>("town")
             .state_component::<Life>("town");

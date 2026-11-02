@@ -14,7 +14,7 @@ use bevy_ecs::world::World;
 use bevy_tasks::{ComputeTaskPool, TaskPoolBuilder};
 
 use crate::phase::{ExecutorSwitch, phase_schedule};
-use crate::rng::{DrawSite, Stream, StreamKeys, WorldKey};
+use crate::rng::{DrawSite, Draws, Stream, StreamKeys, WorldKey};
 use crate::state::{
     StableIndex, StateEntry, StateWriter, hash_world, stable_entities, undeclared_components,
 };
@@ -246,15 +246,55 @@ impl StableIds {
 }
 
 // spec: revues/architecture.md §6.4 ; carnet architecture-securite.md §9.10 L4
-/// Resource: the stream keys, derived from the world key at build time. They are never
-/// recorded or hashed; the world key is not kept.
+/// Resource: the stream keys, derived from the world key at build time, and the draw sites
+/// declared by the active plugins. The keys are never recorded or hashed; the world key is
+/// not kept.
+///
+/// Systems draw through [`Self::draw`], [`Self::draw_block`] and [`Self::draws`]. In debug
+/// builds (every test), they panic on a site that no plugin declares
+/// ([`Plugin::draw_sites`]), so that the uniqueness check of the build covers every draw of
+/// the rules (#26 m1). The keys themselves ([`Deref`]) serve a generator run while building,
+/// whose sites its plugin declares too, and the cosmetic seeds.
 #[derive(Resource, Debug)]
-pub struct WorldStreams(StreamKeys);
+pub struct WorldStreams {
+    keys: StreamKeys,
+    sites: BTreeSet<DrawSite>,
+}
+
+impl WorldStreams {
+    /// First value of a declared `site`, as [`StreamKeys::draw`].
+    #[must_use]
+    pub fn draw(&self, site: DrawSite, subject: StableId, slot: u64) -> u64 {
+        self.declared(site);
+        self.keys.draw(site, subject, slot)
+    }
+
+    /// Block `block` of a declared `site`, as [`StreamKeys::draw_block`].
+    #[must_use]
+    pub fn draw_block(&self, site: DrawSite, subject: StableId, slot: u64, block: u16) -> [u64; 8] {
+        self.declared(site);
+        self.keys.draw_block(site, subject, slot, block)
+    }
+
+    /// Successive values of a declared `site`, as [`StreamKeys::draws`].
+    pub fn draws(&self, site: DrawSite, subject: StableId, slot: u64) -> Draws<'_> {
+        self.declared(site);
+        self.keys.draws(site, subject, slot)
+    }
+
+    fn declared(&self, site: DrawSite) {
+        debug_assert!(
+            self.sites.contains(&site),
+            "draw site {} is declared by no active plugin (Plugin::draw_sites)",
+            site.name()
+        );
+    }
+}
 
 impl Deref for WorldStreams {
     type Target = StreamKeys;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.keys
     }
 }
 
@@ -545,7 +585,14 @@ impl Sim {
         world.insert_resource(EventQueue(Scheduler::new(SimTime::EPOCH)));
         world.insert_resource(DueEvents::default());
         world.insert_resource(StableIds(StableIdAllocator::for_new_world()));
-        world.insert_resource(WorldStreams(StreamKeys::derive(world_key)));
+        world.insert_resource(WorldStreams {
+            keys: StreamKeys::derive(world_key),
+            sites: plugins
+                .iter()
+                .flat_map(|p| p.draw_sites())
+                .copied()
+                .collect(),
+        });
 
         let (phases, switches): (Vec<_>, Vec<_>) = Phase::ALL
             .iter()

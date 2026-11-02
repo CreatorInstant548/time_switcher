@@ -105,14 +105,11 @@ impl WorldKey {
     /// included): such a key comes from a buffer left unfilled, never from a cryptographic
     /// generator (P25).
     pub const fn checked(bytes: [u8; 16]) -> Option<Self> {
-        let mut i = 1;
-        while i < bytes.len() {
-            if bytes[i] != bytes[0] {
-                return Some(Self(bytes));
-            }
-            i += 1;
+        if is_constant(&bytes) {
+            None
+        } else {
+            Some(Self(bytes))
         }
-        None
     }
 
     /// **Insecure** test key: `seed` in little-endian, then eight zero bytes. Never in a
@@ -126,6 +123,18 @@ impl WorldKey {
     }
 }
 
+/// True if the 16 bytes are all equal: a buffer left unfilled, never a drawn secret.
+const fn is_constant(bytes: &[u8; 16]) -> bool {
+    let mut i = 1;
+    while i < bytes.len() {
+        if bytes[i] != bytes[0] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 impl fmt::Debug for WorldKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("WorldKey(..)")
@@ -136,6 +145,14 @@ impl fmt::Debug for WorldKey {
 /// Key of a stream, 256 bits, private to this module: rules reach it only through a
 /// [`DrawSite`] (#26 m1). Same rules as [`WorldKey`]: no copy, no comparison, no display.
 pub(crate) struct StreamKey([u8; 32]);
+
+impl StreamKey {
+    /// Key of `stream` for the 16 bytes of a world key or of an artifact seed: BLAKE3
+    /// `derive_key` under the context of the stream (K2, K4), the only derivation of a stream.
+    fn derive(stream: Stream, bytes: &[u8; 16]) -> Self {
+        Self(blake3::derive_key(stream.context(), bytes))
+    }
+}
 
 impl fmt::Debug for StreamKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -254,7 +271,7 @@ impl StreamKeys {
     /// Derives all the keys by BLAKE3 `derive_key`, each under its own context.
     pub fn derive(world: &WorldKey) -> Self {
         Self {
-            streams: Stream::ALL.map(|s| StreamKey(blake3::derive_key(s.context(), &world.0))),
+            streams: Stream::ALL.map(|s| StreamKey::derive(s, &world.0)),
             cosmetic: CosmeticRoot(blake3::derive_key(COSMETIC_CONTEXT, &world.0)),
         }
     }
@@ -438,9 +455,10 @@ impl DrawSite {
 }
 
 // spec: carnet architecture-securite.md §9.9 K9
-/// Subject of a draw that concerns no entity, such as the weather of the world: the last
-/// index of the map namespace, which the map numbering never reaches. Its site is reserved
-/// to world-level draws, so it never meets the draws of an entity.
+/// Subject of a draw that concerns no entity, such as the weather of the world. Its value is
+/// the last index of the map namespace, but it is a draw subject only, never a reference
+/// kept in the state. Its site serves world-level draws only, never an entity: since sites
+/// are unique, its draws never meet those of an entity or a place, whatever its value.
 pub const WORLD_SUBJECT: StableId = StableId::from_snapshot_raw(u64::MAX);
 
 /// Successive values of one (site, subject, slot): see [`StreamKeys::draws`].
@@ -529,9 +547,19 @@ impl ArtifactStream {
 pub struct ArtifactSeed([u8; 16]);
 
 impl ArtifactSeed {
-    /// Seed from its bytes.
+    /// Seed from its bytes, with no check: the public map and solo family seeds, and tests.
     pub const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
+    }
+
+    /// Secret seed loaded or drawn by a host (the online family), or `None` if its 16 bytes
+    /// are all equal, as [`WorldKey::checked`].
+    pub const fn checked(bytes: [u8; 16]) -> Option<Self> {
+        if is_constant(&bytes) {
+            None
+        } else {
+            Some(Self(bytes))
+        }
     }
 }
 
@@ -577,11 +605,10 @@ pub struct ArtifactKeys {
 impl ArtifactKeys {
     /// Derives the three keys by BLAKE3 `derive_key`.
     pub fn derive(seed: &ArtifactSeed) -> Self {
-        let key = |s: ArtifactStream| StreamKey(blake3::derive_key(s.stream().context(), &seed.0));
         Self {
-            city_gen: key(ArtifactStream::CityGen),
-            pop_gen: key(ArtifactStream::PopGen),
-            furnish: key(ArtifactStream::Furnish),
+            city_gen: StreamKey::derive(Stream::CityGen, &seed.0),
+            pop_gen: StreamKey::derive(Stream::PopGen, &seed.0),
+            furnish: StreamKey::derive(Stream::Furnish, &seed.0),
         }
     }
 

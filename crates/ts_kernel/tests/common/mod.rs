@@ -141,6 +141,9 @@ impl Plugin for ParallelWorld {
     fn version(&self) -> u32 {
         1
     }
+    fn draw_sites(&self) -> &'static [DrawSite] {
+        &[ACT]
+    }
     fn build(&self, b: &mut SimBuilder) {
         b.state_component::<Pos>("test")
             .state_component::<Heat>("test")
@@ -252,7 +255,7 @@ fn climb(
     mut q: Query<(&StableEntity, &mut Level), With<LodComplete>>,
 ) {
     let slot = clock.now().as_millis().unsigned_abs();
-    let keys = &**streams;
+    let keys = &*streams;
     par_for_each_mut(&mut q, |(s, mut level)| {
         level.0 += (keys.draw(CLIMB, s.id(), slot) % 7) as i64 - 3;
     });
@@ -295,6 +298,9 @@ impl Plugin for SwitchingWorld {
     }
     fn version(&self) -> u32 {
         1
+    }
+    fn draw_sites(&self) -> &'static [DrawSite] {
+        &[CLIMB, TOGGLE]
     }
     fn build(&self, b: &mut SimBuilder) {
         b.state_component::<Level>("test")
