@@ -3,7 +3,8 @@
 use std::io::Read;
 
 use crate::{
-    Code, ContentPack, Diagnostic, FORMAT_VERSION, Limits, LoadErrors, SourceFile, read_bounded,
+    Code, ContentPack, Diagnostic, FORMAT_VERSION, IdState, Limits, LoadErrors, NAMESPACES,
+    Registry, SourceFile, is_valid_card_id, is_valid_id, read_bounded,
 };
 
 const ITEMS: &str = "// spec: revues/architecture.md §5.2\n[\n    Item(id: \"item.bread\", name: \"Pain\"),\n    Item(id: \"item.knife\", name: \"Couteau\"),\n]\n";
@@ -193,7 +194,10 @@ fn invalid_id_and_name() {
         ".item",
         "1item",
         "item.a-b",
-        &"a".repeat(65),
+        "item",
+        "item.a ",
+        "item.\u{e9}",
+        &format!("item.{}", "a".repeat(60)),
     ] {
         let text = format!("[Item(id: \"{id}\", name: \"A\")]");
         assert_eq!(
@@ -202,7 +206,17 @@ fn invalid_id_and_name() {
             "id {id:?}"
         );
     }
-    for name in ["", "tab\\there", &"n".repeat(257)] {
+    for name in [
+        "",
+        "tab\\there",
+        &"n".repeat(257),
+        " Pain",
+        "Pain ",
+        "Pain\u{a0}",
+        "\u{3000}Pain",
+        // `e` then a combining acute accent: NFD, not NFC (M40e).
+        "Pa\u{65}\u{301}n",
+    ] {
         let text = format!("[Item(id: \"item.a\", name: \"{name}\")]");
         assert_eq!(
             codes(build(vec![file("a.ron", &text)])),
@@ -570,5 +584,149 @@ mod fuzzing {
         assert_eq!(code(&big), Code::FileTooLarge);
         let empty_lists = [b"[]".as_slice(); 3].join(&SEPARATOR);
         assert_eq!(load(&empty_lists).unwrap().cards().len(), 0);
+    }
+}
+
+// spec: attendus-mesurables.md §10.2 (M40a, M40b, M40e)
+#[test]
+fn identifier_grammar_namespace_and_name_rules_of_a15() {
+    // M40a: at least two segments for a card, 64 bytes at most; the bare grammar keeps one.
+    assert!(is_valid_id("toy_year") && !is_valid_card_id("toy_year"));
+    assert!(is_valid_card_id("item.bread") && is_valid_card_id("item.a.b_2"));
+    let longest = format!("item.{}", "a".repeat(59));
+    assert!(longest.len() == 64 && is_valid_card_id(&longest));
+    // M40b: the namespace is the kind in snake_case, whatever the file or its folder.
+    assert_eq!(NAMESPACES, ["activity", "item"]);
+    let pack = build(vec![
+        file("domain/deep/x.ron", "[Item(id: \"item.a\", name: \"A\")]"),
+        file(
+            "flat.ron",
+            "[Activity(id: \"activity.a\", name: \"A\", items: [\"item.a\"])]",
+        ),
+    ])
+    .unwrap();
+    for card in pack.cards() {
+        assert!(NAMESPACES.contains(&card.namespace()));
+        assert!(card.id().starts_with(&format!("{}.", card.namespace())));
+    }
+    for text in [
+        "[Item(id: \"activity.a\", name: \"A\")]",
+        "[Item(id: \"act.a\", name: \"A\")]",
+        "[Activity(id: \"item.a\", name: \"A\", items: [])]",
+        "[Item(id: \"items.a\", name: \"A\")]",
+    ] {
+        let d = first(build(vec![file("a.ron", text)]));
+        assert_eq!(d.code, Code::WrongNamespace, "{text}");
+        assert_eq!(d.code.as_str(), "DATA_WRONG_NAMESPACE");
+    }
+    // M40e: NFC with accents loads, as raw text or RON escapes; 256 bytes is the bound.
+    let accents = build(vec![file(
+        "a.ron",
+        "[Item(id: \"item.a\", name: \"P\u{e2}tisserie à l'étage\")]",
+    )])
+    .unwrap();
+    assert_eq!(accents.cards()[0].name(), "Pâtisserie à l'étage");
+    let text = format!("[Item(id: \"item.a\", name: \"{}\")]", "n".repeat(256));
+    assert!(build(vec![file("a.ron", &text)]).is_ok());
+}
+
+// spec: attendus-mesurables.md §10.2 (M40d)
+mod registry {
+    use super::*;
+
+    const LOCK: &str = "# header\nactivity.bake active\n\nactivity.rest active\nitem.bread active\nitem.knife active\n";
+
+    fn pack() -> ContentPack {
+        build(vec![file("b.ron", ITEMS), file("a.ron", ACTIVITIES)]).unwrap()
+    }
+
+    fn parse(text: &str) -> Registry {
+        Registry::parse(text.as_bytes()).unwrap()
+    }
+
+    fn found<T: std::fmt::Debug>(r: Result<T, LoadErrors>) -> Vec<(Code, u32, String)> {
+        r.unwrap_err()
+            .diagnostics()
+            .iter()
+            .map(|d| (d.code, d.line, d.detail.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn parses_entries_in_order_with_comments_and_crlf() {
+        let r = parse(&LOCK.replace('\n', "\r\n"));
+        let ids: Vec<(&str, IdState)> = r.entries().collect();
+        assert_eq!(ids.len(), 4);
+        assert_eq!(ids[0], ("activity.bake", IdState::Active));
+        assert!(parse("").entries().next().is_none());
+        assert_eq!(
+            parse("item.a retired").entries().next(),
+            Some(("item.a", IdState::Retired))
+        );
+    }
+
+    #[test]
+    fn malformed_lines_and_duplicates_are_refused_with_their_line() {
+        for (text, line) in [
+            ("item.a", 1),
+            ("item.a  active", 1),
+            ("item.a active ", 1),
+            ("item.a Active", 1),
+            (" item.a active", 1),
+            ("# c\nitem active", 2),
+            ("item.a removed", 1),
+            ("Item.a active", 1),
+        ] {
+            let f = found(Registry::parse(text.as_bytes()));
+            assert_eq!((f[0].0, f[0].1), (Code::RegistrySyntax, line), "{text:?}");
+        }
+        let f = found(Registry::parse(b"item.a active\nitem.a retired\n"));
+        assert_eq!(f, [(Code::RegistryDuplicate, 2, "item.a".to_owned())]);
+        let f = found(Registry::parse(&[b'i', 0xff]));
+        assert_eq!(f[0].0, Code::NotUtf8);
+    }
+
+    #[test]
+    fn pack_must_match_the_registry() {
+        parse(LOCK).check_pack(&pack()).unwrap();
+        // A card missing from the registry.
+        let lock = LOCK.replace("item.knife active\n", "");
+        let f = found(parse(&lock).check_pack(&pack()));
+        assert_eq!(f, [(Code::Unregistered, 0, "item.knife".to_owned())]);
+        // A retired identifier used again.
+        let lock = LOCK.replace("item.knife active", "item.knife retired");
+        let f = found(parse(&lock).check_pack(&pack()));
+        assert_eq!(f, [(Code::RetiredReused, 6, "item.knife".to_owned())]);
+        // An active identifier whose card was removed: it must be marked retired.
+        let lock = format!("{LOCK}item.old active\nitem.gone retired\n");
+        let f = found(parse(&lock).check_pack(&pack()));
+        assert_eq!(f, [(Code::ActiveWithoutCard, 7, "item.old".to_owned())]);
+    }
+
+    #[test]
+    fn registry_is_append_only() {
+        let old = parse(LOCK);
+        // Same, appended, retired, comments changed: allowed.
+        let appended = format!("{LOCK}item.new active\nitem.newer retired\n");
+        let retired = LOCK.replace("item.bread active", "item.bread retired");
+        let comments = LOCK.replace("# header", "# other\n# lines");
+        for next in [LOCK.to_owned(), appended, retired.clone(), comments] {
+            old.check_successor(&parse(&next)).unwrap();
+        }
+        // Removed, renamed, moved, inserted: refused.
+        let removed = LOCK.replace("item.knife active\n", "");
+        let renamed = LOCK.replace("item.knife", "item.blade");
+        let moved = LOCK.replace(
+            "item.bread active\nitem.knife active",
+            "item.knife active\nitem.bread active",
+        );
+        let inserted = LOCK.replace("item.bread", "item.apple active\nitem.bread");
+        for next in [removed, renamed, moved, inserted] {
+            let f = found(old.check_successor(&parse(&next)));
+            assert_eq!(f[0].0, Code::RegistryRewritten, "{next}");
+        }
+        // Retired back to active: refused.
+        let f = found(parse(&retired).check_successor(&old));
+        assert_eq!(f, [(Code::RegistryRewritten, 5, "item.bread".to_owned())]);
     }
 }

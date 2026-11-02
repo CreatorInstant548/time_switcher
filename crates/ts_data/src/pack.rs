@@ -5,7 +5,7 @@ use core::fmt;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
-use crate::card::{Card, is_valid_id, is_valid_name};
+use crate::card::{Card, is_valid_card_id, is_valid_name};
 use crate::error::{Code, Diagnostic, LoadErrors, Sink};
 use crate::scan::element_starts;
 use crate::source::{Limits, SourceFile, is_relative_path};
@@ -198,7 +198,8 @@ fn parse_file(file: &SourceFile, limits: &Limits) -> Result<Vec<Card>, Diagnosti
         })
 }
 
-/// Field rules, identifier uniqueness, then reference resolution. Returns the cards by id.
+/// Field rules (identifier grammar, namespace of the kind, name), identifier uniqueness
+/// across all kinds, then reference resolution. Returns the cards by id.
 /// References are resolved only if nothing failed before, so rejected cards cannot cause
 /// spurious broken references.
 fn validate(
@@ -215,8 +216,11 @@ fn validate(
     let mut by_id: BTreeMap<String, Located> = BTreeMap::new();
     for l in located {
         let id = l.card.id().to_owned();
-        if !is_valid_id(&id) {
+        // spec: attendus-mesurables.md §10.2 (M40a à M40c, M40e)
+        if !is_valid_card_id(&id) {
             report(sink, Code::InvalidId, &l, &id);
+        } else if id.split('.').next() != Some(l.card.namespace()) {
+            report(sink, Code::WrongNamespace, &l, &id);
         } else if !is_valid_name(l.card.name()) {
             report(sink, Code::InvalidName, &l, &id);
         } else {
