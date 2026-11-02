@@ -74,7 +74,10 @@ impl Phase {
 /// system, unordered with both, could have its commands applied at that point or at the end
 /// of the phase depending on timing: a result that differs between two parallel runs. With
 /// none, the commands of a phase are applied once, at the end of the phase, in the order of
-/// the schedule's systems, which depends on the build only. (The `Entity` that
+/// the schedule's systems, which depends on the build only. Two things would apply buffers
+/// earlier: an `ApplyDeferred` system (banned, K-b) and an exclusive system with deferred
+/// buffers, which the parallel executor runs with `System::run` (refused by `Sim::build`,
+/// `BuildError::DeferredExclusive`). (The `Entity` that
 /// `Commands::spawn` reserves may still differ between parallel runs: it is not state, and
 /// durable references use `StableId`.) Manual points (`ApplyDeferred`) are banned by
 /// `clippy.toml` and by `cargo xtask check` (K-b).
@@ -127,8 +130,9 @@ impl ExecutorSwitch {
 ///
 /// **The choice changes the speed only** (R1). Every pair of systems whose accesses conflict
 /// is explicitly ordered (ambiguities are errors, L7), and with no sync point inside a phase
-/// (AS-57) both executors apply the deferred commands once, at the end of the phase, in the
-/// topological order of the schedule; the toy world and the L6 tests already prove that both
+/// (AS-57) and no exclusive system with deferred buffers (refused by `Sim::build`) both
+/// executors apply the deferred commands once, at the end of the phase, in the topological
+/// order of the schedule; the toy world and the L6 tests already prove that both
 /// give the same fingerprint. Neither keeps anything from one run to the next: with
 /// `apply_final_deferred` left at its default (`true`; the kernel never changes it), each run
 /// ends with every buffer applied and its run state cleared.

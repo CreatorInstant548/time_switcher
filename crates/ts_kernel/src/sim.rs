@@ -378,6 +378,14 @@ pub enum BuildError {
         /// Phase concerned, or `None` for a world-wide opt-out.
         phase: Option<Phase>,
     },
+    /// A system of `phase` has exclusive access to the world (`&mut World`) **and** deferred
+    /// buffers (`Commands`, `Deferred<T>`, for example through `pipe`): the parallel
+    /// executor applies them as soon as the system ends, the single-threaded one at the end
+    /// of the phase, so the result would depend on the executor (AS-57, #93).
+    DeferredExclusive {
+        /// Phase concerned.
+        phase: Phase,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -428,6 +436,10 @@ impl fmt::Display for BuildError {
                     "a system of phase {phase:?} opts out of ambiguity detection"
                 )
             }
+            Self::DeferredExclusive { phase } => write!(
+                f,
+                "a system of phase {phase:?} has exclusive world access and deferred buffers"
+            ),
             Self::AmbiguityOptOut { phase: None } => {
                 f.write_str("the world opts components or resources out of ambiguity detection")
             }
@@ -682,6 +694,14 @@ impl Sim {
             if let Err(e) = schedule.initialize(&mut world) {
                 let message = e.to_string(schedule.graph(), &world);
                 return Err(BuildError::Schedule { phase, message });
+            }
+            // AS-57 (#93 review): the exact criterion of the parallel executor, which runs an
+            // exclusive system with `System::run` and so applies its buffers at once.
+            let deferred_exclusive = schedule.systems_with_access().is_ok_and(|mut systems| {
+                systems.any(|(_, s)| s.access().is_exclusive() && s.system().has_deferred())
+            });
+            if deferred_exclusive {
+                return Err(BuildError::DeferredExclusive { phase });
             }
         }
         // After `initialize`: the count of the phase's own systems, since no sync point is

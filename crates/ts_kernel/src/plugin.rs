@@ -48,7 +48,15 @@ use crate::{Phase, StateDecode, StateHash};
 /// to another system of the same phase, whatever their order and the number of threads. The
 /// kernel inserts no sync point inside a phase, and `clippy.toml` bans the manual ones
 /// (`ApplyDeferred`, `apply_deferred`). A system that must see an insertion goes in a later
-/// phase.
+/// phase. An exclusive system (`&mut World`) carries no deferred buffer (`Commands`,
+/// `Deferred<T>`, also through `pipe` or another combinator): the parallel executor would
+/// apply them as soon as it ends, the single-threaded one at the end of the phase, and
+/// [`crate::Sim::build`] refuses it ([`crate::BuildError::DeferredExclusive`]).
+///
+/// **Ticks** (AS-27, AS-57 K-d): a rule never reads a change tick; `clippy.toml` bans every
+/// method that yields one. Known limit, accepted (AS-57): `Tick` values can still be
+/// compared, hashed or printed through its `Eq`, `Hash` and `Debug`, which clippy cannot
+/// ban; the safety net is the generic resume test (#110), since ticks restart on restore.
 ///
 /// Enforced (#31, AS-27) by the generic resume test `ts_toy::resume::check_resume`, which
 /// `ts_game` runs on `standard_rules()` and each rule crate on its plugins, and by the
