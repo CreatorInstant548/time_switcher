@@ -131,7 +131,7 @@ fn run(threads: Threads) -> Result<(String, u64, u64), Box<dyn std::error::Error
     };
     let mut sim = Sim::build(cfg, &rules, &key())?;
     for _ in 0..TICKS {
-        sim.step();
+        sim.step()?;
     }
     let seen = sim.world().resource::<Seen>();
     Ok((hex(&sim), seen.in_phase, seen.next_phase))

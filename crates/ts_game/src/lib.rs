@@ -45,7 +45,7 @@ mod tests {
             Sim::build(SimConfig::default(), &rules, &WorldKey::from_bytes([7; 16])).unwrap();
         assert!(sim.active_plugins().is_empty());
         assert_eq!(sim.now(), SimTime::EPOCH);
-        sim.step();
+        sim.step().unwrap();
         assert_eq!(sim.now(), SimTime::from_millis(50));
     }
 

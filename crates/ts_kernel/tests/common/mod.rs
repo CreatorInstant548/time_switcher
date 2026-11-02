@@ -8,16 +8,16 @@
 
 pub mod deferred;
 
+use std::error::Error;
 use std::sync::{Mutex, PoisonError};
 use std::thread::ThreadId;
 
 use bevy_ecs::prelude::{Commands, Component, Entity, Has, Query, Res, ResMut, Resource, With};
 use ts_kernel::rng::{DrawSite, Stream, WorldKey};
 use ts_kernel::{
-    BuildError, CanonicalError, LodComplete, MemorySnapshot, PAR_ITER_FROM, ParallelPhases, Phase,
-    Plugin, RestoreError, Sim, SimBuilder, SimClock, SimConfig, SnapshotScope, StableEntity,
-    StableId, StableIds, StableIndex, StateDecode, StateHash, StateReader, StateWriter, Threads,
-    WorldStreams, par_for_each_mut,
+    CanonicalError, LodComplete, MemorySnapshot, PAR_ITER_FROM, ParallelPhases, Phase, Plugin, Sim,
+    SimBuilder, SimClock, SimConfig, SnapshotScope, StableEntity, StableId, StableIds, StableIndex,
+    StateDecode, StateHash, StateReader, StateWriter, Threads, WorldStreams, par_for_each_mut,
 };
 
 /// Expected global fingerprint after [`TICKS`] ticks, whatever the number of threads.
@@ -168,11 +168,11 @@ impl Plugin for ParallelWorld {
 
 /// Runs [`TICKS`] ticks with `threads` and returns the global fingerprint in hexadecimal, and
 /// the number of distinct threads seen in `par_iter`.
-pub fn run(threads: Threads) -> Result<(String, usize), BuildError> {
+pub fn run(threads: Threads) -> Result<(String, usize), Box<dyn Error>> {
     let rules = rules();
     let mut sim = Sim::build(config(threads), &rules, &key())?;
     for _ in 0..TICKS {
-        sim.step();
+        sim.step()?;
     }
     let hex = hex(&sim);
     let workers = sim
@@ -331,7 +331,7 @@ pub struct Switching {
 }
 
 /// Runs the switching world for [`SWITCHING_TICKS`] ticks with `threads` and `policy`.
-pub fn switching(threads: Threads, policy: ParallelPhases) -> Result<Switching, BuildError> {
+pub fn switching(threads: Threads, policy: ParallelPhases) -> Result<Switching, Box<dyn Error>> {
     let rules: Vec<Box<dyn Plugin>> = vec![Box::new(SwitchingWorld)];
     let cfg = SimConfig {
         threads,
@@ -340,7 +340,7 @@ pub fn switching(threads: Threads, policy: ParallelPhases) -> Result<Switching, 
     };
     let mut sim = Sim::build(cfg, &rules, &key())?;
     for _ in 0..SWITCHING_TICKS {
-        sim.step();
+        sim.step()?;
     }
     let me = std::thread::current().id();
     let placement = sim.world().resource::<Placement>();
@@ -373,20 +373,19 @@ pub fn round_trips(
     threads: Threads,
     ks: &[usize],
     n: usize,
-) -> Result<Vec<(String, String)>, RestoreError> {
+) -> Result<Vec<(String, String)>, Box<dyn Error>> {
     let rules = rules();
     let mut out = Vec::new();
     for &k in ks {
-        let mut straight =
-            Sim::build(config(threads), &rules, &key()).map_err(RestoreError::Build)?;
+        let mut straight = Sim::build(config(threads), &rules, &key())?;
         for _ in 0..k {
-            straight.step();
+            straight.step()?;
         }
         let snap: MemorySnapshot = straight.snapshot(SnapshotScope::Full);
         let mut restored = Sim::restore(&snap, config(threads), &rules, &key())?;
         for _ in 0..n {
-            straight.step();
-            restored.step();
+            straight.step()?;
+            restored.step()?;
         }
         out.push((hex(&straight), hex(&restored)));
     }

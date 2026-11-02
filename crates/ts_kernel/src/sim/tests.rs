@@ -68,7 +68,7 @@ fn phases_run_in_order_once_per_tick() {
     })];
     let mut sim = build(&rules).unwrap();
     assert_eq!(sim.now(), SimTime::EPOCH);
-    let report = sim.step();
+    let report = sim.step().unwrap();
     assert_eq!(report.tick_start, SimTime::EPOCH);
     assert_eq!(sim.now(), SimTime::from_millis(50));
     assert_eq!(sim.world().resource::<PhaseLog>().0, Phase::ALL);
@@ -126,9 +126,9 @@ fn timer_setup(b: &mut SimBuilder) {
 #[test]
 fn due_events_are_those_of_the_tick_in_order() {
     let mut sim = build(&[plugin("timer", timer_setup)]).unwrap();
-    assert_eq!(sim.step().due_events, 3);
-    assert_eq!(sim.step().due_events, 1);
-    assert_eq!(sim.step().due_events, 1);
+    assert_eq!(sim.step().unwrap().due_events, 3);
+    assert_eq!(sim.step().unwrap().due_events, 1);
+    assert_eq!(sim.step().unwrap().due_events, 1);
     assert_eq!(
         sim.world().resource::<Seen>().0,
         [
@@ -166,7 +166,10 @@ fn only_stable_entities_stop_the_time_skip() {
         plugin("unstable", unstable_complete_setup),
     ])
     .unwrap();
-    assert_eq!(alone.run_until(stop), marked.run_until(stop));
+    assert_eq!(
+        alone.run_until(stop).unwrap(),
+        marked.run_until(stop).unwrap()
+    );
     assert_eq!(alone.state_hash(), marked.state_hash());
 }
 
@@ -175,10 +178,10 @@ fn only_stable_entities_stop_the_time_skip() {
 fn time_skip_matches_ticking() {
     let stop = StopCondition::At(SimTime::from_millis(60_000));
     let mut skipping = build(&[plugin("timer", timer_setup)]).unwrap();
-    let skip = skipping.run_until(stop);
+    let skip = skipping.run_until(stop).unwrap();
     let mut ticking =
         build(&[plugin("timer", timer_setup), plugin("full", complete_setup)]).unwrap();
-    let tick = ticking.run_until(stop);
+    let tick = ticking.run_until(stop).unwrap();
 
     assert_eq!(skipping.now(), SimTime::from_millis(60_000));
     assert_eq!(ticking.now(), SimTime::from_millis(60_000));
@@ -206,7 +209,9 @@ fn time_skip_matches_ticking() {
 #[test]
 fn run_until_stops_at_next_tick_boundary() {
     let mut sim = build(&[]).unwrap();
-    let r = sim.run_until(StopCondition::At(SimTime::from_millis(1001)));
+    let r = sim
+        .run_until(StopCondition::At(SimTime::from_millis(1001)))
+        .unwrap();
     assert_eq!(sim.now(), SimTime::from_millis(1050));
     assert_eq!(
         r,
@@ -215,7 +220,9 @@ fn run_until_stops_at_next_tick_boundary() {
             skipped_ticks: 21
         }
     );
-    let r = sim.run_until(StopCondition::At(SimTime::from_millis(10)));
+    let r = sim
+        .run_until(StopCondition::At(SimTime::from_millis(10)))
+        .unwrap();
     assert_eq!(r, RunReport::default());
     assert_eq!(sim.now(), SimTime::from_millis(1050));
 }
@@ -314,7 +321,7 @@ fn unordered_writes_are_rejected() {
         b.add_systems(Phase::Consequences, add_one);
     })];
     let mut sim = build(&ordered).unwrap();
-    sim.step();
+    sim.step().unwrap();
     assert_eq!(sim.world().resource::<Counter>().0, 3);
 }
 
@@ -398,22 +405,60 @@ fn dependency_must_come_first() {
     );
 }
 
-/// `run_until` never panics at the bounds of `i64` (T6a review m2).
+/// `run_until` never panics at the bounds of `i64` (T6a review m2), and never takes the
+/// clock beyond the saved range (#113): a stop date whose tick would end beyond 2^62 ms is
+/// refused before anything runs, never clamped.
 #[test]
 fn run_until_handles_extreme_dates() {
+    let at = |ms| StopCondition::At(SimTime::from_millis(ms));
+    let max = SimTime::MAX_SAVED_ABS_MILLIS;
+    let edge = max - max % 50;
+    assert!(
+        edge < max,
+        "the grid must leave a gap below 2^62 for this test"
+    );
     let mut sim = build(&[]).unwrap();
+    assert_eq!(sim.run_until(at(i64::MIN)), Ok(RunReport::default()));
+    let before = sim.state_hash();
+    // `edge + 1` is savable, but its tick ends at `edge + 50`, beyond the bound.
+    for (far, requested) in [
+        (i64::MAX, i64::MAX),
+        (i64::MAX - 1, i64::MAX - 1),
+        (max + 1, max + 1),
+        (edge + 1, edge + 50),
+    ] {
+        assert_eq!(
+            sim.run_until(at(far)),
+            Err(ClockOutOfRange {
+                now: SimTime::EPOCH,
+                requested: SimTime::from_millis(requested),
+            }),
+            "{far}"
+        );
+        assert_eq!(sim.now(), SimTime::EPOCH);
+        assert_eq!(sim.state_hash(), before);
+    }
+    // The last tick start within the bound is reached, by the time skip.
+    let r = sim.run_until(at(edge)).unwrap();
+    assert_eq!((r.ticks, sim.now()), (0, SimTime::from_millis(edge)));
+    assert_eq!(sim.run_until(at(edge)), Ok(RunReport::default()));
+    let before = sim.state_hash();
     assert_eq!(
-        sim.run_until(StopCondition::At(SimTime::from_millis(i64::MIN))),
-        RunReport::default()
+        sim.run_until(at(max)),
+        Err(ClockOutOfRange {
+            now: SimTime::from_millis(edge),
+            requested: SimTime::from_millis(edge + 50),
+        })
     );
-    let r = sim.run_until(StopCondition::At(SimTime::from_millis(i64::MAX)));
-    assert_eq!(r.ticks, 0);
-    let end = sim.now().as_millis();
-    assert!(i64::MAX - end < 50 && end % 50 == 0, "{end}");
     assert_eq!(
-        sim.run_until(StopCondition::At(SimTime::from_millis(i64::MAX))),
-        RunReport::default()
+        sim.step(),
+        Err(ClockOutOfRange {
+            now: SimTime::from_millis(edge),
+            requested: SimTime::from_millis(edge + 50),
+        })
     );
+    assert_eq!(sim.now(), SimTime::from_millis(edge));
+    assert_eq!(sim.state_hash(), before);
 }
 
 #[test]
