@@ -92,7 +92,7 @@ pub enum Threads {
 // spec: revues/architecture.md §9.1, §9.2
 /// Work from which a phase runs on the parallel executor by default; see
 /// [`ParallelPhases::FromWork`]. A speed setting, never a game value.
-// PROVISIONAL(design #88): to calibrate on the phase 1 systems; the result does not depend on it.
+// PROVISIONAL(design #94): to calibrate on the phase 1 systems; the result does not depend on it.
 pub const PARALLEL_FROM_WORK: u32 = 256;
 
 // spec: revues/architecture.md §9.1, §9.2 ; carnet architecture-securite.md §9.10 L6
