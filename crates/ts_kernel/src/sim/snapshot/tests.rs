@@ -59,7 +59,7 @@ fn move_all(
 ) {
     let slot = clock.now().as_millis().unsigned_abs();
     for (s, mut p, mut h) in &mut q {
-        let r = draw(streams.get(Stream::Population), s.id(), slot, 1);
+        let r = draw(streams.keys().get(Stream::Population), s.id(), slot, 1);
         p.0 += i64::try_from(r % 7).unwrap() - 3;
         h.0 = h.0 * 0.5 + p.0 as f64;
     }
@@ -257,7 +257,7 @@ fn snapshot_excludes_stream_keys() {
     let subject = StableId::from_snapshot_raw(3);
     let sample = |sim: &Sim| {
         let streams = sim.world.resource::<WorldStreams>();
-        draw(streams.get(Stream::Population), subject, 1, 1)
+        draw(streams.keys().get(Stream::Population), subject, 1, 1)
     };
     let restored = Sim::restore(&snap_a, SimConfig::default(), &life(1), &other).unwrap();
     assert_eq!(sample(&restored), sample(&b));

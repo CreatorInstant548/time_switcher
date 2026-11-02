@@ -27,11 +27,11 @@ fn is_ident(c: char) -> bool {
 /// Source normalisée, sans blancs : pour chaque caractère, sa ligne, un blanc (ou commentaire)
 /// juste avant lui, et son appartenance à une chaîne ou à un caractère littéral.
 #[derive(Default)]
-struct Src {
-    text: Vec<char>,
-    line: Vec<usize>,
+pub(crate) struct Src {
+    pub(crate) text: Vec<char>,
+    pub(crate) line: Vec<usize>,
     gap: Vec<bool>,
-    string: Vec<bool>,
+    pub(crate) string: Vec<bool>,
 }
 
 impl Src {
@@ -43,7 +43,7 @@ impl Src {
     }
 
     /// Identifiants hors chaîne : (début, fin exclue). Un blanc coupe un identifiant.
-    fn tokens(&self) -> Vec<(usize, usize)> {
+    pub(crate) fn tokens(&self) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
         let mut k = 0;
         while k < self.text.len() {
@@ -61,7 +61,7 @@ impl Src {
         out
     }
 
-    fn word(&self, (start, end): (usize, usize)) -> String {
+    pub(crate) fn word(&self, (start, end): (usize, usize)) -> String {
         self.text[start..end].iter().collect()
     }
 
@@ -106,7 +106,7 @@ impl Src {
 }
 
 /// Retire commentaires et blancs, retire `r#` devant un identifiant, marque les littéraux.
-fn normalize(source: &str) -> Src {
+pub(crate) fn normalize(source: &str) -> Src {
     let s: Vec<char> = source.chars().collect();
     let mut src = Src::default();
     let (mut i, mut line, mut gap) = (0, 1, true);
