@@ -1,5 +1,7 @@
 //! Bounds of decoding (SEC0-23): each host can pass its own, the defaults are cautious.
 
+use crate::error::{Bound, DecodeError};
+
 // spec: carnet architecture-securite.md SEC0-23 ; revues/securite.md S10, S24 ; revues/architecture.md §12.3 ; attendus-mesurables.md §10.3
 /// Bounds checked while decoding, and while encoding so that the encoder never writes what
 /// the decoder refuses. The depth needs no runtime bound: the schema has no recursive type
@@ -46,9 +48,25 @@ impl Default for Limits {
 
 // spec: attendus-mesurables.md §10.3 (M41h)
 const _: () = assert!(
-    Limits::DEFAULT.decode_peak_bound() <= MAX_DECODE_PEAK,
-    "the default bounds must keep the decoding peak under M41h"
+    Limits::DEFAULT.decode_peak_bound() <= MAX_DECODE_PEAK
+        && Limits::fuzzing().decode_peak_bound() <= MAX_DECODE_PEAK,
+    "the default and fuzzing bounds must keep the decoding peak under M41h"
 );
+
+// spec: attendus-mesurables.md §10.3 (M41h)
+/// Refuses `limits` whose [`Limits::decode_peak_bound`] is above [`MAX_DECODE_PEAK`]: a fault
+/// of the caller's configuration, checked before any input byte is read.
+pub(crate) const fn check_peak(limits: &Limits) -> Result<(), DecodeError> {
+    let peak = limits.decode_peak_bound();
+    if peak > MAX_DECODE_PEAK {
+        return Err(DecodeError::TooLarge {
+            bound: Bound::Peak,
+            len: peak,
+            max: MAX_DECODE_PEAK,
+        });
+    }
+    Ok(())
+}
 
 impl Limits {
     /// [`Limits::default`]: the starting values of A15, the same in solo and online; a host
@@ -85,14 +103,11 @@ impl Limits {
     /// decoding of the kernel parts by [`crate::decode_snapshot`] comes after it and is not
     /// included: it depends on the state types of the rules (see that test).
     pub const fn decode_peak_bound(&self) -> u64 {
-        const fn size(n: usize) -> u64 {
-            n as u64
-        }
         let per_part = 3_u64
             .saturating_mul(
-                size(size_of::<crate::PartEntry>())
-                    .saturating_add(size(size_of::<&[u8]>()))
-                    .saturating_add(size(size_of::<(String, Vec<u8>)>())),
+                (size_of::<crate::PartEntry>() as u64)
+                    .saturating_add(size_of::<&[u8]>() as u64)
+                    .saturating_add(size_of::<(String, Vec<u8>)>() as u64),
             )
             .saturating_add(self.max_name_len as u64);
         self.max_envelope_len

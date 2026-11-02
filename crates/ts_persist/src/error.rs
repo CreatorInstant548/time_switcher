@@ -23,7 +23,8 @@ pub enum Bound {
     /// `zstd` window announced by a frame.
     Window,
     /// Memory peak the bounds allow ([`crate::Limits::decode_peak_bound`]), above the
-    /// ceiling [`crate::MAX_DECODE_PEAK`] (M41h): the bounds themselves are refused.
+    /// ceiling [`crate::MAX_DECODE_PEAK`] (M41h): the caller's bounds themselves are refused,
+    /// whatever the bytes, before any is read (`len` is then the peak bound, not a value read).
     Peak,
 }
 
