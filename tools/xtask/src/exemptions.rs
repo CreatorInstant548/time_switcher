@@ -120,6 +120,16 @@ impl Src {
         at >= n && self.text[at - n..at].iter().copied().eq(s.chars()) && !self.string[at - 1]
     }
 
+    /// The delimiter at `k` opens the arguments of a macro call `name!`: an identifier, then `!`
+    /// with no blank between (so `if !(x)` and `a != (b)` are not calls).
+    fn macro_call_before(&self, k: usize) -> bool {
+        k >= 2
+            && self.text[k - 1] == '!'
+            && !self.string[k - 1]
+            && !self.gap[k - 1]
+            && is_ident(self.text[k - 2])
+    }
+
     /// For each character: inside the delimiters of a macro call `name!( … )`, `![ … ]` or `!{ … }`.
     fn in_macro_args(&self) -> Vec<bool> {
         let (mut stack, mut inside) = (Vec::new(), 0_usize);
@@ -128,7 +138,7 @@ impl Src {
             if !self.string[k] {
                 match self.text[k] {
                     '(' | '[' | '{' => {
-                        let call = self.follows(k, "!");
+                        let call = self.macro_call_before(k);
                         stack.push(call);
                         inside += usize::from(call);
                     }
@@ -152,7 +162,8 @@ impl Src {
         let mut out = vec![false; self.text.len()];
         let mut end = 0;
         for tok in self.tokens() {
-            if tok.0 < end || self.word(tok) != "use" {
+            let generics = self.text.get(tok.1) == Some(&'<'); // `use<'a>`, precise capturing
+            if tok.0 < end || self.word(tok) != "use" || generics {
                 continue;
             }
             let (mut depth, mut k) = (0_i32, tok.1);
@@ -293,8 +304,8 @@ fn normalize(source: &str) -> Src {
 /// - `path = …` dans un attribut (`#[path]`, `cfg_attr(…, path = …)`, argument de macro) ;
 /// - `allow(…)` ou `expect(…)` de `clippy::all`, `clippy::style` ou `warnings`, et tout `$` dans
 ///   les arguments d'un `allow`, `expect`, `warn` ou `deny` ;
-/// - un prédicat de `cfg(…)` (après `[`, `,` ou `(`, ou `!{`), `cfg!(…)` ou `cfg_attr(…)` hors de
-///   `test`, `feature = "…"`, `all`, `any` et `not`.
+/// - un prédicat de `cfg(…)` (sauf après un identifiant, `.` ou `::`, comme `fn cfg(level)`),
+///   `cfg!(…)` ou `cfg_attr(…)` hors de `test`, `feature = "…"`, `all`, `any` et `not`.
 pub fn clippy_exemptions(source: &str) -> Vec<usize> {
     let src = normalize(source);
     let mut found = Vec::new();
@@ -314,6 +325,9 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
         // A macro argument opens with `!{`: the position `{` after a call is as good as `(` or `[`.
         let opens = matches!(prev, Some('[' | ',' | '('))
             || (prev == Some('{') && src.follows(start - 1, "!"));
+        // `cfg` after an identifier (`fn cfg(…)`), a `.` or a `::` names something else: any other
+        // position could be an attribute handed to a macro (`m!(x; cfg(clippy))`).
+        let named = prev.is_some_and(|c| is_ident(c) || c == '.' || c == ':');
         let path = word == "path" && next(end, "=") && opens;
         let lint = matches!(word.as_str(), "allow" | "expect" | "warn" | "deny")
             && prev != Some('.')
@@ -326,7 +340,7 @@ pub fn clippy_exemptions(source: &str) -> Vec<usize> {
                 args.contains('$') || group
             };
         let cfg = match word.as_str() {
-            "cfg" if next(end, "(") && opens => Some((end + 1, src.close(end + 1))),
+            "cfg" if next(end, "(") && !named => Some((end + 1, src.close(end + 1))),
             "cfg" if next(end, "!(") => Some((end + 2, src.close(end + 2))),
             "cfg_attr" if next(end, "(") => {
                 let close = src.close(end + 1);
@@ -485,8 +499,10 @@ mod tests {
             "fn f() { let include = true; if include { g(include); } }",
             "struct S { include: Vec<u8> }\nfn f(include: Vec<u8>) -> S { S { include } }",
             "fn f(x: &Set) -> bool { x.include(1) }",
-            "fn cfg(level: u8) -> u8 { level }\nfn g() -> u8 { let x = cfg(5); x }",
+            "fn cfg(level: u8) -> u8 { level }\nfn g(x: &T) -> u8 { x.cfg(5) }",
             "fn f() { let path = 1; let _ = path; }",
+            "fn f(include: bool) { if !(include) { g(); } }",
+            "fn f() -> impl Sized + use<'a> { let include = 1; include }",
             "fn includes() {}\nfn include_all() {}",
         ] {
             assert!(!flagged(ok), "{ok}");
@@ -504,6 +520,11 @@ mod tests {
             "let _ = include!(\"x.rs\");",
             "let _ = std::include_str!(\"x\");",
             "fn f() { g(cfg(x)); }",
+            "m!(x; cfg(clippy))",
+            "m!(a | cfg(clippy))",
+            "m!({cfg(clippy)})",
+            "fn f() { let x = cfg(5); }",
+            "m!(a = cfg(clippy))",
         ] {
             assert!(flagged(bad), "{bad}");
         }

@@ -122,10 +122,14 @@ impl Ctx {
             .map_err(Clone::clone)
     }
 
-    /// Tracked files modified since `HEAD` and not committed (m11). The steps read the disk, not
-    /// `HEAD`: with such files, the result may differ from what will be merged.
+    /// Files modified since `HEAD`, or new (not ignored), and not committed (m11). The steps read
+    /// the disk, not `HEAD`: with such files, the result may differ from what will be merged.
     pub(crate) fn uncommitted(&self) -> Result<Vec<String>, String> {
-        self.git_paths(&["diff", "--name-only", "-z", "--no-renames", "HEAD"])
+        let mut all = self.git_paths(&["diff", "--name-only", "-z", "--no-renames", "HEAD"])?;
+        all.extend(self.git_paths(&["ls-files", "-z", "-o", "--exclude-standard"])?);
+        all.sort();
+        all.dedup();
+        Ok(all)
     }
 
     pub(crate) fn read(&self, rel: &str) -> Result<Vec<u8>, String> {

@@ -232,21 +232,21 @@ pub fn patch_sections(manifest: &str) -> Vec<String> {
     out
 }
 
-/// Crate de cœur ou de règles : ni hôte, ni outil (comme `steps::is_core`).
+/// Core or rules crate: neither a host nor a tool (as `steps::is_core`).
 fn is_core_crate(name: &str) -> bool {
     !TOOLS.contains(&name) && !HOSTS.contains(&name)
 }
 
-/// Fonctionnalités d'une crate de cœur que les passes de clippy et de test voient (m13) : liste
-/// fermée. Une autre fonctionnalité cacherait du code (`#[cfg(feature = "extra")]`) à clippy, qui
-/// ne la lit pas. Sont permises : `default` vide ; pour `ts_kernel`, `public` et les
-/// fonctionnalités de développement ; pour toute crate de cœur, une fonctionnalité de développement
-/// qui ne fait que relayer celle de `ts_kernel` (`dev-commands = ["ts_kernel/dev-commands"]`).
+/// Features of a core crate that the clippy and test passes see (m13): a closed list. Any other
+/// feature would hide code (`#[cfg(feature = "extra")]`) from clippy, which does not turn it on.
+/// Allowed: an empty `default`; for `ts_kernel`, `public` and the development features; for any
+/// core crate, a development feature that only relays the one of `ts_kernel`
+/// (`dev-commands = ["ts_kernel/dev-commands"]`).
 fn feature_covered(crate_name: &str, feature: &str, items: &[String]) -> bool {
     let dev = DEV_FEATURES.contains(&feature);
     let relay = items.len() == 1 && items[0] == format!("ts_kernel/{feature}");
     match (feature, crate_name == "ts_kernel") {
-        ("default", _) => true,
+        ("default", _) => items.is_empty(),
         ("public", kernel) => kernel,
         (_, true) => dev,
         (_, false) => dev && relay,
@@ -277,8 +277,8 @@ pub fn check_features(meta: &Metadata) -> Vec<String> {
         for (feature, items) in &p.features {
             if is_core_crate(&p.name) && !feature_covered(&p.name, feature, items) {
                 errors.push(format!(
-                    "{} : la fonctionnalité {feature} n'est pas dans la liste fermée \
-                     vue par les passes de clippy (m13) : ajouter une passe dans steps::clippy",
+                    "{}: feature {feature} is outside the closed list seen by the clippy passes \
+                     (m13): add a pass in steps::clippy and extend the list",
                     p.name
                 ));
             }
@@ -498,8 +498,9 @@ mod tests {
         )
         .unwrap();
         let errors = check_features(&m);
-        // Seven earlier violations, and two features outside the closed list (m13).
-        assert_eq!(errors.len(), 9, "{errors:#?}");
+        // Seven earlier violations, and three features outside the closed list (m13): the
+        // kernel's `default` (not empty) and `x`, and `p` of a core crate.
+        assert_eq!(errors.len(), 10, "{errors:#?}");
     }
 
     /// Y6, D-DEV-02: `ts_toy` is refused in a normal dependency of a host or a rule crate,
