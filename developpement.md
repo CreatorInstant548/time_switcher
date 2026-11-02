@@ -417,5 +417,12 @@ uns` et `.claude\worktrees` ; `main` nettoyé depuis la copie principale seuleme
   - #90, fuzz (`4ba3340`) : environ 2 min, recompilation de xtask comprise ;
   - #99, #68 (`63b370f`) : environ **1 min**, contre plus de 11 avant.
 - 02/11 : retrait des gardes `guard-git`/`guard-main` (AU1). Le mode auto de Claude Code refuse de modifier `.claude/settings.json` (auto-modification). La question est posée à l'utilisateur, et le fichier proposé est dans le scratchpad. La branche `claude/outillage-remove-guards` est prête ; `CLAUDE.md` y est modifié mais pas commité.
-- 02/11 : #97 (T11 Parquet) corrigée après refus : télémétrie Rerun vérifiée par `analytics.json`, et Parquet borné avant décodage. Seconde relecture neuve en cours ; `archsec-ok` déjà posé sur l'ancienne tête. Deux événements Rerun restent en attente dans `%LOCALAPPDATA%erun\datanalytics\` ; l'utilisateur en est informé.
+- 02/11 : #97 (T11 Parquet) corrigée après refus : télémétrie Rerun vérifiée par `analytics.json`, et Parquet borné avant décodage. Seconde relecture neuve en cours ; `archsec-ok` déjà posé sur l'ancienne tête. Deux événements Rerun restent en attente dans `%LOCALAPPDATA%
+erun\datanalytics\` ; l'utilisateur en est informé.
 - Constat (#56) : un binaire de test mis en cache dans un emplacement partagé garde le chemin d'un autre worktree (`env!("CARGO_BIN_EXE_ts-sim")`).
+- 02/11 : #97 fusionnée (T11 Parquet, `39abfcc`). V0-10 est complet (T10 + T11). Fusions en environ 1 min.
+- Prochaines étapes :
+  - #98 (AU8) ;
+  - dette : 24 issues `role:dev` à traiter par lots ;
+  - AU1, sur décision de l'utilisateur ;
+  - #87, quand la conception aura corrigé.
