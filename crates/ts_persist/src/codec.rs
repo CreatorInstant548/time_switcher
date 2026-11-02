@@ -9,7 +9,7 @@ use ruzstd::encoding::{CompressionLevel, compress_to_vec};
 
 use crate::envelope::{open, seal};
 use crate::error::{Bound, DecodeError, EncodeError};
-use crate::limits::Limits;
+use crate::limits::{Limits, check_peak};
 use crate::manifest::{Codec, Manifest, PartEntry, check_name, len64, part_digest};
 use crate::schema::Seq;
 
@@ -67,9 +67,11 @@ impl Parts {
     }
 }
 
-/// Bounds that can be checked before any compression or hashing: number of parts, names,
+/// Bounds that can be checked before any compression or hashing: memory peak of `limits`
+/// (M41h), number of parts, names,
 /// decoded sizes, and the window of our own encoder.
 fn precheck(sorted: &[&(&str, &[u8])], codec: Codec, limits: &Limits) -> Result<(), DecodeError> {
+    check_peak(limits)?;
     let count = len64(sorted.len());
     if count > u64::from(limits.max_parts) {
         return Err(DecodeError::TooLarge {

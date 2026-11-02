@@ -99,6 +99,8 @@ jobs:
         run: bash tools/ci/install-tools.sh gitleaks-selftest
       - name: cargo-deny épinglé
         run: bash tools/ci/install-tools.sh cargo-deny
+      - name: Native deny rules as generated (#119)
+        run: pwsh -NoProfile -File tools/dev/deny-rules.ps1 -Check
       - name: Version de cargo-audit
         id: audit
         if: steps.zones.outputs.lock == 'true'

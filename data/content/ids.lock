@@ -1,0 +1,11 @@
+# Registry of content identifiers (attendus-mesurables.md §10.2, M40d). Append-only.
+# One entry per line: `<identifier> active` or `<identifier> retired`.
+# - A new card adds its identifier at the end, as active.
+# - A removed card turns its line to retired; the line is never deleted, moved or renamed,
+#   and a retired identifier is never used again.
+# Checked by crates/ts_runner/tests/ids_lock.rs: against the pack in this directory, and
+# against the version of this file on origin/main (append-only).
+activity.bake active
+activity.rest active
+item.bread active
+item.knife active
