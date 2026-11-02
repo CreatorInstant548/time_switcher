@@ -14,6 +14,11 @@ const ALLOWED_ACTIONS: [&str; 4] = [
 /// `runs-on` value is refused: `self-hosted`, any custom label, a list, a `group:` mapping, an
 /// expression. Adding an image is a change of this list, in a sensitive PR.
 const HOSTED_RUNNERS: [&str; 2] = ["ubuntu-24.04", "windows-2025"];
+/// Events a workflow may be triggered by (#77, AS-53). The repository is public: any other event
+/// (`issue_comment`, `issues`, `pull_request_review*`, `discussion*`, `release`, `workflow_call`,
+/// `repository_dispatch`, `merge_group`, `pull_request_target`, `workflow_run`…) runs in the
+/// context of the base repository on text written by third parties, and no workflow needs one.
+const ALLOWED_EVENTS: [&str; 4] = ["push", "pull_request", "schedule", "workflow_dispatch"];
 /// Seul contexte sûr dans une interpolation `${{ }}`. Tout autre (`github`, `inputs`, `matrix`,
 /// `env`, `steps`, `needs`, les fonctions) n'est permis que sous `env:`, sous `with:` et dans
 /// `if:` ; un `run:` le reçoit par `env:` et une variable citée (SEC0-31).
@@ -124,6 +129,30 @@ fn runner_refusal(value: &str) -> Option<String> {
         format!(
             "runs-on {value:?} is not one of the GitHub-hosted images {HOSTED_RUNNERS:?} \
              (self-hosted runners, labels, lists, groups and expressions are refused, #77)"
+        )
+    })
+}
+
+/// Event names written after `on:` on the same line: one scalar, or a flow list `[a, b]`. An empty
+/// list or item is returned as an empty name, which [`event_refusal`] refuses.
+fn inline_events(value: &str) -> Vec<&str> {
+    let value = strip_comment(value);
+    match value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+        Some(list) => list.split(',').map(str::trim).collect(),
+        None => vec![value],
+    }
+}
+
+/// Why an event name written after `on:` is refused, `None` when it is one of
+/// [`ALLOWED_EVENTS`]. Anything that is not a plain name (expression, anchor, block, mapping) is
+/// not in the list either: the check refuses what it cannot read.
+fn event_refusal(name: &str) -> Option<String> {
+    let allowed = literal_scalar(name)
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|n| ALLOWED_EVENTS.contains(&n.as_str()));
+    (!allowed).then(|| {
+        format!(
+            "event {name:?} is not one of the allowed triggers {ALLOWED_EVENTS:?}              (public repository: other events run in the base repository's context, #77)"
         )
     })
 }
@@ -271,16 +300,37 @@ pub fn pinned_uses(text: &str) -> Vec<Pin> {
     out
 }
 
+/// Line breaks that `str::lines` does not split on: YAML breaks lines on a lone CR too, and
+/// YAML 1.1 parsers on NEL, LS and PS, so the text after one would be read here as a comment of
+/// the same line while the parser reads it as YAML of its own (#77).
+const HIDDEN_BREAKS: [char; 4] = ['\r', '\u{85}', '\u{2028}', '\u{2029}'];
+
 /// Écarts d'un workflow, chacun avec son numéro de ligne.
 pub fn check_workflow(text: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
     let mut errors = Vec::new();
+    // `lines()` has already removed the CR of a CRLF: a CRLF file stays accepted. Any other kind
+    // of line break makes the file unreadable for this check, so it is refused (fail closed).
+    let why = "line break other than LF or CRLF (CR, NEL, LS, PS) refused: YAML would read the \
+               rest of the line as a new line (#77)";
+    for (i, line) in lines.iter().enumerate() {
+        if line.contains(HIDDEN_BREAKS) {
+            errors.push(format!("ligne {} : {why}", i + 1));
+        }
+    }
+    // A break at the very end of the file is no line of `lines()`: check the whole text as well.
+    if errors.is_empty() && text.replace("\r\n", "\n").contains(HIDDEN_BREAKS) {
+        errors.push(format!("fin du fichier : {why}"));
+    }
     let mut top_permissions = false;
     let mut stack: Vec<Level> = Vec::new();
     // Bloc `|` ou `>` ouvert : (colonne de sa clé, interpolations non sûres permises).
     let mut block: Option<(usize, bool)> = None;
     // Jobs under the top-level `jobs:`, each with the line of its `runs-on:` (#77).
     let mut jobs: Vec<(String, usize, Option<usize>)> = Vec::new();
+    // Number of top-level `on:` keys: exactly one is expected (#77).
+    let mut on_keys = 0;
+    let mut event_count = 0;
     for (i, &raw) in lines.iter().enumerate() {
         let n = i + 1;
         let compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
@@ -329,6 +379,32 @@ pub fn check_workflow(text: &str) -> Vec<String> {
             errors.push(format!("ligne {n} : indentation incohérente"));
         }
         let key = l.key.as_deref().unwrap_or_default();
+        // Events: `on: x`, `on: [x, y]`, `- x` items and `x:` keys directly under `on:`.
+        let events: Vec<&str> = if stack.is_empty() && !l.item && l.col == 0 && key == "on" {
+            on_keys += 1;
+            if l.value.is_empty() {
+                Vec::new()
+            } else {
+                inline_events(l.value)
+            }
+        } else if !stack.first().is_some_and(|t| t.key == "on" && t.col == 0) {
+            Vec::new()
+        } else if !l.item && stack.len() == 1 {
+            vec![key]
+        } else if l.item && stack.len() == 2 {
+            // A scalar item is an event; `- x: y` is not a form of `on:` this check reads.
+            vec![if l.key.is_none() {
+                strip_comment(l.value)
+            } else {
+                ""
+            }]
+        } else {
+            Vec::new()
+        };
+        event_count += events.len();
+        for event in events {
+            errors.extend(event_refusal(event).map(|e| format!("ligne {n} : {e}")));
+        }
         if key == "runs-on" {
             errors.extend(runner_refusal(l.value).map(|e| format!("ligne {n} : {e}")));
         }
@@ -393,6 +469,11 @@ pub fn check_workflow(text: &str) -> Vec<String> {
     }
     if !top_permissions {
         errors.push("permissions: {} absent au niveau du workflow (SEC0-29)".to_owned());
+    }
+    if on_keys != 1 || event_count == 0 {
+        errors.push(format!(
+            "exactly one top-level `on:` with at least one readable event expected, found              {on_keys} `on:` and {event_count} event(s) (#77)"
+        ));
     }
     // A job without a readable `runs-on:` is refused rather than assumed to be hosted (#77).
     errors.extend(
@@ -1088,6 +1169,103 @@ mod tests {
         }
     }
 
+    /// #77, AS-53: `on:` takes only `push`, `pull_request`, `schedule` and `workflow_dispatch`,
+    /// in every YAML form; any other event, or a name the check cannot read, is refused.
+    #[test]
+    fn refuses_events_outside_the_closed_list() {
+        for event in [
+            "issue_comment",
+            "issues",
+            "pull_request_review",
+            "pull_request_review_comment",
+            "discussion",
+            "discussion_comment",
+            "release",
+            "workflow_call",
+            "repository_dispatch",
+            "merge_group",
+            "pull_request_target",
+            "workflow_run",
+            "fork",
+            "Issue_Comment",
+        ] {
+            for on in [
+                format!("on: {event}\n"),
+                format!("on: \"{event}\"\n"),
+                format!("on: '{event}' # comment\n"),
+                format!("on: [push, {event}]\n"),
+                format!("on: [{event}]\n"),
+                format!("on:\n  - push\n  - {event}\n"),
+                format!("on:\n  - \"{event}\"\n"),
+                format!("on:\n  push:\n  {event}:\n"),
+                format!("on:\n  {event}:\n    types: [created]\n"),
+                format!("on:\n  \"{event}\":\n"),
+                format!("on:\n  '{event}':\n"),
+                format!("\"on\":\n  {event}:\n"),
+                format!("on:\n  {}:\n", event.to_ascii_uppercase()),
+            ] {
+                let text = with_on(&on);
+                assert_ne!(text, good(), "{on}");
+                let errors = check_workflow(&text);
+                assert!(
+                    errors.iter().any(|e| e.contains("allowed triggers")),
+                    "{on}: {errors:?}"
+                );
+            }
+        }
+        // Names the check cannot read, and workflows without a readable trigger.
+        for on in [
+            "on: ${{ github.event_name }}\n",
+            "on: [push, ${{ inputs.e }}]\n",
+            "on:\n  - ${{ inputs.e }}\n",
+            "on:\n  ${{ inputs.e }}:\n",
+            "on: &e push\n",
+            "on: *e\n",
+            "on: !!str push\n",
+            "on: |\n  push\n",
+            "on: >\n  push\n",
+            "on: push, issues\n",
+            "on: push issues\n",
+            "on: {push: {}}\n",
+            "on: [push, {issues: {}}]\n",
+            "on: []\n",
+            "on: [push, ]\n",
+            "on:\n",
+            "on:\n  - push: {}\n",
+            "on: ''\n",
+        ] {
+            let errors = check_workflow(&with_on(on));
+            assert!(
+                errors.iter().any(|e| e.contains("#77")),
+                "accepted: {on}: {errors:?}"
+            );
+        }
+        let none = good().replacen("on:\n  pull_request:\n", "", 1);
+        assert!(
+            check_workflow(&none)
+                .iter()
+                .any(|e| e.contains("exactly one"))
+        );
+        let twice = good().replacen("jobs:", "on: push\njobs:", 1);
+        assert!(
+            check_workflow(&twice)
+                .iter()
+                .any(|e| e.contains("exactly one"))
+        );
+        // The four events stay accepted in every form.
+        for on in [
+            "on: push\n",
+            "on: \"pull_request\"\n",
+            "on: [push, pull_request, schedule, workflow_dispatch]\n",
+            "on: ['push', \"workflow_dispatch\"] # both\n",
+            "on:\n  - schedule\n  - workflow_dispatch\n",
+            "on:\n  push:\n    branches: [main]\n    paths:\n      - 'a/**'\n  pull_request:\n    types: [opened]\n",
+            "on:\n  schedule:\n    - cron: '17 3 * * 0'\n  workflow_dispatch:\n",
+        ] {
+            assert_eq!(check_workflow(&with_on(on)), Vec::<String>::new(), "{on}");
+        }
+    }
+
     #[test]
     fn accepts_the_hosted_runners() {
         for runs_on in [
@@ -1191,6 +1369,50 @@ mod tests {
             errors.len() == 1 && errors[0].contains("job `b` without"),
             "{errors:?}"
         );
+    }
+
+    /// Review of #101: text after a CR, NEL, LS or PS is a comment for `lines()` but new YAML
+    /// lines for a parser. A second job on a self-hosted runner with a step `run: echo pwned`
+    /// went through unseen behind `# c<CR>`.
+    #[test]
+    fn refuses_line_breaks_that_hide_yaml() {
+        for br in ['\r', '\u{85}', '\u{2028}', '\u{2029}'] {
+            let hidden = format!(
+                "# c{br}  b:{br}    runs-on: self-hosted{br}    steps:{br}      - ? run # z{br}        : echo pwned"
+            );
+            let appended = good().replacen(
+                "persist-credentials: false",
+                &format!("persist-credentials: false {hidden}"),
+                1,
+            );
+            let duplicate = good().replacen(
+                "runs-on: ubuntu-24.04",
+                &format!("runs-on: ubuntu-24.04 # c{br}    runs-on: self-hosted"),
+                1,
+            );
+            let trigger = good().replacen(
+                "pull_request:",
+                &format!("pull_request: # c{br}  issue_comment:"),
+                1,
+            );
+            let end = format!("{}# end{br}", good());
+            let start = format!("{br}{}", good());
+            for text in [appended, duplicate, trigger, end, start] {
+                let errors = check_workflow(&text);
+                assert!(
+                    errors.iter().any(|e| e.contains("line break other than")),
+                    "{br:?}: {errors:?}"
+                );
+            }
+        }
+        // A trailing lone CR is no line of `lines()`: the whole text is checked as well.
+        let tail = format!("{}\r", good());
+        assert!(!check_workflow(&tail).is_empty());
+        // A CRLF file stays accepted, a CR before the CRLF does not.
+        let crlf = good().replace('\n', "\r\n");
+        assert_eq!(check_workflow(&crlf), Vec::<String>::new());
+        let double = good().replacen("jobs:\n", "jobs:\r\r\n", 1);
+        assert!(!check_workflow(&double).is_empty());
     }
 
     /// The workflows of the repository pass every rule above.
