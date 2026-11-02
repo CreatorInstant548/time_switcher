@@ -28,8 +28,8 @@ Déclencheurs : `pull_request` (`opened`, `synchronize`, `reopened`, `ready_for_
 | Travail | Quand | Contenu |
 |---|---|---|
 | `changes` | toujours | `tools/ci/changes.sh --summary` : tableau des zones et chemins sensibles touchés, dans le résumé de l'exécution |
-| `pr-title` | PR seulement | titre au format `type(portée): description`, même motif que le crochet `commit-msg` ; le titre passe par `env:` (SEC0-31) |
-| `security` | toujours, quels que soient les chemins | gitleaks épinglé et son auto-test ; `cargo xtask check --only workflows,gitleaks,deny`, plus `audit` si `Cargo.lock` change. Avertit si la PR touche la zone `ci` (G5 étendu, voir plus bas) |
+| `pr-title` | PR seulement | titre au format `type(portée): description`, même motif que `cargo xtask merge` (A31) ; le titre passe par `env:` (SEC0-31) |
+| `security` | toujours, quels que soient les chemins | gitleaks épinglé et son auto-test ; `tools/dev/deny-rules.ps1 -Check` (refus natifs de Claude Code égaux à leur génération, [outillage](outillage.md) §3.2) ; `cargo xtask check --only workflows,gitleaks,deny`, plus `audit` si `Cargo.lock` change. Avertit si la PR touche la zone `ci` (G5 étendu, voir plus bas) |
 | `rust-linux` | zone `rust` ou `ci` | `cargo xtask check --all --only fmt,clippy,test,determinism,unsafe,profiles,features,clippy-exemptions,local-paths,spec-map` |
 | `rust-windows` | push sur `main`, étiquette `ci:windows`, ou zone `sensitive` | même chose, sans `fmt` |
 | `ci-ok` | toujours (`always()`) | lit `needs.<travail>.result` (G2) : `changes`, `security` et, sur une PR, `pr-title` doivent valoir `success` ; `rust-linux` et `rust-windows` peuvent valoir `skipped`. Sur un brouillon, il **échoue** au lieu d'être sauté, car GitHub tient un contrôle sauté pour réussi. Délai : 10 min pour le travail, 2 min pour son étape (voir plus bas) |
