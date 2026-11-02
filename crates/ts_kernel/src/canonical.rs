@@ -22,8 +22,8 @@
 //! | date (header and state) | ±2^62 ms | decoder | `step` adds the tick length; the time skip |
 //! | day origin | ±2^35 days (about 3 × 10^18 ms) | decoder | day computations |
 //! | `StableId` counter | ≤ 2^62 | decoder | `StableIdAllocator::allocate` (stops at 2^63) |
-//! | event counter `seq` | ≤ 2^62 | decoder | `Scheduler::schedule` adds 1 per event |
-//! | pending event date | ±2^62 ms | decoder | scheduler levels, `day * MILLIS_PER_DAY` |
+//! | event counter `seq` | ≤ 2^62 | decoder, `Scheduler::schedule` | `Scheduler::schedule` adds 1 per event |
+//! | pending event date | ±2^62 ms | decoder, `Scheduler::schedule` | scheduler levels, `day * MILLIS_PER_DAY` |
 //! | pending event rank | < event counter, distinct | `Scheduler::restore` | ordering only |
 //! | stable ids, `LodComplete` | strictly increasing, below the counter (game ids) | decoder, `restore` | lookups only |
 //!
@@ -567,12 +567,12 @@ pub(crate) struct KernelState {
 /// Largest absolute date of a decoded snapshot, in milliseconds (about 146 million years):
 /// far from `i64` overflow, so that ticks, the scheduler and the time skip never overflow
 /// on a forged date.
-const MAX_ABS_MILLIS: u64 = 1 << 62;
+const MAX_ABS_MILLIS: u64 = SimTime::MAX_SAVED_ABS_MILLIS.unsigned_abs();
 /// Largest absolute day origin, in days (about 94 million years, below `MAX_ABS_MILLIS`).
 const MAX_ABS_DAYS: u64 = 1 << 35;
 /// Largest `StableId` and event counters: 2^62, far below their overflow (`StableId`
-/// allocation stops at 2^63, `seq` overflows at 2^64).
-const MAX_COUNTER: u64 = 1 << 62;
+/// allocation stops at 2^63, `seq` overflows at 2^64). `Scheduler::schedule` stops there too.
+pub(crate) const MAX_COUNTER: u64 = 1 << 62;
 /// Longest tick a configuration can give: `tick_hz` divides 1,000.
 const MAX_TICK_MS: i64 = 1000;
 

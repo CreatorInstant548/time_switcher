@@ -38,7 +38,7 @@ La chaîne est épinglée par `rust-toolchain.toml` (1.99.1, A14), changée seul
 ## 3. Profil de construction de `ts_kernel` (SEC0-20)
 
 - Fonctionnalités `dev-commands`, `dev-introspection`, `external-pilot`, `dev-bench` et `public`, toutes vides et aucune par défaut.
-- `public` exclut les quatre autres, par un `compile_error!` en français pour chaque paire.
+- `public` exclut les quatre autres, par un `compile_error!` pour chaque paire, dont le message, en anglais, est cherché mot pour mot par l'étape `profiles` de `cargo xtask check`.
 - `public` ne s'active **dans aucun `Cargo.toml`** : seulement en ligne de commande, par la future `xtask release`. Les fonctionnalités de développement ne sont activées par aucune dépendance normale d'une crate d'hôte.
 - `ts_kernel::BUILD_PROFILE` vaut `"public"` si et seulement si `public` est active, sinon `"dev"` (E9). `ts_kernel::active_dev_features()` liste les fonctionnalités de développement compilées, pour le refus de démarrer et la vérification de l'artefact.
 

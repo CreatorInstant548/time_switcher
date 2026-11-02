@@ -54,7 +54,7 @@ pub use money::{BasisPoints, Money, div_round_half_even};
 pub use par::{PAR_ITER_FROM, par_for_each_mut};
 pub use phase::Phase;
 pub use plugin::{Plugin, RulesFingerprint, SimBuilder};
-pub use scheduler::{Scheduled, Scheduler};
+pub use scheduler::{ScheduleError, Scheduled, Scheduler};
 pub use sim::{
     BuildError, DueEvents, EventQueue, LodComplete, MemorySnapshot, PARALLEL_FROM_WORK,
     ParallelPhases, RestoreError, RunReport, Sim, SimClock, SimConfig, Snapshot, SnapshotScope,
