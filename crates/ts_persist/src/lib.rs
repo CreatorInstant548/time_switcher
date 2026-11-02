@@ -22,7 +22,11 @@
 //! (the root), the manifest carries the digest of each part (the leaves). A part named
 //! `<part>/<chunk>` is a chunk of a larger part (sector x family, architecture §12.1).
 //!
-//! **Order of checks** (archsec Q3): envelope, then manifest digest, then the part count the
+//! **Memory peak** (M41h): decoding refuses bounds that would let it hold more than
+//! [`MAX_DECODE_PEAK`] (2 GiB) at its peak ([`Limits::decode_peak_bound`]); the defaults stay
+//! under it.
+//!
+//! **Order of checks** (archsec Q3): bounds against the memory ceiling, envelope, then manifest digest, then the part count the
 //! manifest announces (before it is decoded, m4 of #50), then manifest content
 //! and bounds, then the stored digest of **every** part, and only then decompression and the
 //! decoded digest of each part. Nothing is decoded by postcard or `zstd` before its bytes
@@ -71,6 +75,6 @@ pub use codec::{Parts, decode_parts, encode_parts};
 pub use envelope::{FORMAT_VERSION, HEADER_LEN, MAGIC, open};
 pub use error::{Bound, DecodeError, EncodeError};
 pub use kernel::{META_PART, STATE_PART, decode_snapshot, encode_snapshot};
-pub use limits::Limits;
+pub use limits::{Limits, MAX_DECODE_PEAK};
 pub use manifest::{Codec, Digest, Manifest, PartEntry};
 pub use schema::{MAX_SCHEMA_DEPTH, Schema, Seq};
