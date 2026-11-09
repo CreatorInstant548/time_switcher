@@ -93,7 +93,7 @@ jobs:
           lfs: false
       - name: Chaîne Rust
         run: bash tools/ci/install-tools.sh rust
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # --dry-run: the read-only token cannot open issues; an anomaly fails the job and report
@@ -135,7 +135,7 @@ jobs:
       - name: Chaîne Rust
         if: steps.gate.outputs.changed == 'true'
         run: bash tools/ci/install-tools.sh rust
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: steps.gate.outputs.changed == 'true'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -260,7 +260,7 @@ jobs:
       - name: Chaîne Rust
         if: steps.gate.outputs.changed == 'true'
         run: bash tools/ci/install-tools.sh rust
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: steps.gate.outputs.changed == 'true'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
